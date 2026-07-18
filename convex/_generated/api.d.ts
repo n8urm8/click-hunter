@@ -8,13 +8,19 @@
  * @module
  */
 
+import type * as players from "../players.js";
+import type * as upgrades from "../upgrades.js";
+
 import type {
   ApiFromModules,
   FilterApi,
   FunctionReference,
 } from "convex/server";
 
-declare const fullApi: ApiFromModules<{}>;
+declare const fullApi: ApiFromModules<{
+  players: typeof players;
+  upgrades: typeof upgrades;
+}>;
 
 /**
  * A utility for referencing Convex functions in your app's public API.
@@ -42,4 +48,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  aggregate: import("@convex-dev/aggregate/_generated/component.js").ComponentApi<"aggregate">;
+};

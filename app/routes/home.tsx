@@ -1,5 +1,5 @@
-import { Welcome } from "../welcome/welcome";
+import { GameRoot } from "../components/game/GameRoot";
 
 export default function Home() {
-  return <Welcome />;
+  return <GameRoot />;
 }
