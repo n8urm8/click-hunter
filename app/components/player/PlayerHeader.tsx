@@ -2,6 +2,7 @@ import { Card } from "~/components/ui/card";
 import { Progress } from "~/components/ui/progress";
 import { Badge } from "~/components/ui/badge";
 import { formatNumber } from "~/lib/utils";
+import { EventTracker } from "./EventTracker";
 
 interface PlayerHeaderProps {
   player: any;
@@ -9,29 +10,31 @@ interface PlayerHeaderProps {
 
 export function PlayerHeader({ player }: PlayerHeaderProps) {
   return (
-    <Card className="bg-slate-800 border-slate-700 p-4">
+    <Card className="forest-card box-glow-gold p-4">
       <div className="space-y-4">
-        {/* Name and Level */}
+        {/* Name, Level, and Event Tracker */}
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-2xl font-bold text-amber-400">{player.name}</h2>
-            <p className="text-sm text-slate-400">
-              Level {player.level} • Tier {player.currentTier} - Monster{" "}
-              {player.currentTierProgression + 1}/3
+            <h2 className="text-2xl font-heading text-gold glow-gold">{player.name}</h2>
+            <p className="text-sm text-muted-foreground">
+              Level {player.level} • Tier {player.currentTier} • Max {player.maxTierReached || 1}
             </p>
           </div>
-          {player.rebirthCount > 0 && (
-            <Badge variant="secondary" className="bg-purple-900 text-purple-100">
-              Rebirths: {player.rebirthCount}
-            </Badge>
-          )}
+          <div className="flex flex-col items-end gap-2">
+            <EventTracker />
+            {player.rebirthCount > 0 && (
+              <Badge variant="secondary" className="bg-mystic/20 text-mystic-glow border border-mystic/30">
+                ✨ Rebirths: {player.rebirthCount}
+              </Badge>
+            )}
+          </div>
         </div>
 
         {/* Gold */}
         <div className="flex items-center justify-between text-sm">
-          <span className="text-slate-300">Gold</span>
-          <span className="font-semibold text-yellow-400">
-            {formatNumber(player.gold)}
+          <span className="text-foreground/70">Gold</span>
+          <span className="font-semibold text-gold-light glow-gold">
+            ✧ {formatNumber(player.gold)}
           </span>
         </div>
 
@@ -46,10 +49,10 @@ export function PlayerHeader({ player }: PlayerHeaderProps) {
           ].map((stat) => (
             <div
               key={stat.label}
-              className="bg-slate-700 rounded p-2 text-center"
+              className="forest-panel p-2 text-center"
             >
-              <div className="text-xs text-slate-400">{stat.label}</div>
-              <div className="text-lg font-bold text-amber-400">
+              <div className="text-xs text-muted-foreground">{stat.label}</div>
+              <div className="text-lg font-bold text-gold">
                 {stat.value}
               </div>
             </div>
@@ -58,25 +61,25 @@ export function PlayerHeader({ player }: PlayerHeaderProps) {
 
         {/* Derived Stats */}
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="bg-slate-700 rounded p-2">
-            <span className="text-slate-400">Health</span>
-            <div className="font-semibold text-green-400">{player.health}</div>
+          <div className="forest-panel p-2">
+            <span className="text-muted-foreground">Health</span>
+            <div className="font-semibold text-forest-glow glow-green">{player.health}</div>
           </div>
-          <div className="bg-slate-700 rounded p-2">
-            <span className="text-slate-400">Attack</span>
-            <div className="font-semibold text-red-400">
+          <div className="forest-panel p-2">
+            <span className="text-muted-foreground">Attack</span>
+            <div className="font-semibold text-blood-light glow-red">
               {Math.floor(player.attack)}
             </div>
           </div>
-          <div className="bg-slate-700 rounded p-2">
-            <span className="text-slate-400">Defense</span>
-            <div className="font-semibold text-blue-400">
+          <div className="forest-panel p-2">
+            <span className="text-muted-foreground">Defense</span>
+            <div className="font-semibold text-potion-blue glow-blue">
               {Math.floor(player.defense)}
             </div>
           </div>
-          <div className="bg-slate-700 rounded p-2">
-            <span className="text-slate-400">Attack Speed</span>
-            <div className="font-semibold text-purple-400">
+          <div className="forest-panel p-2">
+            <span className="text-muted-foreground">Attack Speed</span>
+            <div className="font-semibold text-mystic-glow glow-purple">
               {player.attackSpeed.toFixed(2)}/s
             </div>
           </div>

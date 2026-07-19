@@ -1,10 +1,10 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import {
-  STARTING_STATS,
-  REBIRTH_TIER_PROGRESSION,
-  type StatType,
-} from "../app/lib/gameConfig";
+import { api } from "./_generated/api";
+
+// Default balance constants — must match gameBalance seeds in seed.ts
+const STARTING_STATS = { str: 5, dex: 5, int: 5, luk: 5, con: 5 };
+const REBIRTH_TIER_PROGRESSION = [5, 10, 15, 21, 28, 36, 45] as const;
 
 /**
  * Get or create a player
@@ -40,7 +40,7 @@ export const getOrCreatePlayer = mutation({
       rebirthCount: 0,
       rebirthTierThreshold: REBIRTH_TIER_PROGRESSION[0],
       currentTier: 1,
-      currentTierProgression: 0,
+      maxTierReached: 1,
       autoAttackEnabled: false,
       autoStartFightEnabled: false,
       createdAt: now,
@@ -118,6 +118,10 @@ export const addExperience = mutation({
       lastUpdated: Date.now(),
     });
 
+    // Note: leaderboards updated asynchronously via scheduled function
+    // For now, just update directly for consistency
+    await ctx.db.patch(playerId, { lastUpdated: Date.now() });
+
     return newExperience;
   },
 });
@@ -157,32 +161,28 @@ export const increaseStat = mutation({
 });
 
 /**
- * Advance tier progression (move to next monster in tier or advance tier)
+ * Advance tier (update maxTierReached if player beats higher tier)
  */
 export const advanceTierProgression = mutation({
   args: {
     playerId: v.id("players"),
+    tierJustBeaten: v.number(),
   },
-  handler: async (ctx, { playerId }) => {
+  handler: async (ctx, { playerId, tierJustBeaten }) => {
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
 
-    let newTier = player.currentTier;
-    let newProgression = player.currentTierProgression + 1;
-
-    // If we've beaten all 3 monsters in this tier, move to next tier
-    if (newProgression >= 3) {
-      newProgression = 0;
-      newTier += 1;
-    }
+    // Update maxTierReached if player beat a higher tier
+    const newMaxTier = Math.max(player.maxTierReached || 1, tierJustBeaten);
 
     await ctx.db.patch(playerId, {
-      currentTier: newTier,
-      currentTierProgression: newProgression,
+      maxTierReached: newMaxTier,
       lastUpdated: Date.now(),
     });
 
-    return { tier: newTier, progression: newProgression };
+    // Note: Leaderboards could be updated here, but keeping simple for now
+
+    return { maxTier: newMaxTier };
   },
 });
 
@@ -197,7 +197,7 @@ export const canRebirth = query({
     const player = await ctx.db.get(playerId);
     if (!player) return false;
 
-    return player.currentTier >= player.rebirthTierThreshold;
+    return (player.maxTierReached || 1) >= player.rebirthTierThreshold;
   },
 });
 
@@ -213,7 +213,7 @@ export const rebirth = mutation({
     if (!player) throw new Error("Player not found");
 
     // Check if eligible for rebirth
-    if (player.currentTier < player.rebirthTierThreshold) {
+    if ((player.maxTierReached || 1) < player.rebirthTierThreshold) {
       throw new Error("Not eligible for rebirth yet");
     }
 
@@ -247,9 +247,11 @@ export const rebirth = mutation({
       rebirthCount: nextRebirthCount,
       rebirthTierThreshold: nextThreshold,
       currentTier: 1,
-      currentTierProgression: 0,
+      maxTierReached: 1,
       lastUpdated: Date.now(),
     });
+
+    // Note: Leaderboards could be updated here, but keeping simple for now
 
     return {
       rebirthCount: nextRebirthCount,

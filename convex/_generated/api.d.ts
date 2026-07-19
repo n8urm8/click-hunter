@@ -8,7 +8,13 @@
  * @module
  */
 
+import type * as achievements from "../achievements.js";
+import type * as events from "../events.js";
+import type * as init from "../init.js";
+import type * as leaderboards from "../leaderboards.js";
+import type * as migrations from "../migrations.js";
 import type * as players from "../players.js";
+import type * as seed from "../seed.js";
 import type * as upgrades from "../upgrades.js";
 
 import type {
@@ -18,7 +24,13 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  achievements: typeof achievements;
+  events: typeof events;
+  init: typeof init;
+  leaderboards: typeof leaderboards;
+  migrations: typeof migrations;
   players: typeof players;
+  seed: typeof seed;
   upgrades: typeof upgrades;
 }>;
 

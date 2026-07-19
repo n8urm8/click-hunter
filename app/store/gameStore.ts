@@ -33,14 +33,31 @@ export const playerMaxHpAtom = atom<number>(0);
 // Combat state machine
 export const inFightPhaseAtom = atom<FightPhase>("idle");
 
-// Damage floaters for animation
+// Event tracker: what is the player currently doing?
+export type GameEvent = 
+  | { type: "idle" }
+  | { type: "shopping" }
+  | { type: "viewing_stats" }
+  | { type: "viewing_upgrades" }
+  | { type: "viewing_rebirth" }
+  | { type: "fighting"; monsterName: string; tier: number }
+  | { type: "victory"; reward: { gold: number; exp: number } }
+  | { type: "defeat"; monsterName: string };
+
+export const eventTrackerAtom = atom<GameEvent>({ type: "idle" });
+
+// Respawn timer in milliseconds (0 = can fight)
+export const respawnTimerAtom = atom<number>(0);
 export const clickAnimationsAtom = atom<ClickAnimation[]>([]);
 
 // Discovered hidden spots
-export const discoveredSpotsAtom = atom<Set<string>>(() => new Set());
+// Discovered hidden spots (tracked locally)
+export const discoveredSpotsAtom = atom<Set<string>>(
+  new Set<string>()
+);
 
 // Active right panel tab
-export const activePanelAtom = atom<"stats" | "shop" | "upgrades" | "rebirth">(
+export const activePanelAtom = atom<"stats" | "shop" | "upgrades" | "rebirth" | "leaderboard">(
   "stats"
 );
 

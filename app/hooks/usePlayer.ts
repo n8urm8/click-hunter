@@ -139,3 +139,10 @@ export function useHasUpgrade(playerId: any, upgradeId: string) {
 export function useRecordFight() {
   return useConvexMutation(api.upgrades.recordFight);
 }
+
+/**
+ * Hook for claiming hidden spot reward
+ */
+export function useClaimHiddenSpotReward() {
+  return useConvexMutation(api.upgrades.claimHiddenSpotReward);
+}

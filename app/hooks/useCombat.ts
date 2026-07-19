@@ -5,6 +5,9 @@ import {
   playerHpAtom,
   inFightPhaseAtom,
   clickAnimationsAtom,
+  respawnTimerAtom,
+  eventTrackerAtom,
+  type CurrentFight,
 } from "~/store/gameStore";
 import { useRecordFight } from "./usePlayer";
 import { logInfo, logError } from "~/lib/logger";
@@ -21,6 +24,8 @@ export function useCombat(
   const [playerHp, setPlayerHp] = useAtom(playerHpAtom);
   const [fightPhase, setFightPhase] = useAtom(inFightPhaseAtom);
   const [, setFloaters] = useAtom(clickAnimationsAtom);
+  const [, setRespawnTimer] = useAtom(respawnTimerAtom);
+  const [, setEventTracker] = useAtom(eventTrackerAtom);
   const recordFight = useRecordFight();
 
   // Monster attack interval - convert attackSpeed (attacks/sec) to interval in ms
@@ -59,6 +64,9 @@ export function useCombat(
     if (!currentFight) return;
 
     try {
+      // Get monster name for event tracker
+      const monsterDef = player && (player.currentTier) ? "Unknown Monster" : "Unknown Monster";
+
       // Record loss
       await recordFight({
         playerId: player._id,
@@ -70,6 +78,22 @@ export function useCombat(
       });
 
       logInfo(`Fight lost against tier ${currentFight.monsterTier} monster`);
+
+      // Set defeat event tracker
+      setEventTracker({
+        type: "defeat",
+        monsterName: `Tier ${currentFight.monsterTier} Monster`,
+      });
+
+      // Start respawn timer (5 seconds)
+      const RESPAWN_TIME = 5000; // milliseconds
+      setRespawnTimer(RESPAWN_TIME);
+
+      // Clear fight after recording
+      setTimeout(() => {
+        setCurrentFight(null);
+        setEventTracker({ type: "idle" });
+      }, 500);
     } catch (error) {
       logError("Failed to record defeat", error as Error);
     }
@@ -88,4 +112,19 @@ export function useCombat(
 
     return () => {};
   }, [currentFight, autoAttackEnabled, fightPhase, player.attackSpeed]);
+
+  // Respawn timer countdown
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setRespawnTimer((prev) => {
+        if (prev <= 0) {
+          clearInterval(timer);
+          return 0;
+        }
+        return Math.max(0, prev - 100); // Decrement by 100ms
+      });
+    }, 100);
+
+    return () => clearInterval(timer);
+  }, [setRespawnTimer]);
 }

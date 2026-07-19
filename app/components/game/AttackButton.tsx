@@ -1,9 +1,10 @@
 import { Button } from "~/components/ui/button";
 import { useAtom } from "jotai";
-import { currentFightAtom, clickAnimationsAtom, inFightPhaseAtom, playerHpAtom } from "~/store/gameStore";
+import { currentFightAtom, clickAnimationsAtom, inFightPhaseAtom, playerHpAtom, eventTrackerAtom } from "~/store/gameStore";
 import { calculateDamage } from "~/lib/statCalculations";
 import { useRecordFight, useAddExperience, useUpdateGold, useAdvanceTierProgression } from "~/hooks/usePlayer";
 import { logInfo } from "~/lib/logger";
+import { useState } from "react";
 
 interface AttackButtonProps {
   player: any;
@@ -13,7 +14,9 @@ export function AttackButton({ player }: AttackButtonProps) {
   const [currentFight, setCurrentFight] = useAtom(currentFightAtom);
   const [floaters, setFloaters] = useAtom(clickAnimationsAtom);
   const [, setFightPhase] = useAtom(inFightPhaseAtom);
+  const [, setEventTracker] = useAtom(eventTrackerAtom);
   const [playerHp] = useAtom(playerHpAtom);
+  const [isProcessingVictory, setIsProcessingVictory] = useState(false);
   const recordFight = useRecordFight();
   const addExperience = useAddExperience();
   const updateGold = useUpdateGold();
@@ -21,6 +24,8 @@ export function AttackButton({ player }: AttackButtonProps) {
 
   const handleVictory = async () => {
     if (!currentFight) return;
+
+    setIsProcessingVictory(true);
 
     // Calculate rewards based on tier
     const baseGold = (currentFight.monsterTier * 100) + Math.floor(Math.random() * 50);
@@ -42,12 +47,27 @@ export function AttackButton({ player }: AttackButtonProps) {
       // Update player stats
       await updateGold({ playerId: player._id, delta: baseGold });
       await addExperience({ playerId: player._id, amount: baseExp });
-      await advanceTierProgression({ playerId: player._id });
+      await advanceTierProgression({ playerId: player._id, tierJustBeaten: currentFight.monsterTier });
+
+      // Update event tracker
+      setEventTracker({ 
+        type: "victory", 
+        reward: { gold: baseGold, exp: baseExp } 
+      });
 
       // End fight
       setFightPhase("victory");
+
+      // Clear fight after 2 seconds to allow player to see victory message
+      setTimeout(() => {
+        setCurrentFight(null);
+        setFightPhase("idle");
+        setEventTracker({ type: "idle" });
+        setIsProcessingVictory(false);
+      }, 2000);
     } catch (error) {
       console.error("Failed to record victory:", error);
+      setIsProcessingVictory(false);
     }
   };
 
@@ -93,9 +113,10 @@ export function AttackButton({ player }: AttackButtonProps) {
     <Button
       onClick={handleAttack}
       size="lg"
-      className="w-full bg-red-600 hover:bg-red-700 text-white text-xl py-8"
+      disabled={!currentFight || currentFight.monsterHp <= 0 || isProcessingVictory}
+      className="w-full bg-blood hover:bg-blood-light text-gold-light text-xl py-8 border border-blood-light/30 btn-enchanted box-glow-red disabled:bg-forest-dark/50 disabled:text-muted-foreground disabled:border-forest-light/10 disabled:shadow-none"
     >
-      ⚔️ ATTACK!
+      {isProcessingVictory ? "✨ Victory!" : "⚔️ ATTACK!"}
     </Button>
   );
 }

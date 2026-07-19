@@ -28,9 +28,10 @@ export default defineConfig({
     open: true,
   },
   build: {
-    target: "ES2022",
+    target: "ES2020",
     minify: "terser",
     sourcemap: false,
+    cssMinify: false,
     rollupOptions: {
       output: {
         manualChunks: (id: string) => {

@@ -1,9 +1,10 @@
 import { useRef, useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { discoveredSpotsAtom } from "~/store/gameStore";
-import { HIDDEN_SPOTS } from "~/lib/gameConfig";
-import { usePurchaseUpgrade } from "~/hooks/usePlayer";
-import { logInfo } from "~/lib/logger";
+import { useClaimHiddenSpotReward } from "~/hooks/usePlayer";
+import { logInfo, logError } from "~/lib/logger";
+import { useQuery } from "convex/react";
+import { api } from "../../../convex/_generated/api";
 
 interface HiddenSpotsProps {
   containerRef?: React.RefObject<HTMLDivElement | null>;
@@ -11,41 +12,66 @@ interface HiddenSpotsProps {
 }
 
 export function HiddenSpots({ containerRef, player }: HiddenSpotsProps) {
-  const [discoveredSpots] = useAtom(discoveredSpotsAtom);
+  const [discoveredSpots, setDiscoveredSpots] = useAtom(discoveredSpotsAtom);
   const [isHovering, setIsHovering] = useState<string | null>(null);
-  const purchaseUpgrade = usePurchaseUpgrade();
+  const [claimingSpot, setClaimingSpot] = useState<string | null>(null);
+  const claimReward = useClaimHiddenSpotReward();
   const spotsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const hiddenSpots = useQuery(api.seed.getHiddenSpots) ?? [];
 
   const handleSpotClick = async (spotId: string, rewardUpgradeId: string) => {
-    if (discoveredSpots.has(spotId)) {
-      logInfo(`Spot ${spotId} already discovered`);
+    if (discoveredSpots.has(spotId) || claimingSpot === spotId) {
       return;
     }
 
-    // Mark as discovered - update localStorage for persistence
-    const newDiscovered = new Set(discoveredSpots);
-    newDiscovered.add(spotId);
-    
-    // Store in localStorage
+    setClaimingSpot(spotId);
+
     try {
-      localStorage.setItem("clickHunter_discoveredSpots", JSON.stringify(Array.from(newDiscovered)));
-      logInfo(`Discovered hidden spot! Claimed ${rewardUpgradeId}`);
+      logInfo(`Claiming hidden spot ${spotId} with reward ${rewardUpgradeId}`);
+
+      // Call Convex mutation to claim reward
+      await claimReward({
+        playerId: player._id,
+        upgradeId: rewardUpgradeId,
+        spotId,
+      });
+
+      // Mark as discovered locally
+      const newDiscovered = new Set(discoveredSpots);
+      newDiscovered.add(spotId);
+      setDiscoveredSpots(newDiscovered);
+
+      // Store in localStorage for persistence
+      try {
+        localStorage.setItem(
+          "clickHunter_discoveredSpots",
+          JSON.stringify(Array.from(newDiscovered))
+        );
+      } catch (error) {
+        console.error("Failed to save discovered spot:", error);
+      }
+
+      logInfo(`Successfully claimed hidden spot ${spotId}!`);
     } catch (error) {
-      console.error("Failed to save discovered spot:", error);
+      logError("Failed to claim hidden spot", error as Error);
+    } finally {
+      setClaimingSpot(null);
     }
   };
 
   useEffect(() => {
-    // Set up click detection for each spot
+    // Set up click detection for each undiscovered spot
     const spots = spotsRef.current;
 
-    HIDDEN_SPOTS.forEach((spot) => {
-      const element = spots.get(spot.id);
+    hiddenSpots.forEach((spot) => {
+      if (discoveredSpots.has(spot.spotId)) return;
+
+      const element = spots.get(spot.spotId);
       if (!element) return;
 
       const handleMouseEnter = () => {
-        if (!discoveredSpots.has(spot.id)) {
-          setIsHovering(spot.id);
+        if (!discoveredSpots.has(spot.spotId)) {
+          setIsHovering(spot.spotId);
         }
       };
 
@@ -54,7 +80,7 @@ export function HiddenSpots({ containerRef, player }: HiddenSpotsProps) {
       };
 
       const handleClick = () => {
-        handleSpotClick(spot.id, spot.rewardUpgradeId);
+        handleSpotClick(spot.spotId, spot.rewardUpgradeId);
       };
 
       element.addEventListener("mouseenter", handleMouseEnter);
@@ -67,25 +93,29 @@ export function HiddenSpots({ containerRef, player }: HiddenSpotsProps) {
         element.removeEventListener("click", handleClick);
       };
     });
-  }, [discoveredSpots]);
+  }, [discoveredSpots, hiddenSpots]);
 
   return (
     <>
-      {HIDDEN_SPOTS.map((spot) => {
-        const isDiscovered = discoveredSpots.has(spot.id);
-        const isHovered = isHovering === spot.id;
+      {hiddenSpots.map((spot) => {
+        const isDiscovered = discoveredSpots.has(spot.spotId);
+        const isHovered = isHovering === spot.spotId && !isDiscovered;
+        const isClaiming = claimingSpot === spot.spotId;
+
+        // Don't render discovered spots
+        if (isDiscovered) {
+          return null;
+        }
 
         return (
           <div
-            key={spot.id}
+            key={spot.spotId}
             ref={(el) => {
-              if (el) spotsRef.current.set(spot.id, el);
+              if (el) spotsRef.current.set(spot.spotId, el);
             }}
             className={`absolute rounded-full cursor-pointer transition-all ${
-              isDiscovered
-                ? "bg-green-500/20 border-2 border-green-400"
-                : isHovered
-                ? "bg-yellow-400/30 border-2 border-yellow-300"
+              isHovered
+                ? "bg-yellow-400/40 border-2 border-yellow-300"
                 : "bg-transparent border-2 border-transparent"
             }`}
             style={{
@@ -95,20 +125,16 @@ export function HiddenSpots({ containerRef, player }: HiddenSpotsProps) {
               height: `${spot.radius * 2}px`,
               transform: "translate(-50%, -50%)",
             }}
-            title={
-              isDiscovered ? "Discovered!" : isHovered ? "Click to discover!" : undefined
-            }
+            title={isHovered ? "Click to discover!" : undefined}
           >
-            {/* Pulsing indicator for undiscovered spots */}
-            {!isDiscovered && isHovered && (
+            {/* Pulsing indicator for undiscovered spots on hover */}
+            {isHovered && (
               <div className="absolute inset-0 rounded-full bg-yellow-300 animate-pulse opacity-50" />
             )}
 
-            {/* Checkmark for discovered spots */}
-            {isDiscovered && (
-              <div className="absolute inset-0 flex items-center justify-center text-lg font-bold text-green-400">
-                ✓
-              </div>
+            {/* Loading indicator while claiming */}
+            {isClaiming && (
+              <div className="absolute inset-0 rounded-full bg-blue-400 animate-spin opacity-75" />
             )}
           </div>
         );

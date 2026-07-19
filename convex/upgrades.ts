@@ -1,6 +1,5 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { UPGRADES } from "../app/lib/gameConfig";
 
 /**
  * Get all upgrades owned by a player
@@ -47,7 +46,10 @@ export const purchaseUpgrade = mutation({
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
 
-    const upgrade = UPGRADES[upgradeId];
+    const upgrade = await ctx.db
+      .query("upgrades")
+      .withIndex("by_upgradeId", (q) => q.eq("upgradeId", upgradeId))
+      .first();
     if (!upgrade) throw new Error("Upgrade not found");
 
     // Check gold
@@ -56,7 +58,7 @@ export const purchaseUpgrade = mutation({
     }
 
     // Check prerequisites
-    if (upgrade.prerequisites?.minTier && player.currentTier < upgrade.prerequisites.minTier) {
+    if (upgrade.minTier && player.currentTier < upgrade.minTier) {
       throw new Error("Not at required tier");
     }
 
@@ -92,7 +94,7 @@ export const purchaseUpgrade = mutation({
     // Apply upgrade effect
     await applyUpgradeEffect(ctx, playerId, upgradeId);
 
-    return { success: true, upgrade };
+    return { success: true, upgradeId };
   },
 });
 
@@ -104,7 +106,10 @@ async function applyUpgradeEffect(
   playerId: string,
   upgradeId: string
 ) {
-  const upgrade = UPGRADES[upgradeId] as any;
+  const upgrade = await ctx.db
+    .query("upgrades")
+    .withIndex("by_upgradeId", (q: any) => q.eq("upgradeId", upgradeId))
+    .first();
   if (!upgrade) return;
 
   const player = await ctx.db.get(playerId);
@@ -112,20 +117,14 @@ async function applyUpgradeEffect(
 
   const updates: any = {};
 
-  // Apply stat bonuses if present
-  if (upgrade.statBonus) {
-    if (upgrade.statBonus.str) updates.str = (player.str || 5) + upgrade.statBonus.str;
-    if (upgrade.statBonus.dex) updates.dex = (player.dex || 5) + upgrade.statBonus.dex;
-    if (upgrade.statBonus.int) updates.int = (player.int || 5) + upgrade.statBonus.int;
-    if (upgrade.statBonus.luk) updates.luk = (player.luk || 5) + upgrade.statBonus.luk;
-    if (upgrade.statBonus.con) updates.con = (player.con || 5) + upgrade.statBonus.con;
+  if (upgrade.effectType === "stat-boost" && upgrade.effectStat && upgrade.effectAmount) {
+    const currentValue = player[upgrade.effectStat] || 5;
+    updates[upgrade.effectStat] = currentValue + upgrade.effectAmount;
   }
-
-  // Enable auto features if present
-  if (upgrade.enableAutoAttack) {
+  if (upgrade.effectType === "enable-auto-attack") {
     updates.autoAttackEnabled = true;
   }
-  if (upgrade.enableAutoStartFight) {
+  if (upgrade.effectType === "enable-auto-start-fight") {
     updates.autoStartFightEnabled = true;
   }
 
@@ -175,5 +174,55 @@ export const recordFight = mutation({
     }
 
     return { recorded: true };
+  },
+});
+
+/**
+ * Claim reward from hidden spot
+ */
+export const claimHiddenSpotReward = mutation({
+  args: {
+    playerId: v.id("players"),
+    upgradeId: v.string(),
+    spotId: v.string(),
+  },
+  handler: async (ctx, { playerId, upgradeId, spotId }) => {
+    const player = await ctx.db.get(playerId);
+    if (!player) throw new Error("Player not found");
+
+    const upgrade = await ctx.db
+      .query("upgrades")
+      .withIndex("by_upgradeId", (q) => q.eq("upgradeId", upgradeId))
+      .first();
+    if (!upgrade) throw new Error("Upgrade not found");
+
+    // Check if this spot was already claimed
+    const playerUpgrades = await ctx.db
+      .query("playerUpgrades")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .collect();
+
+    const claimed = playerUpgrades.find(
+      (u) => u.upgradeId === upgradeId && u.quantity && u.quantity > 0
+    );
+
+    if (claimed) {
+      throw new Error("Spot already claimed");
+    }
+
+    // Record the claim
+    await ctx.db.insert("playerUpgrades", {
+      playerId,
+      upgradeId,
+      quantity: 1,
+      purchasedAt: Date.now(),
+      // Mark this as a hidden spot claim (meta field for tracking)
+      // quantity: 1 indicates it's a hidden spot reward
+    });
+
+    // Apply the upgrade effect directly
+    await applyUpgradeEffect(ctx, playerId, upgradeId);
+
+    return { success: true, upgrade };
   },
 });
