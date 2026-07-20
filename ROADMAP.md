@@ -1,6 +1,7 @@
 # Click Hunter — Implementation Roadmap
 
 ## Phase 1 — Wire frontend to database ✅ / 🔄
+
 > Goal: Replace hardcoded config with live database reads so balance can be updated without redeploy.
 
 - [x] **Schema** — Add `monsters`, `upgrades`, `gameBalance`, `hiddenSpots` tables
@@ -17,6 +18,7 @@
 ---
 
 ## Phase 2 — Leaderboards
+
 > Goal: Show top players by experience, tier, and rebirth count. Uses `@convex-dev/aggregate`.
 
 - [ ] **leaderboards.ts** — Convex aggregate setup for `totalExperience`, `maxTierReached`, `rebirthCount`
@@ -27,6 +29,7 @@
 ---
 
 ## Phase 3 — Achievements
+
 > Goal: Reward milestone moments (first kill, high tier, rebirth, rare monster).
 
 - [ ] **Schema** — Add `achievements` table (definitions) + `playerAchievements` table (unlocked state)
@@ -37,6 +40,7 @@
 ---
 
 ## Phase 4 — Rebirth rewards
+
 > Goal: Make rebirth feel meaningful with visible, persistent bonuses.
 
 - [ ] **Schema** — Add `rebirthRewards` table (what each rebirth unlocks: multiplier, passive, unlock)
@@ -47,6 +51,7 @@
 ---
 
 ## Phase 5 — Live game management
+
 > Goal: Admin tools to adjust balance and run events without redeploying.
 
 - [ ] **gameBalance admin mutation** — Update any `gameBalance` key from dashboard (e.g. double XP)
@@ -57,6 +62,7 @@
 ---
 
 ## Migrations Completed
-| Date       | Migration | Description |
-|------------|-----------|-------------|
+
+| Date       | Migration                           | Description                                                       |
+| ---------- | ----------------------------------- | ----------------------------------------------------------------- |
 | 2026-07-19 | `migrations:backfillMaxTierReached` | Populate `maxTierReached` from `currentTier` for existing players |

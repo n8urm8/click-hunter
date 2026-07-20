@@ -23,7 +23,7 @@ export function GameLayout({ player }: GameLayoutProps) {
   return (
     <div className="min-h-screen forest-bg relative p-4">
       <Fireflies count={20} />
-      <ThemeToggle />
+      {/* <ThemeToggle /> */}
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-4 relative z-10">
         {/* Left column: combat area */}
         <div className="lg:col-span-2 space-y-4">
