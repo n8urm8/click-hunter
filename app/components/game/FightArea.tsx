@@ -4,7 +4,8 @@ import { useAtom } from "jotai";
 import { currentFightAtom, playerHpAtom, playerMaxHpAtom, inFightPhaseAtom, eventTrackerAtom, respawnTimerAtom } from "~/store/gameStore";
 import { calculateDerivedStats } from "~/lib/statCalculations";
 import { ActiveFight } from "./ActiveFight";
-import { useState } from "react";
+import { AutomationControls } from "./AutomationControls";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 
@@ -16,82 +17,145 @@ export function FightArea({ player }: FightAreaProps) {
   const [currentFight, setCurrentFight] = useAtom(currentFightAtom);
   const [, setPlayerHp] = useAtom(playerHpAtom);
   const [, setPlayerMaxHp] = useAtom(playerMaxHpAtom);
-  const [, setFightPhase] = useAtom(inFightPhaseAtom);
+  const [fightPhase, setFightPhase] = useAtom(inFightPhaseAtom);
   const [, setEventTracker] = useAtom(eventTrackerAtom);
-  const [respawnTimer] = useAtom(respawnTimerAtom);
+  const [respawnTimer, setRespawnTimer] = useAtom(respawnTimerAtom);
   const [selectedTier, setSelectedTier] = useState(player.currentTier);
   const [isStarting, setIsStarting] = useState(false);
 
   const monsters = useQuery(api.seed.getAllMonsters);
   const balanceRows = useQuery(api.seed.getAllGameBalance);
+  const selectedTierRef = useRef(selectedTier);
+  const currentFightRef = useRef(currentFight);
+  const respawnTimerRef = useRef(respawnTimer);
+  const isStartingRef = useRef(false);
+  const handleStartFightRef = useRef<(() => void) | null>(null);
+
+  selectedTierRef.current = selectedTier;
+  currentFightRef.current = currentFight;
+  respawnTimerRef.current = respawnTimer;
 
   // Build a lookup from balance key -> value
   const balance = Object.fromEntries(
     (balanceRows ?? []).map((b) => [b.key, b.value])
   );
   const maxTier = (balance.maxTier as number) ?? 20;
-  const tierMultiplier = (balance.tierScaleMultiplier as number) ?? 1.15;
+  const tierMultiplier = (balance.tierScaleMultiplier as number) ?? 2;
   const tierMsReduction = (balance.tierScaleMsReduction as number) ?? 50;
   const minAttackMs = (balance.minAttackMs as number) ?? 800;
 
-  const handleStartFight = async () => {
-    if (!monsters || monsters.length === 0) return;
-    setIsStarting(true);
-
-    // Weighted random selection — weaker monsters appear more often
-    const maxStrength = Math.max(...monsters.map((m) => m.strength));
-    const weights = monsters.map((m) => maxStrength - m.strength + 1);
-    const totalWeight = weights.reduce((a, b) => a + b, 0);
-    let rand = Math.random() * totalWeight;
-    let baseMonster = monsters[monsters.length - 1];
-    for (let i = 0; i < monsters.length; i++) {
-      rand -= weights[i];
-      if (rand <= 0) { baseMonster = monsters[i]; break; }
+  const handleStartFight = () => {
+    if (
+      !monsters ||
+      monsters.length === 0 ||
+      currentFightRef.current ||
+      isStartingRef.current ||
+      respawnTimerRef.current > 0
+    ) {
+      return;
     }
 
-    // Exponential tier scaling
-    const mult = Math.pow(tierMultiplier, selectedTier - 1);
-    const scaledMonster = {
-      ...baseMonster,
-      str: Math.round(baseMonster.str * mult),
-      dex: Math.round(baseMonster.dex * mult),
-      int: Math.round(baseMonster.int * mult),
-      luk: Math.round(baseMonster.luk * mult),
-      con: Math.round(baseMonster.con * mult),
-      baseMsPerAttack: Math.max(
-        minAttackMs,
-        baseMonster.baseMsPerAttack - (selectedTier - 1) * tierMsReduction
-      ),
-    };
+    const tier = selectedTierRef.current;
+    isStartingRef.current = true;
+    setIsStarting(true);
 
-    const monsterStats = calculateDerivedStats(
-      scaledMonster.str,
-      scaledMonster.dex,
-      scaledMonster.int,
-      scaledMonster.luk,
-      scaledMonster.con
-    );
+    try {
+      // Weighted random selection — weaker monsters appear more often
+      const maxStrength = Math.max(...monsters.map((m) => m.strength));
+      const weights = monsters.map((m) => maxStrength - m.strength + 1);
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      let rand = Math.random() * totalWeight;
+      let baseMonster = monsters[monsters.length - 1];
+      for (let i = 0; i < monsters.length; i++) {
+        rand -= weights[i];
+        if (rand <= 0) {
+          baseMonster = monsters[i];
+          break;
+        }
+      }
 
-    const fight = {
-      monsterTier: selectedTier,
-      monsterType: baseMonster.type,
-      monsterHp: monsterStats.health,
-      monsterMaxHp: monsterStats.health,
-      monsterAttackSpeed: monsterStats.attackSpeed,
-    };
+      // Exponential tier scaling
+      const mult = Math.pow(tierMultiplier, tier - 1);
+      const scaledMonster = {
+        ...baseMonster,
+        str: Math.round(baseMonster.str * mult),
+        dex: Math.round(baseMonster.dex * mult),
+        int: Math.round(baseMonster.int * mult),
+        luk: Math.round(baseMonster.luk * mult),
+        con: Math.round(baseMonster.con * mult),
+        baseMsPerAttack: Math.max(
+          minAttackMs,
+          baseMonster.baseMsPerAttack - (tier - 1) * tierMsReduction
+        ),
+      };
 
-    setCurrentFight(fight);
-    setPlayerHp(player.health);
-    setPlayerMaxHp(player.health);
-    setFightPhase("fighting");
-    setEventTracker({
-      type: "fighting",
-      monsterName: baseMonster.name,
-      tier: selectedTier,
-    });
+      const monsterStats = calculateDerivedStats(
+        scaledMonster.str,
+        scaledMonster.dex,
+        scaledMonster.int,
+        scaledMonster.luk,
+        scaledMonster.con
+      );
 
-    setIsStarting(false);
+      const fight = {
+        monsterTier: tier,
+        monsterType: baseMonster.type,
+        monsterHp: monsterStats.health,
+        monsterMaxHp: monsterStats.health,
+        monsterAttack: Math.max(1, Math.ceil(monsterStats.attack)),
+        monsterAttackSpeed: monsterStats.attackSpeed,
+      };
+
+      currentFightRef.current = fight;
+      setCurrentFight(fight);
+      setPlayerHp(player.health);
+      setPlayerMaxHp(player.health);
+      setFightPhase("fighting");
+      setEventTracker({
+        type: "fighting",
+        monsterName: baseMonster.name,
+        tier,
+      });
+    } finally {
+      isStartingRef.current = false;
+      setIsStarting(false);
+    }
   };
+  handleStartFightRef.current = handleStartFight;
+
+  useEffect(() => {
+    if (
+      !player.autoStartFightEnabled ||
+      !monsters ||
+      monsters.length === 0 ||
+      currentFight ||
+      isStarting ||
+      respawnTimer > 0 ||
+      (fightPhase !== "idle" && fightPhase !== "defeat")
+    ) {
+      return;
+    }
+
+    handleStartFightRef.current?.();
+  }, [
+    currentFight,
+    fightPhase,
+    isStarting,
+    monsters,
+    player.autoStartFightEnabled,
+    respawnTimer,
+  ]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setRespawnTimer((previous) => {
+        if (previous <= 0) return 0;
+        return Math.max(0, previous - 100);
+      });
+    }, 100);
+
+    return () => window.clearInterval(timer);
+  }, [setRespawnTimer]);
 
   if (currentFight) {
     return <ActiveFight player={player} />;
@@ -139,14 +203,17 @@ export function FightArea({ player }: FightAreaProps) {
                 </button>
               ))}
             </div>
+
           </>
         )}
+
+        <AutomationControls player={player} />
 
         <Button
           size="lg"
           onClick={handleStartFight}
           disabled={isStarting || isRespawning || !monsters || monsters.length === 0}
-          className="bg-forest-mid hover:bg-forest-light text-gold-light text-lg px-8 border border-gold/20 btn-enchanted disabled:bg-forest-dark/50 disabled:text-muted-foreground disabled:border-forest-light/10"
+          className="bg-forest-mid hover:bg-forest-light text-gold-light text-lg px-8 border border-gold/20 disabled:bg-forest-dark/50 disabled:text-muted-foreground disabled:border-forest-light/10"
         >
           {isRespawning ? `Recovering (${respawnSeconds}s)` : isStarting ? "Venturing forth..." : "⚔ Enter the Wilds"}
         </Button>

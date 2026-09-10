@@ -10,6 +10,7 @@ export interface CurrentFight {
   monsterType: string;
   monsterHp: number;
   monsterMaxHp: number;
+  monsterAttack: number;
   monsterAttackSpeed: number; // attacks per second
 }
 
@@ -57,7 +58,7 @@ export const discoveredSpotsAtom = atom<Set<string>>(
 );
 
 // Active right panel tab
-export const activePanelAtom = atom<"stats" | "shop" | "upgrades" | "rebirth" | "leaderboard">(
+export const activePanelAtom = atom<"stats" | "shop" | "upgrades" | "rebirth" | "leaderboard" | "admin">(
   "stats"
 );
 

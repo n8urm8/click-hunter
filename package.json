@@ -10,6 +10,7 @@
   "dependencies": {
     "@base-ui/react": "^1.6.0",
     "@convex-dev/aggregate": "^0.2.2",
+    "@convex-dev/rate-limiter": "^0.3.2",
     "@convex-dev/react-query": "^0.1.0",
     "@fontsource-variable/noto-sans": "^5.2.10",
     "@fontsource-variable/playfair-display": "^5.2.8",

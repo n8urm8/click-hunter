@@ -33,3 +33,67 @@ export const backfillMaxTierReached = internalMutation({
     return { updated, total: players.length };
   },
 });
+
+/**
+ * Migration: assign the temporary admin role used by the development panel.
+ *
+ * All current accounts are intentionally promoted while the game still uses
+ * anonymous IDs. Replace this with an authenticated role migration later.
+ *
+ * Run: npx convex run migrations:backfillAdminRoles
+ */
+export const backfillAdminRoles = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const players = await ctx.db.query("players").collect();
+    let updated = 0;
+
+    for (const player of players) {
+      if (player.role === "admin") continue;
+
+      await ctx.db.patch(player._id, { role: "admin", lastUpdated: Date.now() });
+      updated++;
+    }
+
+    return { updated, total: players.length };
+  },
+});
+
+/**
+ * Migration: initialize paid stat-upgrade purchase counts.
+ *
+ * Existing player-upgrade rows predate the distinction between total quantity
+ * and paid purchases, so their quantity is the safest available legacy count.
+ * New hidden-spot rewards write purchaseCount: 0 explicitly.
+ *
+ * Run: npx convex run migrations:backfillStatUpgradePurchaseCounts
+ */
+export const backfillStatUpgradePurchaseCounts = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const upgrades = await ctx.db.query("upgrades").collect();
+    const statUpgradeIds = new Set(
+      upgrades
+        .filter((upgrade) => upgrade.effectType === "stat-boost")
+        .map((upgrade) => upgrade.upgradeId)
+    );
+    const playerUpgrades = await ctx.db.query("playerUpgrades").collect();
+    let updated = 0;
+
+    for (const playerUpgrade of playerUpgrades) {
+      if (
+        !statUpgradeIds.has(playerUpgrade.upgradeId) ||
+        playerUpgrade.purchaseCount !== undefined
+      ) {
+        continue;
+      }
+
+      await ctx.db.patch(playerUpgrade._id, {
+        purchaseCount: playerUpgrade.quantity,
+      });
+      updated++;
+    }
+
+    return { updated, total: playerUpgrades.length };
+  },
+});

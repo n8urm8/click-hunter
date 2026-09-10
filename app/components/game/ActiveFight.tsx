@@ -5,6 +5,7 @@ import { currentFightAtom, clickAnimationsAtom, playerHpAtom } from "~/store/gam
 import { AttackButton } from "./AttackButton";
 import { DamageFloater } from "./DamageFloater";
 import { HiddenSpots } from "./HiddenSpots";
+import { AutomationControls } from "./AutomationControls";
 import { useCombat } from "~/hooks/useCombat";
 import { useRef } from "react";
 import { useQuery } from "convex/react";
@@ -22,7 +23,7 @@ export function ActiveFight({ player }: ActiveFightProps) {
   const monsters = useQuery(api.seed.getAllMonsters);
 
   // Enable combat loop
-  useCombat(player, player.autoAttackEnabled, player.autoStartFightEnabled);
+  useCombat(player);
 
   if (!currentFight) return null;
 
@@ -37,13 +38,6 @@ export function ActiveFight({ player }: ActiveFightProps) {
     <Card ref={containerRef} className="forest-card box-glow-red p-6 relative overflow-hidden min-h-[400px]">
       {/* Hidden spots for discovery */}
       <HiddenSpots containerRef={containerRef} player={player} />
-
-      {/* Damage floaters */}
-      <div className="absolute inset-0 pointer-events-none">
-        {floaters.map((floater) => (
-          <DamageFloater key={floater.id} floater={floater} />
-        ))}
-      </div>
 
       <div className="space-y-6">
         {/* Monster Info */}
@@ -62,7 +56,14 @@ export function ActiveFight({ player }: ActiveFightProps) {
                 {currentFight.monsterHp} / {currentFight.monsterMaxHp}
               </span>
             </div>
-            <Progress value={monsterHpPercent} className="h-3 hp-bar-monster" />
+            <div className="relative">
+              <Progress value={monsterHpPercent} className="h-3 hp-bar-monster" />
+              <div className="absolute inset-0 pointer-events-none">
+                {floaters.map((floater) => (
+                  <DamageFloater key={floater.id} floater={floater} />
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -79,6 +80,7 @@ export function ActiveFight({ player }: ActiveFightProps) {
 
         {/* Attack Button */}
         <AttackButton player={player} />
+        <AutomationControls player={player} />
       </div>
     </Card>
   );

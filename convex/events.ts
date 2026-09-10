@@ -1,11 +1,13 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { requireAdmin } from "./adminAuth";
 
 /**
  * Create or update a game event (admin)
  */
 export const createEvent = mutation({
   args: {
+    playerId: v.id("players"),
     eventId: v.string(),
     name: v.string(),
     description: v.string(),
@@ -15,23 +17,53 @@ export const createEvent = mutation({
     effectValue: v.number(),
   },
   async handler(ctx, args) {
+    await requireAdmin(ctx, args.playerId);
+    const { playerId: _playerId, ...eventArgs } = args;
+    const eventId = eventArgs.eventId.trim();
+    const name = eventArgs.name.trim();
+    const description = eventArgs.description.trim();
+    const effectType = eventArgs.effectType.trim();
+    if (!eventId || !name || !description || !effectType) {
+      throw new Error("Event ID, name, description, and effect type are required");
+    }
+    if (!Number.isFinite(eventArgs.effectValue) || eventArgs.effectValue <= 0) {
+      throw new Error("Event effect value must be a finite number greater than 0");
+    }
+    if (
+      !Number.isFinite(eventArgs.startTime) ||
+      !Number.isFinite(eventArgs.endTime) ||
+      eventArgs.startTime >= eventArgs.endTime
+    ) {
+      throw new Error("Event start time must be before its end time");
+    }
+
     const existing = await ctx.db
       .query("gameEvents")
       .withIndex("by_eventId")
-      .filter((q) => q.eq(q.field("eventId"), args.eventId))
+      .filter((q) => q.eq(q.field("eventId"), eventId))
       .first();
 
     if (existing) {
       await ctx.db.patch(existing._id, {
-        ...args,
-        isActive: args.startTime <= Date.now() && args.endTime > Date.now(),
+        ...eventArgs,
+        eventId,
+        name,
+        description,
+        effectType,
+        isActive:
+          eventArgs.startTime <= Date.now() && eventArgs.endTime > Date.now(),
       });
       return existing._id;
     }
 
     return await ctx.db.insert("gameEvents", {
-      ...args,
-      isActive: args.startTime <= Date.now() && args.endTime > Date.now(),
+      ...eventArgs,
+      eventId,
+      name,
+      description,
+      effectType,
+      isActive:
+        eventArgs.startTime <= Date.now() && eventArgs.endTime > Date.now(),
       createdAt: Date.now(),
     });
   },

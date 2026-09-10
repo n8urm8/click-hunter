@@ -54,10 +54,33 @@
 
 > Goal: Admin tools to adjust balance and run events without redeploying.
 
-- [ ] **gameBalance admin mutation** — Update any `gameBalance` key from dashboard (e.g. double XP)
-- [ ] **Schema** — Add `gameEvents` table (start/end timestamps, effect type, value)
-- [ ] **events.ts** — Query active events and apply multipliers to gold/XP
-- [ ] **EventBanner.tsx** — Show active event banner in game UI
+- [x] **Admin role** — Add a temporary server-side player role; new and migrated development accounts are admins
+- [x] **Admin API** — Protect immediate-save updates for balance, upgrades, monsters, hidden spots, achievements, rebirth rewards, and events
+- [x] **AdminPanel.tsx** — Add role-gated editors with server-validated forms and event creation
+- [x] **Schema** — Add `gameEvents` table (start/end timestamps, effect type, value)
+- [x] **events.ts / upgrades.ts** — Query active events, apply multipliers to fight rewards, and protect event writes
+- [x] **EventBanner.tsx** — Show active event banner in game UI
+
+> The current role is intentionally temporary because the app still uses anonymous IDs. Replace it with authenticated Convex identity-based authorization before production use.
+
+### Live chat
+
+- [x] Persistent World and Private chat card below the fight area
+- [x] Extensible channel-keyed message storage for future guild channels
+- [x] Server-side recipient validation and 280-character message validation
+- [x] Seeded example World messages with idempotent seed identifiers
+- [x] Bottom-aware scrolling that pauses while reading older messages
+- [x] Private chat list with unread indicators and sender-name private-message actions
+
+### Progressive stat-upgrade balance
+
+- [x] Repeatable stat upgrades use paid purchase levels with configurable
+  exponential pricing.
+- [x] Character-level requirements use an admin-editable Fibonacci sequence.
+- [x] Hidden-spot rewards persist and reapply their permanent stat bonuses
+  after rebirth without advancing paid shop purchase levels.
+- [x] Paid stat-upgrade levels reset on rebirth while automation purchases
+  remain permanent.
 
 ---
 
@@ -66,3 +89,5 @@
 | Date       | Migration                           | Description                                                       |
 | ---------- | ----------------------------------- | ----------------------------------------------------------------- |
 | 2026-07-19 | `migrations:backfillMaxTierReached` | Populate `maxTierReached` from `currentTier` for existing players |
+| 2026-09-08 | `migrations:backfillAdminRoles`     | Assign the temporary admin role to existing development players   |
+| 2026-09-09 | `migrations:backfillStatUpgradePurchaseCounts` | Initialize paid stat-upgrade purchase counts for legacy records |

@@ -11,3 +11,11 @@ Convex agent skills for common tasks can be installed by running
 `npx convex ai-files install`.
 
 <!-- convex-ai-end -->
+
+## Configurable gameplay values
+
+Any tunable gameplay value must be represented by a seeded/configured Convex
+balance entry or domain record, read by server-side gameplay logic, and exposed
+through the existing admin editor. Do not add new balance constants only in
+client code or a mutation; hardcoded values are allowed only as validated
+fallback defaults for missing or malformed configuration.

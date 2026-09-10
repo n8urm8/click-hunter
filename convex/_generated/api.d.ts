@@ -9,6 +9,10 @@
  */
 
 import type * as achievements from "../achievements.js";
+import type * as admin from "../admin.js";
+import type * as adminAuth from "../adminAuth.js";
+import type * as chat from "../chat.js";
+import type * as chatSeedData from "../chatSeedData.js";
 import type * as events from "../events.js";
 import type * as init from "../init.js";
 import type * as leaderboards from "../leaderboards.js";
@@ -25,6 +29,10 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   achievements: typeof achievements;
+  admin: typeof admin;
+  adminAuth: typeof adminAuth;
+  chat: typeof chat;
+  chatSeedData: typeof chatSeedData;
   events: typeof events;
   init: typeof init;
   leaderboards: typeof leaderboards;
@@ -62,4 +70,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   aggregate: import("@convex-dev/aggregate/_generated/component.js").ComponentApi<"aggregate">;
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
 };

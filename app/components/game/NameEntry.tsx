@@ -52,7 +52,7 @@ export function NameEntry({ onSubmit, isLoading }: NameEntryProps) {
             <Button
               type="submit"
               disabled={!name.trim() || isLoading}
-              className="w-full bg-forest-mid hover:bg-forest-light text-gold-light border border-gold/20 btn-enchanted"
+              className="w-full bg-forest-mid hover:bg-forest-light text-gold-light border border-gold/20"
             >
               {isLoading ? "Entering the forest..." : "⚔ Begin Your Quest"}
             </Button>

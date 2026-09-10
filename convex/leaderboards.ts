@@ -1,6 +1,5 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { Id } from "./_generated/dataModel";
 
 // Upsert player on leaderboards when stats change
 export const updateLeaderboards = mutation({

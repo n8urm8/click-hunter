@@ -326,37 +326,6 @@ body {
   z-index: 2;
 }
 
-/* Enchanted button glow */
-.btn-enchanted {
-  position: relative;
-  overflow: hidden;
-}
-
-.btn-enchanted::after {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -50%;
-  width: 200%;
-  height: 200%;
-  background: conic-gradient(
-    from 0deg,
-    transparent 0%,
-    rgba(212, 160, 23, 0.15) 10%,
-    transparent 20%,
-    rgba(61, 220, 132, 0.1) 30%,
-    transparent 40%
-  );
-  animation: enchanted-spin 6s linear infinite;
-  pointer-events: none;
-}
-
-@keyframes enchanted-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* Firefly animation keyframes */
 @keyframes firefly-float {
   0%, 100% {
@@ -401,6 +370,10 @@ body {
 }
 
 ::-webkit-scrollbar-track {
+  background: rgba(10, 40, 24, 0.3);
+}
+
+::-webkit-scrollbar-corner {
   background: rgba(10, 40, 24, 0.3);
 }
 

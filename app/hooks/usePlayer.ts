@@ -48,6 +48,13 @@ export function useCreatePlayer() {
 }
 
 /**
+ * Hook for enforcing the server-side attack cooldown.
+ */
+export function useAttemptAttack() {
+  return useConvexMutation(api.players.attemptAttack);
+}
+
+/**
  * Hook for updating gold
  */
 export function useUpdateGold() {
@@ -112,6 +119,16 @@ export function useSetAutoStartFight() {
 export function usePlayerUpgrades(playerId: any) {
   return useConvexQuery(
     api.upgrades.getPlayerUpgrades,
+    playerId ? { playerId } : "skip"
+  );
+}
+
+/**
+ * Hook for getting player-specific shop purchase details.
+ */
+export function useShopUpgrades(playerId: any) {
+  return useConvexQuery(
+    api.upgrades.getShopUpgrades,
     playerId ? { playerId } : "skip"
   );
 }

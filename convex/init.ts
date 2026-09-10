@@ -5,6 +5,7 @@
 
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
 
 async function seedMonsters(ctx: MutationCtx) {
   const existing = await ctx.db.query("monsters").first();
@@ -32,15 +33,15 @@ async function seedUpgrades(ctx: MutationCtx) {
 
   const upgrades: Array<{
     upgradeId: string; name: string; category: string; cost: number; description: string;
-    effectType: string; effectStat?: string; effectAmount?: number; minTier?: number;
+    effectType: string; effectStat?: string; effectAmount?: number; minTier?: number; minLevel?: number;
   }> = [
     { upgradeId: "str_boost_1",      name: "Strength Training I", category: "stat-boost", cost: 100, description: "+5 STR", effectType: "stat-boost", effectStat: "str", effectAmount: 5, minTier: 1 },
     { upgradeId: "dex_boost_1",      name: "Agility Training I",  category: "stat-boost", cost: 100, description: "+5 DEX", effectType: "stat-boost", effectStat: "dex", effectAmount: 5, minTier: 1 },
     { upgradeId: "int_boost_1",      name: "Magical Aptitude I",  category: "stat-boost", cost: 100, description: "+5 INT", effectType: "stat-boost", effectStat: "int", effectAmount: 5, minTier: 1 },
     { upgradeId: "luk_boost_1",      name: "Fortune's Favor I",   category: "stat-boost", cost: 100, description: "+5 LUK", effectType: "stat-boost", effectStat: "luk", effectAmount: 5, minTier: 1 },
     { upgradeId: "con_boost_1",      name: "Toughening I",        category: "stat-boost", cost: 100, description: "+5 CON", effectType: "stat-boost", effectStat: "con", effectAmount: 5, minTier: 1 },
-    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks",       effectType: "enable-auto-attack",      minTier: 2 },
-    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start next fight", effectType: "enable-auto-start-fight", minTier: 2 },
+    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks at your attack speed", effectType: "enable-auto-attack",      minTier: 2, minLevel: 10 },
+    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start the next fight",        effectType: "enable-auto-start-fight", minTier: 2, minLevel: 15 },
   ];
   for (const u of upgrades) {
     await ctx.db.insert("upgrades", { ...u, createdAt: Date.now() });
@@ -52,12 +53,14 @@ async function seedGameBalance(ctx: MutationCtx) {
   if (existing) return;
 
   const entries: Array<{ key: string; value: unknown; description: string }> = [
-    { key: "tierScaleMultiplier",  value: 1.15,                         description: "Exponential multiplier per tier level" },
+    { key: "tierScaleMultiplier",  value: 2,                            description: "Doubles monster stats per tier level" },
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
     { key: "maxTier",              value: 20,                           description: "Maximum tier available to fight" },
     { key: "rebirthThresholds",    value: [5, 10, 15, 21, 28, 36, 45], description: "Tier thresholds required for each rebirth" },
     { key: "startingStats",        value: { str: 5, dex: 5, int: 5, luk: 5, con: 5 }, description: "Starting stats for new players" },
+    { key: "statUpgradeCostMultiplier", value: 2, description: "Cost multiplier applied to each paid stat-upgrade level" },
+    { key: "statUpgradeLevelRequirements", value: [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377], description: "Character levels required for paid stat-upgrade levels" },
   ];
   for (const e of entries) {
     await ctx.db.insert("gameBalance", { ...e, lastUpdated: Date.now() });
@@ -111,6 +114,26 @@ async function seedRebirthRewards(ctx: MutationCtx) {
   }
 }
 
+async function seedChatMessages(ctx: MutationCtx) {
+  const now = Date.now();
+  for (const message of WORLD_CHAT_SEED_MESSAGES) {
+    const existing = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_seedId", (q) => q.eq("seedId", message.seedId))
+      .first();
+    if (existing) continue;
+
+    await ctx.db.insert("chatMessages", {
+      channelType: "world",
+      channelId: "world",
+      senderName: message.senderName,
+      content: message.content,
+      createdAt: now - message.minutesAgo * 60_000,
+      seedId: message.seedId,
+    });
+  }
+}
+
 export default internalMutation({
   args: {},
   handler: async (ctx) => {
@@ -120,5 +143,6 @@ export default internalMutation({
     await seedHiddenSpots(ctx);
     await seedAchievements(ctx);
     await seedRebirthRewards(ctx);
+    await seedChatMessages(ctx);
   },
 });

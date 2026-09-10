@@ -21,14 +21,14 @@ export function DamageFloater({ floater }: DamageFloaterProps) {
         top: `${floater.y}%`,
         transform: `translate(-50%, calc(-50% - ${yOffset}px))`,
         opacity,
-        color: floater.damage > 50 ? "#ffe066" : "#3ddc84", // gold glow for crits, forest green for normal
+        color: floater.damage > 50 ? "#ffe066" : "#ff6b6b", // gold glow for crits, blood red for normal
         textShadow: floater.damage > 50 
           ? "0 0 8px rgba(255, 224, 102, 0.8), 0 0 16px rgba(212, 160, 23, 0.5), 2px 2px 4px rgba(0,0,0,0.9)" 
-          : "0 0 6px rgba(61, 220, 132, 0.6), 2px 2px 4px rgba(0,0,0,0.9)",
+          : "0 0 6px rgba(255, 107, 107, 0.6), 2px 2px 4px rgba(0,0,0,0.9)",
         transition: "none",
       }}
     >
-      +{floater.damage}
+      -{floater.damage}
     </div>
   );
 }

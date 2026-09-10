@@ -49,7 +49,7 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
       {canRebirth ? (
         <Button
           onClick={handleRebirth}
-          className="w-full bg-mystic/30 hover:bg-mystic/50 text-mystic-glow border border-mystic/40 btn-enchanted"
+          className="w-full bg-mystic/30 hover:bg-mystic/50 text-mystic-glow border border-mystic/40"
         >
           ✨ REBIRTH (Beat Tier {player.rebirthTierThreshold}!)
         </Button>
@@ -61,8 +61,10 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
 
       <div className="forest-panel p-3 text-xs text-muted-foreground">
         <p className="mb-2">
-          Rebirth resets your character to Tier 1 but applies a permanent
-          multiplier to your base stats for the next run.
+          Rebirth resets your character to Tier 1, returns paid stat upgrades
+          to level 1, and applies a permanent multiplier to your base stats
+          for the next run. Hidden-spot bonuses and automation purchases remain
+          permanent.
         </p>
         <p>Next threshold: Tier {nextThreshold}</p>
       </div>

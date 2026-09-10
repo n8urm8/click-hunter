@@ -5,6 +5,8 @@ export default defineSchema({
   players: defineTable({
     anonymousId: v.string(),
     name: v.string(),
+    // Temporary role flag until authenticated Convex identities are wired in.
+    role: v.optional(v.union(v.literal("admin"), v.literal("player"))),
     // Base stats
     str: v.number(),
     dex: v.number(),
@@ -32,6 +34,8 @@ export default defineSchema({
     playerId: v.id("players"),
     upgradeId: v.string(),
     quantity: v.number(),
+    // Paid stat purchases only; hidden-spot rewards leave this at zero.
+    purchaseCount: v.optional(v.number()),
     purchasedAt: v.number(),
   }).index("by_playerId", ["playerId"]),
 
@@ -174,4 +178,32 @@ export default defineSchema({
     rebirthCount: v.number(),
     lastUpdated: v.number(),
   }).index("by_rebirthCount", ["rebirthCount"]),
+
+  // Extensible channel-based chat. World and private channels are supported
+  // now; future channels can use the same shape with their own membership
+  // checks in the chat functions.
+  chatMessages: defineTable({
+    channelType: v.string(),
+    channelId: v.string(),
+    senderId: v.optional(v.id("players")),
+    senderName: v.string(),
+    recipientId: v.optional(v.id("players")),
+    recipientName: v.optional(v.string()),
+    content: v.string(),
+    createdAt: v.number(),
+    seedId: v.optional(v.string()),
+  })
+    .index("by_channel_createdAt", ["channelType", "channelId", "createdAt"])
+    .index("by_senderId_createdAt", ["senderId", "createdAt"])
+    .index("by_recipientId_createdAt", ["recipientId", "createdAt"])
+    .index("by_seedId", ["seedId"]),
+
+  chatReadReceipts: defineTable({
+    playerId: v.id("players"),
+    channelId: v.string(),
+    lastReadAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_channelId", ["playerId", "channelId"]),
 });

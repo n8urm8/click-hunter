@@ -25,7 +25,14 @@ export function UpgradeList({ playerId }: UpgradeListProps) {
         >
           <div>
             <div className="font-semibold text-gold glow-gold">{upgrade.upgradeId}</div>
-            <div className="text-xs text-muted-foreground">Qty: {upgrade.quantity}</div>
+            <div className="text-xs text-muted-foreground">
+              Owned: {upgrade.quantity}
+            </div>
+            {upgrade.purchaseCount !== undefined && (
+              <div className="text-xs text-muted-foreground">
+                Paid purchases: {upgrade.purchaseCount}
+              </div>
+            )}
           </div>
         </div>
       ))}
