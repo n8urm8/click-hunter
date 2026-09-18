@@ -11,14 +11,23 @@
 import type * as achievements from "../achievements.js";
 import type * as admin from "../admin.js";
 import type * as adminAuth from "../adminAuth.js";
+import type * as bossData from "../bossData.js";
 import type * as chat from "../chat.js";
 import type * as chatSeedData from "../chatSeedData.js";
+import type * as combat from "../combat.js";
 import type * as events from "../events.js";
+import type * as forestCraftingSeed from "../forestCraftingSeed.js";
 import type * as init from "../init.js";
+import type * as itemTypes from "../itemTypes.js";
+import type * as items from "../items.js";
 import type * as leaderboards from "../leaderboards.js";
+import type * as loot from "../loot.js";
 import type * as migrations from "../migrations.js";
 import type * as players from "../players.js";
+import type * as recipeValidation from "../recipeValidation.js";
 import type * as seed from "../seed.js";
+import type * as skills from "../skills.js";
+import type * as tasks from "../tasks.js";
 import type * as upgrades from "../upgrades.js";
 
 import type {
@@ -31,14 +40,23 @@ declare const fullApi: ApiFromModules<{
   achievements: typeof achievements;
   admin: typeof admin;
   adminAuth: typeof adminAuth;
+  bossData: typeof bossData;
   chat: typeof chat;
   chatSeedData: typeof chatSeedData;
+  combat: typeof combat;
   events: typeof events;
+  forestCraftingSeed: typeof forestCraftingSeed;
   init: typeof init;
+  itemTypes: typeof itemTypes;
+  items: typeof items;
   leaderboards: typeof leaderboards;
+  loot: typeof loot;
   migrations: typeof migrations;
   players: typeof players;
+  recipeValidation: typeof recipeValidation;
   seed: typeof seed;
+  skills: typeof skills;
+  tasks: typeof tasks;
   upgrades: typeof upgrades;
 }>;
 

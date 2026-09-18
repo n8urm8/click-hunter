@@ -8,26 +8,39 @@ import { HiddenSpots } from "./HiddenSpots";
 import { AutomationControls } from "./AutomationControls";
 import { useCombat } from "~/hooks/useCombat";
 import { useRef } from "react";
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
+import { convexQueryCacheOptions } from "~/lib/queryCache";
 
 interface ActiveFightProps {
   player: any;
+  respawnTimeMs: number;
+  onStartNextFight: (fightWasBoss: boolean) => boolean;
 }
 
-export function ActiveFight({ player }: ActiveFightProps) {
+export function ActiveFight({
+  player,
+  respawnTimeMs,
+  onStartNextFight,
+}: ActiveFightProps) {
   const [currentFight] = useAtom(currentFightAtom);
   const [floaters] = useAtom(clickAnimationsAtom);
   const [playerHp] = useAtom(playerHpAtom);
   const containerRef = useRef<HTMLDivElement>(null);
-  const monsters = useQuery(api.seed.getAllMonsters);
+  const monstersQuery = useQuery({
+    ...convexQuery(api.seed.getAllMonsters, {}),
+    ...convexQueryCacheOptions,
+  });
+  const monsters = monstersQuery.data;
 
   // Enable combat loop
-  useCombat(player);
+  useCombat(player, respawnTimeMs);
 
   if (!currentFight) return null;
 
   const monsterName =
+    currentFight.monsterName ??
     monsters?.find((m) => m.type === currentFight.monsterType)?.name ??
     currentFight.monsterType;
   const monsterHpPercent =
@@ -43,7 +56,14 @@ export function ActiveFight({ player }: ActiveFightProps) {
         {/* Monster Info */}
         <div className="forest-panel p-4">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xl font-heading text-blood-light glow-red">{monsterName}</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-xl font-heading text-blood-light glow-red">{monsterName}</h3>
+              {currentFight.isBoss && (
+                <span className="rounded border border-gold/40 px-2 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wider text-gold">
+                  Boss
+                </span>
+              )}
+            </div>
             <span className="text-sm text-muted-foreground">
               Tier {currentFight.monsterTier}
             </span>
@@ -79,7 +99,10 @@ export function ActiveFight({ player }: ActiveFightProps) {
         </div>
 
         {/* Attack Button */}
-        <AttackButton player={player} />
+        <AttackButton
+          player={player}
+          onStartNextFight={onStartNextFight}
+        />
         <AutomationControls player={player} />
       </div>
     </Card>

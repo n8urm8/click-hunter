@@ -6,6 +6,12 @@
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
+import {
+  DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
+  ensureBossForTier,
+} from "./bossData";
+import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
+import { seedForestCraftingContent } from "./forestCraftingSeed";
 
 async function seedMonsters(ctx: MutationCtx) {
   const existing = await ctx.db.query("monsters").first();
@@ -48,6 +54,23 @@ async function seedUpgrades(ctx: MutationCtx) {
   }
 }
 
+async function seedItemRarities(ctx: MutationCtx) {
+  for (const rarity of DEFAULT_ITEM_RARITIES) {
+    const existing = await ctx.db
+      .query("itemRarities")
+      .withIndex("by_level", (q) => q.eq("level", rarity.level))
+      .first();
+    if (existing) continue;
+
+    const now = Date.now();
+    await ctx.db.insert("itemRarities", {
+      ...rarity,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+}
+
 async function seedGameBalance(ctx: MutationCtx) {
   const existing = await ctx.db.query("gameBalance").first();
   if (existing) return;
@@ -56,14 +79,103 @@ async function seedGameBalance(ctx: MutationCtx) {
     { key: "tierScaleMultiplier",  value: 2,                            description: "Doubles monster stats per tier level" },
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
+    { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
+    { key: "bossUnlockLevelPerTier", value: DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER, description: "Character levels required per boss tier (tier multiplied by this value)" },
     { key: "maxTier",              value: 20,                           description: "Maximum tier available to fight" },
     { key: "rebirthThresholds",    value: [5, 10, 15, 21, 28, 36, 45], description: "Tier thresholds required for each rebirth" },
     { key: "startingStats",        value: { str: 5, dex: 5, int: 5, luk: 5, con: 5 }, description: "Starting stats for new players" },
+    { key: "inventorySlotCapacity", value: 50,                     description: "Maximum number of unequipped inventory stacks or item instances" },
     { key: "statUpgradeCostMultiplier", value: 2, description: "Cost multiplier applied to each paid stat-upgrade level" },
     { key: "statUpgradeLevelRequirements", value: [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377], description: "Character levels required for paid stat-upgrade levels" },
   ];
   for (const e of entries) {
     await ctx.db.insert("gameBalance", { ...e, lastUpdated: Date.now() });
+  }
+}
+
+async function seedTaskDefinitions(ctx: MutationCtx) {
+  const existing = await ctx.db
+    .query("taskDefinitions")
+    .withIndex("by_taskId", (q) => q.eq("taskId", "auto_battle"))
+    .first();
+  if (existing) return;
+
+  const now = Date.now();
+  await ctx.db.insert("taskDefinitions", {
+    taskId: "auto_battle",
+    name: "Auto-battle",
+    category: "battle",
+    description:
+      "Fight regular monsters at a selected tier while the player remains online.",
+    canProgressOffline: false,
+    requiresOnline: true,
+    enabled: true,
+    prerequisites: { upgradeId: "auto_start_fight" },
+    rewards: { uses: "autoBattleRewards" },
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+async function seedTaskQueueConfig(ctx: MutationCtx) {
+  const entries = [
+    {
+      key: "taskQueueCapacity",
+      value: 5,
+      description: "Maximum number of active and queued tasks per player",
+    },
+    {
+      key: "offlineTaskWindowMs",
+      value: 4 * 60 * 60 * 1000,
+      description:
+        "Maximum offline progress window for offline-capable tasks (milliseconds)",
+    },
+    {
+      key: "taskHeartbeatGraceMs",
+      value: 15 * 1000,
+      description:
+        "Maximum heartbeat gap treated as online task time (milliseconds)",
+    },
+    {
+      key: "autoBattleBatchLimit",
+      value: 5,
+      description: "Maximum auto-battle fights resolved per online heartbeat",
+    },
+    {
+      key: "autoBattleCreditCapMs",
+      value: 5 * 60 * 1000,
+      description:
+        "Maximum online auto-battle time banked between heartbeats (milliseconds)",
+    },
+    {
+      key: "respawnTimeMs",
+      value: 5 * 1000,
+      description:
+        "Recovery time after a defeated battle before the next encounter (milliseconds)",
+    },
+    {
+      key: "autoBattleRewards",
+      value: {
+        goldPerTier: 100,
+        goldVariance: 50,
+        experiencePerTier: 50,
+        experienceVariance: 25,
+      },
+      description: "Server-side regular auto-battle reward formula",
+    },
+  ];
+
+  for (const entry of entries) {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", entry.key))
+      .first();
+    if (!existing) {
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+    }
   }
 }
 
@@ -139,7 +251,14 @@ export default internalMutation({
   handler: async (ctx) => {
     await seedMonsters(ctx);
     await seedUpgrades(ctx);
+    await seedItemRarities(ctx);
     await seedGameBalance(ctx);
+    await seedTaskQueueConfig(ctx);
+    await seedTaskDefinitions(ctx);
+    await ensureBossForTier(ctx, 1);
+    await ensureBossForTier(ctx, 2);
+    await ensureBossForTier(ctx, 3);
+    await seedForestCraftingContent(ctx);
     await seedHiddenSpots(ctx);
     await seedAchievements(ctx);
     await seedRebirthRewards(ctx);

@@ -1,12 +1,26 @@
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
 import { Card } from "../ui/card";
 import { Badge } from "../ui/badge";
+import { convexQueryCacheOptions } from "../../lib/queryCache";
 
 export function EventBanner() {
-  const multipliers = useQuery(api.events.getActiveMultipliers, {});
+  const multipliersQuery = useQuery({
+    ...convexQuery(api.events.getActiveMultipliers, {}),
+    ...convexQueryCacheOptions,
+  });
+  const multipliers = multipliersQuery.data;
 
-  if (!multipliers || multipliers.activeEvents.length === 0) {
+  if (multipliersQuery.isPending) {
+    return <div className="min-h-0" aria-hidden="true" />;
+  }
+
+  if (
+    (multipliersQuery.isError && !multipliersQuery.data) ||
+    !multipliers ||
+    multipliers.activeEvents.length === 0
+  ) {
     return null;
   }
 

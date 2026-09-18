@@ -2,8 +2,10 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { api, components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
-import type { MutationCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import { ensureBossForTier } from "./bossData";
+import { getEquippedStatBonuses } from "./items";
 
 // Default balance constants — must match gameBalance seeds in seed.ts
 const STARTING_STATS = { str: 5, dex: 5, int: 5, luk: 5, con: 5 };
@@ -12,6 +14,7 @@ const MIN_ATTACK_SPEED = 0.5;
 const rateLimiter = new RateLimiter(components.rateLimiter, {});
 
 type PlayerStat = "str" | "dex" | "int" | "luk" | "con";
+type DatabaseCtx = QueryCtx | MutationCtx;
 
 function getPlayerStat(value: string | undefined): PlayerStat | null {
   switch (value) {
@@ -63,6 +66,17 @@ async function getBalanceValue(ctx: MutationCtx, key: string) {
     .withIndex("by_key", (q) => q.eq("key", key))
     .first();
   return row?.value;
+}
+
+async function withEquipmentStats(
+  ctx: DatabaseCtx,
+  player: Doc<"players">
+) {
+  const bonuses = await getEquippedStatBonuses(ctx, player._id);
+  return {
+    ...player,
+    equipmentStatBonuses: bonuses,
+  };
 }
 
 async function resetPaidStatUpgrades(
@@ -184,10 +198,11 @@ export const getPlayerByAnonymousId = query({
     anonymousId: v.string(),
   },
   handler: async (ctx, { anonymousId }) => {
-    return await ctx.db
+    const player = await ctx.db
       .query("players")
       .withIndex("by_anonymousId", (q) => q.eq("anonymousId", anonymousId))
       .first();
+    return player ? await withEquipmentStats(ctx, player) : null;
   },
 });
 
@@ -199,7 +214,8 @@ export const getPlayerById = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    return await ctx.db.get(playerId);
+    const player = await ctx.db.get(playerId);
+    return player ? await withEquipmentStats(ctx, player) : null;
   },
 });
 
@@ -214,7 +230,11 @@ export const attemptAttack = mutation({
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
 
-    const attackSpeed = Math.max(MIN_ATTACK_SPEED, (player.dex - 10) * 0.1 + 1.0);
+    const bonuses = await getEquippedStatBonuses(ctx, playerId);
+    const attackSpeed = Math.max(
+      MIN_ATTACK_SPEED,
+      (player.dex + bonuses.dex - 10) * 0.1 + 1.0
+    );
     const cooldownMs = Math.ceil(1000 / attackSpeed);
     const status = await rateLimiter.limit(ctx, "manualAttack", {
       key: playerId,
@@ -335,6 +355,7 @@ export const advanceTierProgression = mutation({
       maxTierReached: newMaxTier,
       lastUpdated: Date.now(),
     });
+    await ensureBossForTier(ctx, newMaxTier);
 
     // Note: Leaderboards could be updated here, but keeping simple for now
 

@@ -71,6 +71,7 @@
 - [x] Seeded example World messages with idempotent seed identifiers
 - [x] Bottom-aware scrolling that pauses while reading older messages
 - [x] Private chat list with unread indicators and sender-name private-message actions
+- [ ] Group chats with shared channels, participant membership, and group-specific unread state
 
 ### Progressive stat-upgrade balance
 
@@ -84,6 +85,126 @@
 
 ---
 
+## Phase 6 — Task queue and offline tasking
+
+> Goal: Let players schedule bounded activities that resolve reliably while
+> they are online or away.
+
+- [x] **Schema** — Add configurable task definitions, player task queues,
+  task state/history, and idempotent completion records.
+- [x] **tasks.ts** — Validate task ownership, queue capacity, durations,
+  prerequisites, cancellation, and reward settlement on the server.
+- [x] **Scheduler** — Resolve due tasks and calculate bounded offline catch-up
+  from persisted timestamps rather than client-side timers.
+- [x] **TaskQueuePanel.tsx** — Show active, queued, completed, and claimable
+  tasks with clear progress and capacity states.
+- [x] **AdminPanel.tsx** — Add editors for task definitions, durations,
+  capacity, prerequisites, and rewards.
+- [x] **Auto-battle** — Queue regular battles by tier for a count, online
+  duration, or until stopped; boss fights never run through the queue.
+
+## Phase 7 — Monster drops and loot tables
+
+> Goal: Turn monster and boss victories into configurable item acquisition.
+
+- [ ] **Schema** — Add loot-table definitions, monster/boss drop rules,
+  weighted chances, quantity ranges, and drop-resolution history.
+- [ ] **Combat reward path** — Roll drops server-side on victory, apply
+  configured guarantees and rarity rules, and deliver rewards through the
+  inventory system without bypassing capacity or ownership checks.
+- [ ] **InventoryPanel.tsx** — Show newly acquired materials and equipment,
+  including full-inventory handling and a useful reward summary.
+- [ ] **Admin API / AdminPanel.tsx** — Manage drop tables, weights, quantities,
+  and per-monster or per-boss overrides.
+
+## Phase 8 — Equipment progression
+
+> Goal: Build combat progression on the existing item and equipment-slot
+> scaffold.
+
+- [ ] **Schema** — Extend equipment definitions with configurable stats,
+  effects, rarity/quality, level requirements, and unique/equip restrictions.
+- [ ] **items.ts** — Validate equipment effects and calculate a player's
+  active loadout without trusting client-provided stats.
+- [ ] **Combat integration** — Apply equipped modifiers consistently to attack,
+  defense, rewards, and any future PvP combat snapshots.
+- [ ] **InventoryPanel.tsx** — Show equipment stats, compare candidates, and
+  surface invalid or restricted loadouts.
+- [ ] **AdminPanel.tsx** — Add editors for equipment stats, effects, rarity,
+  and slot rules.
+
+## Phase 9 — Crafting
+
+> Goal: Convert monster materials into useful equipment and consumables.
+
+- [ ] **Schema** — Add recipe definitions, ingredient requirements, outputs,
+  unlock prerequisites, and crafting history.
+- [ ] **crafting.ts** — Validate recipes, consume materials atomically,
+  produce outputs through inventory rules, and support timed crafting through
+  the task queue where appropriate.
+- [ ] **InventoryPanel.tsx** — Add recipe browsing, ingredient availability,
+  craft actions, progress, and failure/full-inventory states.
+- [ ] **AdminPanel.tsx** — Add editors for recipes, costs, outputs, unlocks,
+  and crafting durations.
+
+## Phase 10 — Alliances and group battles
+
+> Goal: Add persistent player groups and asynchronous cooperative combat.
+
+- [ ] **Schema** — Add alliances, membership roles, invitations, shared
+  channels, battle rosters, participation records, and battle results.
+- [ ] **alliances.ts** — Enforce membership and role permissions for creating,
+  joining, leaving, inviting, removing, and managing an alliance.
+- [ ] **Group battles** — Build server-resolved encounters with persisted
+  participant snapshots, contribution tracking, rewards, history, and
+  idempotent result settlement.
+- [ ] **AlliancePanel.tsx / GroupBattlePanel.tsx** — Add membership,
+  roster, battle-status, result, and shared-channel views.
+- [ ] **AdminPanel.tsx** — Add controls for alliance limits, battle windows,
+  participation rules, and rewards.
+
+## Phase 11 — PvP arena
+
+> Goal: Provide fair, asynchronous player-versus-player competition.
+
+- [ ] **Schema** — Add arena ratings, seasons, matchmaking records, combat
+  snapshots, match results, and reward claims.
+- [ ] **arena.ts** — Implement server-authoritative matchmaking, rating
+  updates, season boundaries, result settlement, and anti-tamper validation.
+- [ ] **ArenaPanel.tsx** — Show queue state, opponent/match status, history,
+  ratings, standings, and earned rewards.
+- [ ] **Leaderboards / AdminPanel.tsx** — Add seasonal rankings plus controls
+  for matchmaking windows, rating rules, and reward tables.
+
+## Phase 12 — Alliance wars
+
+> Goal: Let alliances compete in scheduled, objective-based campaigns.
+
+- [ ] **Schema** — Add war declarations, schedules, locked rosters,
+  objectives, score events, standings, results, and reward claims.
+- [ ] **allianceWars.ts** — Validate declarations and rosters, resolve
+  asynchronous objectives and scores, close wars deterministically, and
+  settle rewards exactly once.
+- [ ] **AllianceWarsPanel.tsx** — Show upcoming wars, objectives, live
+  standings, battle history, and post-war rewards.
+- [ ] **AdminPanel.tsx** — Add controls for war cadence, objectives, scoring,
+  eligibility, and rewards.
+
+### New-system architecture constraints
+
+- All tunable gameplay values must be seeded or configured Convex balance or
+  domain records and exposed through the existing admin editor; do not add
+  client-only gameplay constants.
+- Task completion, loot rolls, equipment effects, crafting outputs, and
+  multiplayer results must be server-authoritative and safe to retry.
+- Alliances, group battles, arena matches, and wars are planned as
+  asynchronous/server-resolved systems rather than real-time combat.
+- Replace anonymous-ID authorization with authenticated Convex identity checks
+  before production use of alliance membership, shared rewards, or PvP
+  ownership.
+
+---
+
 ## Migrations Completed
 
 | Date       | Migration                           | Description                                                       |
@@ -91,3 +212,4 @@
 | 2026-07-19 | `migrations:backfillMaxTierReached` | Populate `maxTierReached` from `currentTier` for existing players |
 | 2026-09-08 | `migrations:backfillAdminRoles`     | Assign the temporary admin role to existing development players   |
 | 2026-09-09 | `migrations:backfillStatUpgradePurchaseCounts` | Initialize paid stat-upgrade purchase counts for legacy records |
+| 2026-09-11 | `migrations:backfillTaskQueueConfig`, `migrations:backfillTaskDefinitions` | Seed task queue balances and the built-in auto-battle definition |

@@ -37,7 +37,6 @@ export const STORAGE_KEYS = {
   PLAYER_NAME: "clickHunter_playerName",
   DISCOVERED_SPOTS: "clickHunter_discoveredSpots",
   SETTINGS: "clickHunter_settings",
-  THEME: "clickHunter_theme",
 } as const;
 
 // Game Balance

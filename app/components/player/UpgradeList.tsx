@@ -1,14 +1,33 @@
 import { Card } from "~/components/ui/card";
 import { usePlayerUpgrades } from "~/hooks/usePlayer";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 interface UpgradeListProps {
-  playerId: string;
+  playerId: Id<"players">;
 }
 
 export function UpgradeList({ playerId }: UpgradeListProps) {
   const upgrades = usePlayerUpgrades(playerId);
 
-  if (!upgrades || upgrades.length === 0) {
+  if (upgrades.isPending) {
+    return (
+      <Card className="forest-card p-4">
+        <p className="text-muted-foreground text-sm">Loading upgrades...</p>
+      </Card>
+    );
+  }
+
+  if (upgrades.isError) {
+    return (
+      <Card className="forest-card p-4">
+        <p className="text-sm text-blood-light" role="alert">
+          Unable to load upgrades.
+        </p>
+      </Card>
+    );
+  }
+
+  if (!upgrades.data || upgrades.data.length === 0) {
     return (
       <Card className="forest-card p-4">
         <p className="text-muted-foreground text-sm">No upgrades discovered yet.</p>
@@ -18,7 +37,7 @@ export function UpgradeList({ playerId }: UpgradeListProps) {
 
   return (
     <Card className="forest-card p-4 space-y-2">
-      {upgrades.map((upgrade) => (
+      {upgrades.data.map((upgrade) => (
         <div
           key={upgrade._id}
           className="forest-panel p-3 text-sm flex items-center justify-between"

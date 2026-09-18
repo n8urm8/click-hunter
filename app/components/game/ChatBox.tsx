@@ -14,6 +14,12 @@ import {
   useSendChatMessage,
 } from "~/hooks/useChat";
 import type { ChatChannelType } from "~/hooks/useChat";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "~/components/ui/tabs";
 import type { Id } from "../../../convex/_generated/dataModel";
 
 const BOTTOM_THRESHOLD_PX = 12;
@@ -212,46 +218,36 @@ export function ChatBox({ player }: ChatBoxProps) {
   const canSend =
     hasRecipient && draft.trim().length > 0 && draft.length <= MAX_CHAT_MESSAGE_LENGTH;
   const hasUnreadPrivateMessages =
-    privateChats?.some((chat) => chat.hasUnread) ?? false;
+    privateChats.data?.some((chat) => chat.hasUnread) ?? false;
 
   return (
     <section className="forest-card box-glow-green rounded-none p-0" aria-label="Chat">
-      <div
-        className="mb-0 inline-flex items-center gap-0 rounded-none border border-forest-light/30 bg-forest-dark/60 p-0"
-        role="tablist"
-        aria-label="Chat channel"
+      <Tabs
+        value={activeChannel}
+        onValueChange={(value) => {
+          if (value === "world" || value === "private") {
+            handleChannelChange(value);
+          }
+        }}
+        className="gap-0"
       >
-        {(["world", "private"] as const).map((channel) => (
-          <button
-            key={channel}
-            type="button"
-            role="tab"
-            aria-selected={activeChannel === channel}
-            onClick={() => handleChannelChange(channel)}
-            className={`rounded-none px-2.5 py-1 text-[10px] font-semibold tracking-widest uppercase transition-colors ${
-              activeChannel === channel
-                ? "bg-forest-mid text-gold-light"
-                : "text-muted-foreground hover:bg-forest-mid/50 hover:text-foreground"
-            }`}
-          >
-            {channel === "world" ? (
-              "World"
-            ) : (
-              <span className="inline-flex items-center">
-                Private
-                {hasUnreadPrivateMessages && (
-                  <span
-                    aria-label="Unread private messages"
-                    className="ml-1.5 size-1.5 rounded-full bg-gold"
-                  />
-                )}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+        <TabsList variant="forest" aria-label="Chat channel">
+          <TabsTrigger value="world">World</TabsTrigger>
+          <TabsTrigger value="private">
+            <span className="inline-flex items-center">
+              Private
+              {hasUnreadPrivateMessages && (
+                <span
+                  aria-label="Unread private messages"
+                  className="ml-1.5 size-1.5 rounded-full bg-gold"
+                />
+              )}
+            </span>
+          </TabsTrigger>
+        </TabsList>
 
-      <div className="relative">
+        <TabsContent value={activeChannel} className="p-0">
+          <div className="relative">
         <div
           ref={messageListRef}
           onScroll={handleMessageListScroll}
@@ -273,17 +269,21 @@ export function ChatBox({ player }: ChatBoxProps) {
           )}
 
           {activeChannel === "private" && !recipient ? (
-            privateChats === undefined ? (
+            privateChats.isPending ? (
               <p className="py-5 text-center text-sm text-muted-foreground">
                 Gathering your private chats...
               </p>
-            ) : privateChats.length === 0 ? (
+            ) : privateChats.isError && !privateChats.data ? (
+              <p className="py-5 text-center text-sm text-blood-light" role="alert">
+                Unable to load private chats.
+              </p>
+            ) : privateChats.data?.length === 0 ? (
               <p className="py-5 text-center text-sm text-muted-foreground">
                 No private chats yet. Click a player name to start one.
               </p>
             ) : (
               <div>
-                {privateChats.map((chat) => (
+                {privateChats.data?.map((chat) => (
                   <button
                     key={chat.playerId}
                     type="button"
@@ -314,17 +314,21 @@ export function ChatBox({ player }: ChatBoxProps) {
                 ))}
               </div>
             )
-          ) : messages === undefined ? (
+          ) : messages.isPending ? (
             <p className="py-5 text-center text-sm text-muted-foreground">
               Gathering the latest messages...
             </p>
-          ) : messages.length === 0 ? (
+          ) : messages.isError && !messages.data ? (
+            <p className="py-5 text-center text-sm text-blood-light" role="alert">
+              Unable to load messages.
+            </p>
+          ) : messages.data?.length === 0 ? (
             <p className="py-5 text-center text-sm text-muted-foreground">
               No messages yet. Start the conversation.
             </p>
           ) : (
             <div className="space-y-0">
-              {messages.map((message) => {
+              {messages.data?.map((message) => {
                 const isOwnMessage = message.senderId === player._id;
                 const canStartPrivateChat =
                   message.senderId !== undefined && !isOwnMessage;
@@ -444,38 +448,42 @@ export function ChatBox({ player }: ChatBoxProps) {
         <label htmlFor="chat-message" className="sr-only">
           Message
         </label>
-        <textarea
-          id="chat-message"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={handleComposerKeyDown}
-          maxLength={MAX_CHAT_MESSAGE_LENGTH}
-          rows={1}
-          disabled={!hasRecipient || isSending}
-          placeholder={
-            hasRecipient ? "Write a message..." : "Choose a recipient first..."
-          }
-          className="min-h-9 w-full resize-none rounded-none border border-forest-light/40 bg-forest-dark/70 px-2 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/70 focus:border-gold/60 focus:ring-1 focus:ring-gold/40 disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        <div className="flex items-center justify-between gap-0">
-          <div className="text-xs text-blood-light">
-            {sendError}
-          </div>
-          <div className="flex items-center gap-0">
-            <span className="text-xs text-muted-foreground">
-              {draft.length}/{MAX_CHAT_MESSAGE_LENGTH}
-            </span>
-            <Button
-              type="submit"
-              size="xs"
-              disabled={!canSend || isSending}
-              className="rounded-none border border-gold/30 bg-forest-mid text-gold-light hover:bg-forest-light"
-            >
-              {isSending ? "Sending..." : "Send"}
-            </Button>
+        <div className="relative min-h-16 border border-forest-light/40 bg-forest-dark/70 focus-within:border-gold/60 focus-within:ring-1 focus-within:ring-gold/40">
+          <textarea
+            id="chat-message"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleComposerKeyDown}
+            maxLength={MAX_CHAT_MESSAGE_LENGTH}
+            rows={1}
+            disabled={!hasRecipient || isSending}
+            placeholder={
+              hasRecipient ? "Write a message..." : "Choose a recipient first..."
+            }
+            className="min-h-16 w-full resize-none rounded-none border-0 bg-transparent px-2 py-1.5 pb-8 pr-32 text-sm text-foreground outline-none placeholder:text-muted-foreground/70 focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+          <div className="absolute inset-x-0 bottom-0 flex min-h-7 items-center justify-between gap-2 px-1 pb-1">
+            <div className="min-w-0 truncate text-xs text-blood-light">
+              {sendError}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-xs text-muted-foreground">
+                {draft.length}/{MAX_CHAT_MESSAGE_LENGTH}
+              </span>
+              <Button
+                type="submit"
+                size="xs"
+                disabled={!canSend || isSending}
+                className="rounded-none border border-gold/30 bg-forest-mid text-gold-light hover:bg-forest-light"
+              >
+                {isSending ? "Sending..." : "Send"}
+              </Button>
+            </div>
           </div>
         </div>
       </form>
+        </TabsContent>
+      </Tabs>
     </section>
   );
 }

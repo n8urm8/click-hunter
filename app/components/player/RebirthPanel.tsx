@@ -1,24 +1,57 @@
 import { Card } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { useCanRebirth, useRebirth } from "~/hooks/usePlayer";
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
+import { convexQueryCacheOptions } from "../../lib/queryCache";
 
 interface RebirthPanelProps {
   player: any;
 }
 
 export function RebirthPanel({ player }: RebirthPanelProps) {
-  const canRebirth = useCanRebirth(player._id);
+  const canRebirthQuery = useCanRebirth(player._id);
   const rebirthMutation = useRebirth();
-  const thresholdsRow = useQuery(api.seed.getGameBalance, { key: "rebirthThresholds" });
-  const rebirthThresholds: number[] = (thresholdsRow?.value as number[]) ?? [5, 10, 15, 21, 28, 36, 45];
+  const thresholdsQuery = useQuery({
+    ...convexQuery(api.seed.getGameBalance, { key: "rebirthThresholds" }),
+    ...convexQueryCacheOptions,
+  });
+  const rebirthThresholds =
+    thresholdsQuery.data?.value &&
+    Array.isArray(thresholdsQuery.data.value) &&
+    thresholdsQuery.data.value.every((value): value is number => typeof value === "number")
+      ? thresholdsQuery.data.value
+      : null;
+  const canRebirth = canRebirthQuery.data === true;
 
   const handleRebirth = async () => {
-    if (canRebirth) {
+    if (canRebirthQuery.data === true) {
       await rebirthMutation({ playerId: player._id });
     }
   };
+
+  if (canRebirthQuery.isPending || thresholdsQuery.isPending) {
+    return (
+      <Card className="forest-card box-glow-purple min-h-[260px] p-4">
+        <p className="text-sm text-muted-foreground">Loading rebirth...</p>
+      </Card>
+    );
+  }
+
+  if (
+    (canRebirthQuery.isError && !canRebirthQuery.data) ||
+    (thresholdsQuery.isError && !thresholdsQuery.data) ||
+    !rebirthThresholds
+  ) {
+    return (
+      <Card className="forest-card box-glow-purple min-h-[260px] p-4">
+        <p className="text-sm text-blood-light" role="alert">
+          Unable to load rebirth data.
+        </p>
+      </Card>
+    );
+  }
 
   const nextThresholdIndex = Math.min(
     player.rebirthCount + 1,

@@ -11,6 +11,22 @@ import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { requireAdmin } from "./adminAuth";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
+import {
+  calculatePlayerLevel,
+  DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
+  ensureBossForTier,
+  getBossUnlockLevelPerTier,
+  getTierScale,
+  getTierScaleMultiplier,
+  scaleBossStat,
+} from "./bossData";
+import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
+import { seedForestCraftingContent } from "./forestCraftingSeed";
+import { validateAllRecipeChains } from "./recipeValidation";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 // ─── Seed helpers ─────────────────────────────────────────────────────────────
 
@@ -59,22 +75,81 @@ async function populateUpgrades(ctx: MutationCtx) {
   }
 }
 
+async function populateItemRarities(ctx: MutationCtx) {
+  for (const rarity of DEFAULT_ITEM_RARITIES) {
+    const existing = await ctx.db
+      .query("itemRarities")
+      .withIndex("by_level", (q) => q.eq("level", rarity.level))
+      .first();
+    if (existing) continue;
+
+    const now = Date.now();
+    await ctx.db.insert("itemRarities", {
+      ...rarity,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+}
+
 async function populateGameBalance(ctx: MutationCtx) {
   const entries: Array<{ key: string; value: unknown; description: string }> = [
     { key: "tierScaleMultiplier",  value: 2,                            description: "Doubles monster stats per tier level" },
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
+    { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
+    { key: "bossUnlockLevelPerTier", value: DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER, description: "Character levels required per boss tier (tier multiplied by this value)" },
     { key: "maxTier",              value: 20,                           description: "Maximum tier available to fight" },
     { key: "rebirthThresholds",    value: [5, 10, 15, 21, 28, 36, 45], description: "Tier thresholds required for each rebirth" },
     { key: "startingStats",        value: { str: 5, dex: 5, int: 5, luk: 5, con: 5 }, description: "Starting stats for new players" },
+    { key: "inventorySlotCapacity", value: 50,                     description: "Maximum number of unequipped inventory stacks or item instances" },
     { key: "statUpgradeCostMultiplier", value: 2, description: "Cost multiplier applied to each paid stat-upgrade level" },
     { key: "statUpgradeLevelRequirements", value: [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377], description: "Character levels required for paid stat-upgrade levels" },
+    { key: "taskQueueCapacity", value: 5, description: "Maximum number of active and queued tasks per player" },
+    { key: "offlineTaskWindowMs", value: 4 * 60 * 60 * 1000, description: "Maximum offline progress window for offline-capable tasks (milliseconds)" },
+    { key: "taskHeartbeatGraceMs", value: 15 * 1000, description: "Maximum heartbeat gap treated as online task time (milliseconds)" },
+    { key: "autoBattleBatchLimit", value: 5, description: "Maximum auto-battle fights resolved per online heartbeat" },
+    { key: "autoBattleCreditCapMs", value: 5 * 60 * 1000, description: "Maximum online auto-battle time banked between heartbeats (milliseconds)" },
+    { key: "respawnTimeMs", value: 5 * 1000, description: "Recovery time after a defeated battle before the next encounter (milliseconds)" },
+    { key: "autoBattleRewards", value: { goldPerTier: 100, goldVariance: 50, experiencePerTier: 50, experienceVariance: 25 }, description: "Server-side regular auto-battle reward formula" },
   ];
   for (const entry of entries) {
     const existing = await ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", entry.key)).first();
     if (!existing) {
       await ctx.db.insert("gameBalance", { ...entry, lastUpdated: Date.now() });
     }
+  }
+}
+
+async function populateTaskDefinitions(ctx: MutationCtx) {
+  const now = Date.now();
+  const definitions = [
+    {
+      taskId: "auto_battle",
+      name: "Auto-battle",
+      category: "battle",
+      description:
+        "Fight regular monsters at a selected tier while the player remains online.",
+      canProgressOffline: false,
+      requiresOnline: true,
+      enabled: true,
+      prerequisites: { upgradeId: "auto_start_fight" },
+      rewards: { uses: "autoBattleRewards" },
+    },
+  ];
+
+  for (const definition of definitions) {
+    const existing = await ctx.db
+      .query("taskDefinitions")
+      .withIndex("by_taskId", (q) => q.eq("taskId", definition.taskId))
+      .first();
+    if (existing) continue;
+
+    await ctx.db.insert("taskDefinitions", {
+      ...definition,
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 }
 
@@ -144,6 +219,47 @@ export const getGameBalance = query({
       .query("gameBalance")
       .withIndex("by_key", (q) => q.eq("key", args.key))
       .first();
+  },
+});
+
+export const getScaledBoss = query({
+  args: {
+    tier: v.number(),
+    playerId: v.id("players"),
+  },
+  handler: async (ctx, args) => {
+    if (!Number.isSafeInteger(args.tier) || args.tier < 1) {
+      throw new Error("Boss tier must be a positive integer");
+    }
+
+    const player = await ctx.db.get(args.playerId);
+    if (!player) {
+      throw new Error("Player not found");
+    }
+
+    const unlockLevel = args.tier * (await getBossUnlockLevelPerTier(ctx));
+    if (calculatePlayerLevel(player) < unlockLevel) {
+      return null;
+    }
+
+    const boss = await ctx.db
+      .query("bosses")
+      .withIndex("by_tier", (q) => q.eq("tier", args.tier))
+      .first();
+    if (!boss) return null;
+
+    const mult = boss.statsTierScaled
+      ? 1
+      : getTierScale(args.tier, await getTierScaleMultiplier(ctx));
+
+    return {
+      ...boss,
+      str: scaleBossStat(boss.str, mult),
+      dex: scaleBossStat(boss.dex, mult),
+      int: scaleBossStat(boss.int, mult),
+      luk: scaleBossStat(boss.luk, mult),
+      con: scaleBossStat(boss.con, mult),
+    };
   },
 });
 
@@ -314,13 +430,157 @@ export const populateAll = mutation({
     const startTime = Date.now();
     await populateMonsters(ctx);
     await populateUpgrades(ctx);
+    await populateItemRarities(ctx);
     await populateGameBalance(ctx);
+    await populateTaskDefinitions(ctx);
+    await ensureBossForTier(ctx, 1);
+    await ensureBossForTier(ctx, 2);
+    await ensureBossForTier(ctx, 3);
+    await seedForestCraftingContent(ctx);
+    await validateAllRecipeChains(ctx);
     await populateHiddenSpots(ctx);
     await populateAchievements(ctx);
     await populateRebirthRewards(ctx);
     await populateChatMessages(ctx);
     const duration = Date.now() - startTime;
     return { success: true, message: `Seeded all tables in ${duration}ms` };
+  },
+});
+
+/**
+ * Development-only reset for the forest crafting expansion. Combat progression,
+ * character stats, gold, and fight history intentionally remain untouched.
+ */
+export const resetForestCrafting = mutation({
+  args: {
+    playerId: v.id("players"),
+  },
+  handler: async (ctx, { playerId }) => {
+    await requireAdmin(ctx, playerId);
+
+    const craftingSkillIds = new Set([
+      "harvesting",
+      "woodcutting",
+      "mining",
+      "alchemy",
+      "woodworking",
+      "forging",
+    ]);
+    const skillActionTaskIds = new Set<string>();
+
+    for (const task of await ctx.db.query("playerTasks").collect()) {
+      if (
+        isRecord(task.payload) &&
+        (task.payload.actionType === "gathering" ||
+          task.payload.actionType === "crafting")
+      ) {
+        skillActionTaskIds.add(String(task._id));
+        await ctx.db.delete(task._id);
+      }
+    }
+
+    for (const history of await ctx.db.query("skillActionHistory").collect()) {
+      if (
+        history.actionType === "gathering" ||
+        history.actionType === "crafting" ||
+        history.actionType === "augmentation"
+      ) {
+        if (history.taskId) skillActionTaskIds.add(String(history.taskId));
+        await ctx.db.delete(history._id);
+      }
+    }
+
+    for (const history of await ctx.db.query("taskHistory").collect()) {
+      if (skillActionTaskIds.has(String(history.taskId))) {
+        await ctx.db.delete(history._id);
+      }
+    }
+    for (const battleStat of await ctx.db.query("taskBattleStats").collect()) {
+      if (skillActionTaskIds.has(String(battleStat.taskId))) {
+        await ctx.db.delete(battleStat._id);
+      }
+    }
+
+    for (const playerItemAugment of await ctx.db
+      .query("playerItemAugments")
+      .collect()) {
+      await ctx.db.delete(playerItemAugment._id);
+    }
+    for (const playerItem of await ctx.db.query("playerItems").collect()) {
+      await ctx.db.delete(playerItem._id);
+    }
+
+    for (const playerSkill of await ctx.db.query("playerSkills").collect()) {
+      if (craftingSkillIds.has(playerSkill.skillId)) {
+        await ctx.db.delete(playerSkill._id);
+      }
+    }
+
+    const recipes = await ctx.db.query("recipes").collect();
+    const recipeIds = new Set(recipes.map((recipe) => recipe.recipeId));
+    for (const row of await ctx.db.query("recipeIngredients").collect()) {
+      if (recipeIds.has(row.recipeId)) await ctx.db.delete(row._id);
+    }
+    for (const row of await ctx.db.query("recipeOutputs").collect()) {
+      if (recipeIds.has(row.recipeId)) await ctx.db.delete(row._id);
+    }
+    for (const recipe of recipes) await ctx.db.delete(recipe._id);
+    for (const activity of await ctx.db.query("gatheringActivities").collect()) {
+      if (craftingSkillIds.has(activity.skillId)) await ctx.db.delete(activity._id);
+    }
+    for (const tier of await ctx.db.query("skillTierDefinitions").collect()) {
+      if (craftingSkillIds.has(tier.skillId)) await ctx.db.delete(tier._id);
+    }
+    for (const skill of await ctx.db.query("skillDefinitions").collect()) {
+      if (craftingSkillIds.has(skill.skillId)) await ctx.db.delete(skill._id);
+    }
+    for (const augmentation of await ctx.db
+      .query("augmentationDefinitions")
+      .collect()) {
+      await ctx.db.delete(augmentation._id);
+    }
+
+    for (const lootEntry of await ctx.db.query("lootTableEntries").collect()) {
+      await ctx.db.delete(lootEntry._id);
+    }
+    for (const lootSource of await ctx.db.query("lootSources").collect()) {
+      await ctx.db.delete(lootSource._id);
+    }
+    for (const lootTable of await ctx.db.query("lootTables").collect()) {
+      await ctx.db.delete(lootTable._id);
+    }
+    for (const lootAward of await ctx.db.query("lootAwards").collect()) {
+      await ctx.db.delete(lootAward._id);
+    }
+
+    const items = await ctx.db.query("items").collect();
+    const forestItemIds = new Set<string>();
+    for (const item of items) {
+      if (item.craftingSkillId !== undefined || item.itemFamily !== undefined) {
+        forestItemIds.add(String(item._id));
+      }
+    }
+    for (const reward of await ctx.db.query("pendingRewards").collect()) {
+      if (
+        reward.sourceType === "skill" ||
+        reward.sourceType === "crafting" ||
+        forestItemIds.has(String(reward.itemId))
+      ) {
+        await ctx.db.delete(reward._id);
+      }
+    }
+    for (const item of items) {
+      if (forestItemIds.has(String(item._id))) {
+        await ctx.db.delete(item._id);
+      }
+    }
+
+    await seedForestCraftingContent(ctx);
+    await validateAllRecipeChains(ctx);
+    return {
+      success: true,
+      message: "Forest crafting content reset and reseeded",
+    };
   },
 });
 

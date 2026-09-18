@@ -28,7 +28,7 @@ export function ShopPanel({ player }: ShopPanelProps) {
     }
   };
 
-  const availableUpgrades = (shopUpgrades ?? []).filter((upgrade) => {
+  const availableUpgrades = (shopUpgrades.data ?? []).filter((upgrade) => {
     const reachedTier = player.maxTierReached ?? player.currentTier;
     if (upgrade.minTier && reachedTier < upgrade.minTier) return false;
     return true;
@@ -37,8 +37,21 @@ export function ShopPanel({ player }: ShopPanelProps) {
   return (
     <Card className="forest-card p-4">
       <div className="space-y-2">
-        {shopUpgrades === undefined ? (
-          <p className="text-muted-foreground text-sm">Loading wares...</p>
+        {shopUpgrades.isPending ? (
+          <div className="min-h-[300px] space-y-2">
+            <p className="text-muted-foreground text-sm">Loading wares...</p>
+            {[...Array(3)].map((_, index) => (
+              <div
+                key={index}
+                className="forest-panel min-h-24 animate-pulse p-3"
+                aria-hidden="true"
+              />
+            ))}
+          </div>
+        ) : shopUpgrades.isError && !shopUpgrades.data ? (
+          <p className="text-blood-light text-sm" role="alert">
+            Unable to load shop inventory.
+          </p>
         ) : availableUpgrades.length === 0 ? (
           <p className="text-muted-foreground text-sm">No wares available yet.</p>
         ) : (
@@ -83,7 +96,9 @@ export function ShopPanel({ player }: ShopPanelProps) {
                     )}
                     {isOwned && (
                       <p className="text-xs text-forest-glow">
-                        Owned — toggle it in Enter the Wilds.
+                        {upgrade.upgradeId === "auto_start_fight"
+                          ? "Owned — configure queued battles in Tasks. The level requirement only gates purchase."
+                          : "Owned — toggle it in Enter the Wilds."}
                       </p>
                     )}
                   </div>

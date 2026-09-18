@@ -2,6 +2,11 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import {
+  calculatePlayerLevel,
+} from "./bossData";
+import { settleRegularFight } from "./combat";
+import { settleCombatFight } from "./loot";
 
 const ONE_TIME_AUTOMATION_EFFECTS = new Set([
   "enable-auto-attack",
@@ -143,18 +148,6 @@ function getUpgradePurchaseDetails(
     purchaseCost,
     requiredLevel,
   };
-}
-
-function calculatePlayerLevel(player: {
-  str: number;
-  dex: number;
-  int: number;
-  luk: number;
-  con: number;
-}) {
-  return Math.floor(
-    (player.str + player.dex + player.int + player.luk + player.con) / 5
-  );
 }
 
 async function ownsUpgrade(
@@ -389,81 +382,49 @@ export const recordFight = mutation({
     playerId: v.id("players"),
     monsterTier: v.number(),
     monsterType: v.string(),
+    isBoss: v.boolean(),
     won: v.boolean(),
-    goldEarned: v.number(),
-    experienceEarned: v.number(),
+    goldEarned: v.optional(v.number()),
+    experienceEarned: v.optional(v.number()),
+    settlementKey: v.optional(v.string()),
   },
-  handler: async (ctx, { playerId, monsterTier, monsterType, won, goldEarned, experienceEarned }) => {
-    if (
-      !Number.isFinite(goldEarned) ||
-      goldEarned < 0 ||
-      !Number.isFinite(experienceEarned) ||
-      experienceEarned < 0
-    ) {
-      throw new Error("Fight rewards must be finite, non-negative numbers");
-    }
-
-    const now = Date.now();
-    let appliedGold = goldEarned;
-    let appliedExperience = experienceEarned;
-
-    if (won) {
-      const activeEvents = await ctx.db
-        .query("gameEvents")
-        .filter((q) =>
-          q.and(
-            q.lte(q.field("startTime"), now),
-            q.gt(q.field("endTime"), now)
-          )
-        )
-        .collect();
-
-      let goldMultiplier = 1;
-      let experienceMultiplier = 1;
-      for (const event of activeEvents) {
-        if (event.effectType === "gold-multiplier") {
-          goldMultiplier *= event.effectValue;
-        } else if (event.effectType === "xp-multiplier") {
-          experienceMultiplier *= event.effectValue;
-        }
-      }
-
-      appliedGold = Math.max(0, Math.floor(goldEarned * goldMultiplier));
-      appliedExperience = Math.max(
-        0,
-        Math.floor(experienceEarned * experienceMultiplier)
-      );
-    }
-
-    // Insert fight history record
-    await ctx.db.insert("fightHistory", {
-      playerId,
-      monsterTier,
-      monsterType,
-      won,
-      goldEarned: appliedGold,
-      experienceEarned: appliedExperience,
-      timestamp: now,
-    });
-
-    // If won, update player stats
-    if (won) {
-      const player = await ctx.db.get(playerId);
-      if (!player) throw new Error("Player not found");
-
-      // Update gold and experience
-      await ctx.db.patch(playerId, {
-        gold: player.gold + appliedGold,
-        totalExperience: player.totalExperience + appliedExperience,
-        lastUpdated: now,
+  handler: async (ctx, {
+    playerId,
+    monsterTier,
+    monsterType,
+    isBoss,
+    won,
+    settlementKey,
+  }) => {
+    const key =
+      settlementKey?.trim() ||
+      `${playerId}:${isBoss ? "boss" : "monster"}:${monsterType}:${monsterTier}:${Date.now()}`;
+    if (!isBoss) {
+      return await settleRegularFight(ctx, {
+        playerId,
+        monsterTier,
+        monsterType,
+        won,
+        settlementKey: key,
       });
     }
 
-    return {
-      recorded: true,
-      goldEarned: appliedGold,
-      experienceEarned: appliedExperience,
-    };
+    const boss = await ctx.db
+      .query("bosses")
+      .withIndex("by_bossId", (q) => q.eq("bossId", monsterType))
+      .first();
+    if (!boss || boss.tier !== monsterTier) {
+      throw new Error("Boss not found for this tier");
+    }
+
+    return await settleCombatFight(ctx, {
+      playerId,
+      settlementKey: key,
+      sourceType: "boss",
+      sourceId: monsterType,
+      tier: monsterTier,
+      won,
+    });
   },
 });
 

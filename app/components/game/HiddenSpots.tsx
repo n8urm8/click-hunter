@@ -3,8 +3,10 @@ import { useAtom } from "jotai";
 import { discoveredSpotsAtom } from "~/store/gameStore";
 import { useClaimHiddenSpotReward } from "~/hooks/usePlayer";
 import { logInfo, logError } from "~/lib/logger";
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
+import { convexQueryCacheOptions } from "~/lib/queryCache";
 
 interface HiddenSpotsProps {
   containerRef?: React.RefObject<HTMLDivElement | null>;
@@ -17,7 +19,11 @@ export function HiddenSpots({ containerRef, player }: HiddenSpotsProps) {
   const [claimingSpot, setClaimingSpot] = useState<string | null>(null);
   const claimReward = useClaimHiddenSpotReward();
   const spotsRef = useRef<Map<string, HTMLDivElement>>(new Map());
-  const hiddenSpots = useQuery(api.seed.getHiddenSpots) ?? [];
+  const hiddenSpotsQuery = useQuery({
+    ...convexQuery(api.seed.getHiddenSpots, {}),
+    ...convexQueryCacheOptions,
+  });
+  const hiddenSpots = hiddenSpotsQuery.data ?? [];
 
   const handleSpotClick = async (spotId: string, rewardUpgradeId: string) => {
     if (discoveredSpots.has(spotId) || claimingSpot === spotId) {

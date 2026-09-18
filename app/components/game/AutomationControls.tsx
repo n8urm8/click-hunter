@@ -2,53 +2,78 @@ import { useState } from "react";
 import {
   usePlayerUpgrades,
   useSetAutoAttack,
-  useSetAutoStartFight,
 } from "~/hooks/usePlayer";
+
+export type AutoBattleMode = "count" | "duration" | "until-stopped";
+
+export interface AutoBattleSettings {
+  enabled: boolean;
+  mode: AutoBattleMode;
+  target: string;
+}
 
 interface AutomationControlsProps {
   player: any;
+  tier?: number;
+  settings?: AutoBattleSettings;
+  onEnabledChange?: (enabled: boolean) => void;
+  onModeChange?: (mode: AutoBattleMode) => void;
+  onTargetChange?: (target: string) => void;
+  isQueueing?: boolean;
+  error?: string | null;
 }
 
-export function AutomationControls({ player }: AutomationControlsProps) {
+export function AutomationControls({
+  player,
+  tier,
+  settings,
+  onEnabledChange,
+  onModeChange,
+  onTargetChange,
+  isQueueing = false,
+  error = null,
+}: AutomationControlsProps) {
   const ownedUpgrades = usePlayerUpgrades(player._id);
   const setAutoAttack = useSetAutoAttack();
-  const setAutoStartFight = useSetAutoStartFight();
-  const [isToggling, setIsToggling] = useState<
-    "autoAttack" | "autoStartFight" | null
-  >(null);
+  const [isToggling, setIsToggling] = useState(false);
 
   const ownsAutoAttack =
-    ownedUpgrades?.some(
+    ownedUpgrades.data?.some(
       (upgrade) => upgrade.upgradeId === "auto_attack" && upgrade.quantity > 0
     ) ?? false;
-  const ownsAutoStartFight =
-    ownedUpgrades?.some(
+  const ownsAutoBattle =
+    ownedUpgrades.data?.some(
       (upgrade) =>
         upgrade.upgradeId === "auto_start_fight" && upgrade.quantity > 0
     ) ?? false;
+  const autoBattleConfig =
+    tier !== undefined &&
+    settings &&
+    onEnabledChange &&
+    onModeChange &&
+    onTargetChange
+      ? {
+          tier,
+          settings,
+          onEnabledChange,
+          onModeChange,
+          onTargetChange,
+        }
+      : null;
 
-  if (!ownsAutoAttack && !ownsAutoStartFight) return null;
+  if (!ownsAutoAttack && !(ownsAutoBattle && autoBattleConfig)) return null;
 
-  const handleToggle = async (
-    automation: "autoAttack" | "autoStartFight"
-  ) => {
-    setIsToggling(automation);
+  const handleToggle = async () => {
+    setIsToggling(true);
     try {
-      if (automation === "autoAttack") {
-        await setAutoAttack({
-          playerId: player._id,
-          enabled: !player.autoAttackEnabled,
-        });
-      } else {
-        await setAutoStartFight({
-          playerId: player._id,
-          enabled: !player.autoStartFightEnabled,
-        });
-      }
+      await setAutoAttack({
+        playerId: player._id,
+        enabled: !player.autoAttackEnabled,
+      });
     } catch (error) {
       console.error("Failed to update automation setting:", error);
     } finally {
-      setIsToggling(null);
+      setIsToggling(false);
     }
   };
 
@@ -62,8 +87,8 @@ export function AutomationControls({ player }: AutomationControlsProps) {
           type="button"
           role="switch"
           aria-checked={player.autoAttackEnabled}
-          onClick={() => void handleToggle("autoAttack")}
-          disabled={isToggling === "autoAttack"}
+          onClick={() => void handleToggle()}
+          disabled={isToggling}
           className="flex w-full items-center justify-between rounded border border-forest-light/20 px-3 py-2 text-left hover:border-gold/50 disabled:opacity-50"
         >
           <span>
@@ -79,43 +104,101 @@ export function AutomationControls({ player }: AutomationControlsProps) {
                 : "text-muted-foreground"
             }
           >
-            {isToggling === "autoAttack"
-              ? "..."
-              : player.autoAttackEnabled
-                ? "ON"
-                : "OFF"}
+            {isToggling ? "..." : player.autoAttackEnabled ? "ON" : "OFF"}
           </span>
         </button>
       )}
-      {ownsAutoStartFight && (
-        <button
-          type="button"
-          role="switch"
-          aria-checked={player.autoStartFightEnabled}
-          onClick={() => void handleToggle("autoStartFight")}
-          disabled={isToggling === "autoStartFight"}
-          className="flex w-full items-center justify-between rounded border border-forest-light/20 px-3 py-2 text-left hover:border-gold/50 disabled:opacity-50"
-        >
-          <span>
-            <span className="block text-sm text-foreground">Auto battle</span>
-            <span className="block text-xs text-muted-foreground">
-              Start the selected tier after recovery
-            </span>
-          </span>
-          <span
-            className={
-              player.autoStartFightEnabled
-                ? "text-forest-glow"
-                : "text-muted-foreground"
+      {ownsAutoBattle && autoBattleConfig && (
+        <div className="space-y-3 rounded border border-gold/20 bg-gold/5 px-3 py-3">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoBattleConfig.settings.enabled}
+            onClick={() =>
+              autoBattleConfig.onEnabledChange(
+                !autoBattleConfig.settings.enabled
+              )
             }
+            disabled={isQueueing}
+            className="flex w-full items-center justify-between gap-3 text-left"
           >
-            {isToggling === "autoStartFight"
-              ? "..."
-              : player.autoStartFightEnabled
-                ? "ON"
-                : "OFF"}
-          </span>
-        </button>
+            <span>
+              <span className="block text-sm text-foreground">
+                Battle automation
+              </span>
+              <span className="block text-xs text-muted-foreground">
+                Queue regular Tier {autoBattleConfig.tier} battles when you
+                enter the wilds. Owned upgrades remain usable at any level.
+              </span>
+            </span>
+            <span
+              className={
+                autoBattleConfig.settings.enabled
+                  ? "text-forest-glow"
+                  : "text-muted-foreground"
+              }
+            >
+              {autoBattleConfig.settings.enabled ? "ON" : "OFF"}
+            </span>
+          </button>
+
+          {autoBattleConfig.settings.enabled && (
+            <div className="grid gap-3 border-t border-gold/15 pt-3 sm:grid-cols-2">
+              <label className="space-y-1 text-xs text-muted-foreground">
+                <span className="block">Run mode</span>
+                <select
+                  value={autoBattleConfig.settings.mode}
+                  onChange={(event) =>
+                    autoBattleConfig.onModeChange(
+                      event.currentTarget.value as AutoBattleMode
+                    )
+                  }
+                  className="w-full border border-forest-light/30 bg-forest-dark/70 px-2 py-2 text-sm text-foreground"
+                  disabled={isQueueing}
+                >
+                  <option value="until-stopped">Until stopped</option>
+                  <option value="count">Battle count</option>
+                  <option value="duration">Online duration</option>
+                </select>
+              </label>
+
+              {autoBattleConfig.settings.mode !== "until-stopped" && (
+                <label className="space-y-1 text-xs text-muted-foreground">
+                  <span className="block">
+                    {autoBattleConfig.settings.mode === "count"
+                      ? "Number of battles"
+                      : "Minutes online"}
+                  </span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={autoBattleConfig.settings.target}
+                    onChange={(event) =>
+                      autoBattleConfig.onTargetChange(event.currentTarget.value)
+                    }
+                    className="w-full border border-forest-light/30 bg-forest-dark/70 px-2 py-2 text-sm text-foreground"
+                    disabled={isQueueing}
+                  />
+                </label>
+              )}
+
+              <p className="text-xs text-muted-foreground sm:col-span-2">
+                {autoBattleConfig.settings.mode === "until-stopped"
+                  ? "The queue keeps battling until you stop it."
+                  : autoBattleConfig.settings.mode === "count"
+                    ? "Defeats count toward the target and the runner continues."
+                    : "Only online time counts toward this target; offline progress is never added to battles."}
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-xs text-blood-light" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

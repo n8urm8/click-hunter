@@ -1,43 +1,83 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { useMutation as useConvexMutation, useQuery as useConvexQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useMutation as useConvexMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { calculateDerivedStats, calculatePlayerLevel, getAllStats } from "../lib/statCalculations";
-import type { StatType } from "../lib/gameConfig";
+import { convexQueryCacheOptions } from "../lib/queryCache";
+import {
+  calculateDerivedStats,
+  calculatePlayerLevel,
+} from "../lib/statCalculations";
+import type { Doc, Id } from "../../convex/_generated/dataModel";
+
+export type PlayerWithDerivedStats = Doc<"players"> &
+  ReturnType<typeof calculateDerivedStats> & {
+    level: number;
+  };
+
+type EquipmentStatBonuses = {
+  str?: number;
+  dex?: number;
+  int?: number;
+  luk?: number;
+  con?: number;
+};
 
 /**
  * Hook to fetch player data with derived stats
  */
 export function usePlayer(anonymousId: string | null) {
-  const convexQuery = useConvexQuery(
-    api.players.getPlayerByAnonymousId,
-    anonymousId ? { anonymousId } : "skip"
-  );
+  const playerQuery = useQuery({
+    ...convexQuery(
+      api.players.getPlayerByAnonymousId,
+      anonymousId ? { anonymousId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
 
   // Include derived stats
-  if (convexQuery && convexQuery.str !== undefined) {
+  const player = playerQuery.data;
+  let data: Doc<"players"> | PlayerWithDerivedStats | null | undefined = player;
+  if (player && player.str !== undefined) {
+    const equipmentStatBonuses =
+      "equipmentStatBonuses" in player &&
+      player.equipmentStatBonuses &&
+      typeof player.equipmentStatBonuses === "object"
+        ? (player.equipmentStatBonuses as EquipmentStatBonuses)
+        : {};
+    const effectiveStats = {
+      str: player.str + (equipmentStatBonuses.str ?? 0),
+      dex: player.dex + (equipmentStatBonuses.dex ?? 0),
+      int: player.int + (equipmentStatBonuses.int ?? 0),
+      luk: player.luk + (equipmentStatBonuses.luk ?? 0),
+      con: player.con + (equipmentStatBonuses.con ?? 0),
+    };
     const derivedStats = calculateDerivedStats(
-      convexQuery.str,
-      convexQuery.dex,
-      convexQuery.int,
-      convexQuery.luk,
-      convexQuery.con
+      effectiveStats.str,
+      effectiveStats.dex,
+      effectiveStats.int,
+      effectiveStats.luk,
+      effectiveStats.con
     );
     const level = calculatePlayerLevel(
-      convexQuery.str,
-      convexQuery.dex,
-      convexQuery.int,
-      convexQuery.luk,
-      convexQuery.con
+      player.str,
+      player.dex,
+      player.int,
+      player.luk,
+      player.con
     );
 
-    return {
-      ...convexQuery,
+    data = {
+      ...player,
+      ...effectiveStats,
       ...derivedStats,
       level,
     };
   }
 
-  return convexQuery;
+  return {
+    ...playerQuery,
+    data,
+  };
 }
 
 /**
@@ -85,11 +125,14 @@ export function useAdvanceTierProgression() {
 /**
  * Hook for checking if can rebirth
  */
-export function useCanRebirth(playerId: any) {
-  return useConvexQuery(
-    api.players.canRebirth,
-    playerId ? { playerId } : "skip"
-  );
+export function useCanRebirth(playerId: Id<"players"> | null) {
+  return useQuery({
+    ...convexQuery(
+      api.players.canRebirth,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
 }
 
 /**
@@ -116,21 +159,27 @@ export function useSetAutoStartFight() {
 /**
  * Hook for getting player upgrades
  */
-export function usePlayerUpgrades(playerId: any) {
-  return useConvexQuery(
-    api.upgrades.getPlayerUpgrades,
-    playerId ? { playerId } : "skip"
-  );
+export function usePlayerUpgrades(playerId: Id<"players"> | null) {
+  return useQuery({
+    ...convexQuery(
+      api.upgrades.getPlayerUpgrades,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
 }
 
 /**
  * Hook for getting player-specific shop purchase details.
  */
-export function useShopUpgrades(playerId: any) {
-  return useConvexQuery(
-    api.upgrades.getShopUpgrades,
-    playerId ? { playerId } : "skip"
-  );
+export function useShopUpgrades(playerId: Id<"players"> | null) {
+  return useQuery({
+    ...convexQuery(
+      api.upgrades.getShopUpgrades,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
 }
 
 /**
@@ -143,11 +192,17 @@ export function usePurchaseUpgrade() {
 /**
  * Hook for checking if player has upgrade
  */
-export function useHasUpgrade(playerId: any, upgradeId: string) {
-  return useConvexQuery(
-    api.upgrades.hasUpgrade,
-    playerId ? { playerId, upgradeId } : "skip"
-  );
+export function useHasUpgrade(
+  playerId: Id<"players"> | null,
+  upgradeId: string
+) {
+  return useQuery({
+    ...convexQuery(
+      api.upgrades.hasUpgrade,
+      playerId ? { playerId, upgradeId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
 }
 
 /**

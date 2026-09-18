@@ -19,9 +19,13 @@ import { useEffect, useRef, useState } from "react";
 
 interface AttackButtonProps {
   player: any;
+  onStartNextFight: (fightWasBoss: boolean) => boolean;
 }
 
-export function AttackButton({ player }: AttackButtonProps) {
+export function AttackButton({
+  player,
+  onStartNextFight,
+}: AttackButtonProps) {
   const [currentFight, setCurrentFight] = useAtom(currentFightAtom);
   const [floaters, setFloaters] = useAtom(clickAnimationsAtom);
   const [fightPhase, setFightPhase] = useAtom(inFightPhaseAtom);
@@ -36,8 +40,10 @@ export function AttackButton({ player }: AttackButtonProps) {
   const handleAttackRef = useRef<() => Promise<void>>(async () => {});
   const currentFightRef = useRef(currentFight);
   const fightPhaseRef = useRef(fightPhase);
+  const onStartNextFightRef = useRef(onStartNextFight);
   currentFightRef.current = currentFight;
   fightPhaseRef.current = fightPhase;
+  onStartNextFightRef.current = onStartNextFight;
   const attemptAttack = useAttemptAttack();
   const recordFight = useRecordFight();
   const advanceTierProgression = useAdvanceTierProgression();
@@ -91,9 +97,11 @@ export function AttackButton({ player }: AttackButtonProps) {
         playerId: player._id,
         monsterTier: fight.monsterTier,
         monsterType: fight.monsterType,
+        isBoss: fight.isBoss,
         won: true,
         goldEarned: baseGold,
         experienceEarned: baseExp,
+        settlementKey: fight.settlementKey,
       });
 
       logInfo(
@@ -105,11 +113,27 @@ export function AttackButton({ player }: AttackButtonProps) {
       // Update event tracker
       setEventTracker({ 
         type: "victory", 
-        reward: { gold: reward.goldEarned, exp: reward.experienceEarned }
+        reward: {
+          gold: reward.goldEarned,
+          exp: reward.experienceEarned,
+          loot: reward.loot.map((drop) => ({
+            itemName: drop.itemName,
+            quantity: drop.quantity,
+            pending: drop.pending,
+          })),
+        }
       });
 
       // Clear fight after 2 seconds to allow player to see victory message
       setTimeout(() => {
+        const startedNextFight = onStartNextFightRef.current(fight.isBoss);
+
+        if (startedNextFight) {
+          setIsProcessingVictory(false);
+          victoryInProgressRef.current = false;
+          return;
+        }
+
         setCurrentFight(null);
         setFightPhase("idle");
         setEventTracker({ type: "idle" });

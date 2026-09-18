@@ -1,12 +1,52 @@
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
 import { Card } from "../ui/card";
 import { Badge } from "../ui/badge";
+import { convexQueryCacheOptions } from "../../lib/queryCache";
 
 export function LeaderboardPanel() {
-  const topExp = useQuery(api.leaderboards.getTopByExperience, { limit: 10 });
-  const topTier = useQuery(api.leaderboards.getTopByTier, { limit: 10 });
-  const topRebirth = useQuery(api.leaderboards.getTopByRebirth, { limit: 10 });
+  const topExpQuery = useQuery({
+    ...convexQuery(api.leaderboards.getTopByExperience, { limit: 10 }),
+    ...convexQueryCacheOptions,
+  });
+  const topTierQuery = useQuery({
+    ...convexQuery(api.leaderboards.getTopByTier, { limit: 10 }),
+    ...convexQueryCacheOptions,
+  });
+  const topRebirthQuery = useQuery({
+    ...convexQuery(api.leaderboards.getTopByRebirth, { limit: 10 }),
+    ...convexQueryCacheOptions,
+  });
+  const topExp = topExpQuery.data;
+  const topTier = topTierQuery.data;
+  const topRebirth = topRebirthQuery.data;
+
+  if (topExpQuery.isPending || topTierQuery.isPending || topRebirthQuery.isPending) {
+    return (
+      <div className="space-y-4">
+        {[...Array(3)].map((_, index) => (
+          <Card className="min-h-[180px] p-4" key={index}>
+            <p className="text-sm text-muted-foreground">Loading leaderboard...</p>
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
+  if (
+    (topExpQuery.isError && !topExpQuery.data) ||
+    (topTierQuery.isError && !topTierQuery.data) ||
+    (topRebirthQuery.isError && !topRebirthQuery.data)
+  ) {
+    return (
+      <Card className="p-4">
+        <p className="text-sm text-blood-light" role="alert">
+          Unable to load leaderboards.
+        </p>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-4">

@@ -1,24 +1,45 @@
-import { useQuery } from "convex/react";
+import { convexQuery } from "@convex-dev/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
+import type { Id } from "../../../convex/_generated/dataModel";
 import { Card } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { Progress } from "../ui/progress";
+import { convexQueryCacheOptions } from "../../lib/queryCache";
 
 interface AchievementsPanelProps {
-  playerId: string;
+  playerId: Id<"players">;
 }
 
 export function AchievementsPanel({ playerId }: AchievementsPanelProps) {
-  const achievements = useQuery(api.achievements.getPlayerAchievements, {
-    playerId: playerId as any,
+  const achievementsQuery = useQuery({
+    ...convexQuery(api.achievements.getPlayerAchievements, {
+      playerId,
+    }),
+    ...convexQueryCacheOptions,
   });
+  const achievements = achievementsQuery.data;
 
-  if (!achievements) {
+  if (achievementsQuery.isPending) {
     return (
       <Card className="p-4">
         <p className="text-sm text-gray-400">Loading achievements...</p>
       </Card>
     );
+  }
+
+  if (achievementsQuery.isError && !achievementsQuery.data) {
+    return (
+      <Card className="p-4">
+        <p className="text-sm text-blood-light" role="alert">
+          Unable to load achievements.
+        </p>
+      </Card>
+    );
+  }
+
+  if (!achievements) {
+    return null;
   }
 
   return (

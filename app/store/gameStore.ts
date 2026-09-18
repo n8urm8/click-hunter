@@ -6,8 +6,11 @@
 import { atom } from "jotai";
 
 export interface CurrentFight {
+  settlementKey: string;
   monsterTier: number;
   monsterType: string;
+  monsterName: string;
+  isBoss: boolean;
   monsterHp: number;
   monsterMaxHp: number;
   monsterAttack: number;
@@ -39,10 +42,19 @@ export type GameEvent =
   | { type: "idle" }
   | { type: "shopping" }
   | { type: "viewing_stats" }
-  | { type: "viewing_upgrades" }
+  | { type: "viewing_inventory" }
   | { type: "viewing_rebirth" }
   | { type: "fighting"; monsterName: string; tier: number }
-  | { type: "victory"; reward: { gold: number; exp: number } }
+  | { type: "auto_battling"; monsterName: string; tier: number }
+  | { type: "skilling"; skillName: string }
+  | {
+      type: "victory";
+      reward: {
+        gold: number;
+        exp: number;
+        loot?: Array<{ itemName: string; quantity: number; pending: number }>;
+      };
+    }
   | { type: "defeat"; monsterName: string };
 
 export const eventTrackerAtom = atom<GameEvent>({ type: "idle" });
@@ -57,10 +69,17 @@ export const discoveredSpotsAtom = atom<Set<string>>(
   new Set<string>()
 );
 
-// Active right panel tab
-export const activePanelAtom = atom<"stats" | "shop" | "upgrades" | "rebirth" | "leaderboard" | "admin">(
-  "stats"
-);
+// Active game page
+export type ActivePanel =
+  | "combat"
+  | "skills"
+  | "shop"
+  | "inventory"
+  | "rebirth"
+  | "leaderboard"
+  | "admin";
+
+export const activePanelAtom = atom<ActivePanel>("combat");
 
 // Anonymous player ID (from localStorage)
 export const anonymousIdAtom = atom<string>(() => {

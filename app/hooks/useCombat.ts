@@ -13,7 +13,7 @@ import { logInfo, logError } from "~/lib/logger";
 /**
  * Hook to manage monster attacks, defeat handling, and respawn timing.
  */
-export function useCombat(player: any) {
+export function useCombat(player: any, respawnTimeMs: number) {
   const [currentFight, setCurrentFight] = useAtom(currentFightAtom);
   const [, setPlayerHp] = useAtom(playerHpAtom);
   const [fightPhase, setFightPhase] = useAtom(inFightPhaseAtom);
@@ -22,11 +22,13 @@ export function useCombat(player: any) {
   const recordFight = useRecordFight();
   const currentFightRef = useRef(currentFight);
   const fightPhaseRef = useRef(fightPhase);
+  const respawnTimeRef = useRef(respawnTimeMs);
 
   // Keep timer callbacks pointed at the latest fight state without restarting
   // the monster's attack schedule on every player hit.
   currentFightRef.current = currentFight;
   fightPhaseRef.current = fightPhase;
+  respawnTimeRef.current = respawnTimeMs;
 
   // Monster attack interval - convert attackSpeed (attacks/sec) to interval in ms
   useEffect(() => {
@@ -90,9 +92,11 @@ export function useCombat(player: any) {
         playerId: player._id,
         monsterTier: currentFight.monsterTier,
         monsterType: currentFight.monsterType,
+        isBoss: currentFight.isBoss,
         won: false,
         goldEarned: 0,
         experienceEarned: 0,
+        settlementKey: currentFight.settlementKey,
       });
 
       logInfo(`Fight lost against tier ${currentFight.monsterTier} monster`);
@@ -100,12 +104,10 @@ export function useCombat(player: any) {
       // Set defeat event tracker
       setEventTracker({
         type: "defeat",
-        monsterName: `Tier ${currentFight.monsterTier} Monster`,
+        monsterName: currentFight.monsterName,
       });
 
-      // Start respawn timer (5 seconds)
-      const RESPAWN_TIME = 5000; // milliseconds
-      setRespawnTimer(RESPAWN_TIME);
+      setRespawnTimer(respawnTimeRef.current);
 
       // Clear fight after recording
       setTimeout(() => {

@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { Fireflies } from "~/components/ui/fireflies";
-import { ThemeToggle } from "~/components/ui/theme-toggle";
 
 interface NameEntryProps {
   onSubmit: (name: string) => Promise<void>;
@@ -22,7 +21,6 @@ export function NameEntry({ onSubmit, isLoading }: NameEntryProps) {
   return (
     <div className="min-h-screen flex items-center justify-center forest-bg relative p-4">
       <Fireflies count={30} />
-      <ThemeToggle />
       <Card className="w-full max-w-md forest-card box-glow-gold relative z-10">
         <div className="p-8 space-y-6">
           <div className="text-center">

@@ -4,6 +4,232 @@
  */
 
 import { internalMutation } from "./_generated/server";
+import {
+  DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
+  ensureBossForTier,
+  getTierScale,
+  getTierScaleMultiplier,
+  scaleBossStat,
+} from "./bossData";
+import {
+  DEFAULT_AUTO_BATTLE_BATCH_LIMIT,
+  DEFAULT_AUTO_BATTLE_CREDIT_CAP_MS,
+  DEFAULT_AUTO_BATTLE_RESPAWN_MS,
+  DEFAULT_OFFLINE_TASK_WINDOW_MS,
+  DEFAULT_TASK_HEARTBEAT_GRACE_MS,
+  DEFAULT_TASK_QUEUE_CAPACITY,
+} from "./tasks";
+import {
+  DEFAULT_ITEM_RARITY_LEVEL,
+  DEFAULT_ITEM_RARITIES,
+} from "./itemTypes";
+
+/**
+ * Migration: add item rarity definitions and assign existing items to Common.
+ *
+ * Run: npx convex run migrations:backfillItemRarities
+ */
+export const backfillItemRarities = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let createdRarities = 0;
+    for (const rarity of DEFAULT_ITEM_RARITIES) {
+      const existing = await ctx.db
+        .query("itemRarities")
+        .withIndex("by_level", (q) => q.eq("level", rarity.level))
+        .first();
+      if (existing) continue;
+
+      const now = Date.now();
+      await ctx.db.insert("itemRarities", {
+        ...rarity,
+        createdAt: now,
+        updatedAt: now,
+      });
+      createdRarities += 1;
+    }
+
+    const items = await ctx.db.query("items").collect();
+    let updatedItems = 0;
+    for (const item of items) {
+      if (item.rarityLevel !== undefined) continue;
+
+      await ctx.db.patch(item._id, {
+        rarityLevel: DEFAULT_ITEM_RARITY_LEVEL,
+        updatedAt: Date.now(),
+      });
+      updatedItems += 1;
+    }
+
+    return {
+      createdRarities,
+      updatedItems,
+      totalItems: items.length,
+    };
+  },
+});
+
+/**
+ * Migration: add the configurable character-level requirement for bosses.
+ *
+ * Run: npx convex run migrations:backfillBossUnlockLevelPerTier
+ */
+export const backfillBossUnlockLevelPerTier = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "bossUnlockLevelPerTier"))
+      .first();
+    if (existing) {
+      return { created: false };
+    }
+
+    await ctx.db.insert("gameBalance", {
+      key: "bossUnlockLevelPerTier",
+      value: DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
+      description:
+        "Character levels required per boss tier (tier multiplied by this value)",
+      lastUpdated: Date.now(),
+    });
+
+    return { created: true };
+  },
+});
+
+/**
+ * Migration: add the configurable inventory capacity.
+ *
+ * Run: npx convex run migrations:backfillInventorySlotCapacity
+ */
+export const backfillInventorySlotCapacity = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "inventorySlotCapacity"))
+      .first();
+    if (existing) {
+      return { created: false };
+    }
+
+    await ctx.db.insert("gameBalance", {
+      key: "inventorySlotCapacity",
+      value: 50,
+      description:
+        "Maximum number of unequipped inventory stacks or item instances",
+      lastUpdated: Date.now(),
+    });
+    return { created: true };
+  },
+});
+
+/**
+ * Migration: add task queue and auto-battle balance entries.
+ *
+ * Run: npx convex run migrations:backfillTaskQueueConfig
+ */
+export const backfillTaskQueueConfig = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const entries = [
+      {
+        key: "taskQueueCapacity",
+        value: DEFAULT_TASK_QUEUE_CAPACITY,
+        description: "Maximum number of active and queued tasks per player",
+      },
+      {
+        key: "offlineTaskWindowMs",
+        value: DEFAULT_OFFLINE_TASK_WINDOW_MS,
+        description:
+          "Maximum offline progress window for offline-capable tasks (milliseconds)",
+      },
+      {
+        key: "taskHeartbeatGraceMs",
+        value: DEFAULT_TASK_HEARTBEAT_GRACE_MS,
+        description:
+          "Maximum heartbeat gap treated as online task time (milliseconds)",
+      },
+      {
+        key: "autoBattleBatchLimit",
+        value: DEFAULT_AUTO_BATTLE_BATCH_LIMIT,
+        description: "Maximum auto-battle fights resolved per online heartbeat",
+      },
+      {
+        key: "autoBattleCreditCapMs",
+        value: DEFAULT_AUTO_BATTLE_CREDIT_CAP_MS,
+        description:
+          "Maximum online auto-battle time banked between heartbeats (milliseconds)",
+      },
+      {
+        key: "respawnTimeMs",
+        value: DEFAULT_AUTO_BATTLE_RESPAWN_MS,
+        description:
+          "Recovery time after a defeated battle before the next encounter (milliseconds)",
+      },
+      {
+        key: "autoBattleRewards",
+        value: {
+          goldPerTier: 100,
+          goldVariance: 50,
+          experiencePerTier: 50,
+          experienceVariance: 25,
+        },
+        description: "Server-side regular auto-battle reward formula",
+      },
+    ];
+    let created = 0;
+
+    for (const entry of entries) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (existing) continue;
+
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+      created += 1;
+    }
+
+    return { created };
+  },
+});
+
+/**
+ * Migration: add the built-in auto-battle task definition.
+ *
+ * Run: npx convex run migrations:backfillTaskDefinitions
+ */
+export const backfillTaskDefinitions = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db
+      .query("taskDefinitions")
+      .withIndex("by_taskId", (q) => q.eq("taskId", "auto_battle"))
+      .first();
+    if (existing) return { created: false };
+
+    const now = Date.now();
+    await ctx.db.insert("taskDefinitions", {
+      taskId: "auto_battle",
+      name: "Auto-battle",
+      category: "battle",
+      description:
+        "Fight regular monsters at a selected tier while the player remains online.",
+      canProgressOffline: false,
+      requiresOnline: true,
+      enabled: true,
+      prerequisites: { upgradeId: "auto_start_fight" },
+      rewards: { uses: "autoBattleRewards" },
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { created: true };
+  },
+});
 
 /**
  * Migration: currentTierProgression -> maxTierReached
@@ -95,5 +321,53 @@ export const backfillStatUpgradePurchaseCounts = internalMutation({
     }
 
     return { updated, total: playerUpgrades.length };
+  },
+});
+
+/**
+ * Migration: create shared boss records only for tiers already needed.
+ *
+ * Run: npx convex run migrations:backfillBosses
+ */
+export const backfillBosses = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const players = await ctx.db.query("players").collect();
+    const highestTier = players.reduce(
+      (highest, player) =>
+        Math.max(highest, player.maxTierReached ?? player.currentTier ?? 1),
+      1
+    );
+    const tierMultiplier = await getTierScaleMultiplier(ctx);
+    const existingBosses = await ctx.db.query("bosses").collect();
+    let updated = 0;
+
+    for (const boss of existingBosses) {
+      if (boss.statsTierScaled) continue;
+
+      const tierScale = getTierScale(boss.tier, tierMultiplier);
+      await ctx.db.patch(boss._id, {
+        str: scaleBossStat(boss.str, tierScale),
+        dex: scaleBossStat(boss.dex, tierScale),
+        int: scaleBossStat(boss.int, tierScale),
+        luk: scaleBossStat(boss.luk, tierScale),
+        con: scaleBossStat(boss.con, tierScale),
+        statsTierScaled: true,
+      });
+      updated++;
+    }
+
+    const existingTiers = new Set(existingBosses.map((boss) => boss.tier));
+    let created = 0;
+
+    for (let tier = 1; tier <= highestTier; tier++) {
+      if (!existingTiers.has(tier)) {
+        await ensureBossForTier(ctx, tier);
+        existingTiers.add(tier);
+        created++;
+      }
+    }
+
+    return { created, updated, highestTier };
   },
 });
