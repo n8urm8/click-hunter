@@ -26,6 +26,8 @@ import type * as migrations from "../migrations.js";
 import type * as players from "../players.js";
 import type * as recipeValidation from "../recipeValidation.js";
 import type * as seed from "../seed.js";
+import type * as skillBonuses from "../skillBonuses.js";
+import type * as skillProgression from "../skillProgression.js";
 import type * as skills from "../skills.js";
 import type * as tasks from "../tasks.js";
 import type * as upgrades from "../upgrades.js";
@@ -55,6 +57,8 @@ declare const fullApi: ApiFromModules<{
   players: typeof players;
   recipeValidation: typeof recipeValidation;
   seed: typeof seed;
+  skillBonuses: typeof skillBonuses;
+  skillProgression: typeof skillProgression;
   skills: typeof skills;
   tasks: typeof tasks;
   upgrades: typeof upgrades;

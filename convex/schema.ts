@@ -15,6 +15,15 @@ const equipmentSlotValidator = v.union(
 const itemEffectStatValidator = v.union(
   ...ITEM_EFFECT_STAT_VALUES.map((value) => v.literal(value))
 );
+const skillBonusScopeValidator = v.union(
+  v.literal("all"),
+  v.literal("gathering"),
+  v.literal("crafting")
+);
+const skillTaskEffectTypeValidator = v.union(
+  v.literal("skill-speed-multiplier"),
+  v.literal("skill-xp-multiplier")
+);
 const skillCategoryValidator = v.union(
   v.literal("gathering"),
   v.literal("crafting")
@@ -96,6 +105,7 @@ export default defineSchema({
     effectType: v.optional(v.string()),
     effectStat: v.optional(itemEffectStatValidator),
     effectAmount: v.optional(v.number()),
+    effectScope: v.optional(skillBonusScopeValidator),
     // Metadata for future temporary effects; item consumption is intentionally
     // handled separately from this content model.
     effectDurationMs: v.optional(v.number()),
@@ -118,6 +128,24 @@ export default defineSchema({
     .index("by_playerId", ["playerId"])
     .index("by_playerId_and_itemId", ["playerId", "itemId"])
     .index("by_playerId_and_equippedSlot", ["playerId", "equippedSlot"]),
+
+  playerSkillBoosts: defineTable({
+    playerId: v.id("players"),
+    effectType: skillTaskEffectTypeValidator,
+    effectScope: skillBonusScopeValidator,
+    effectAmount: v.number(),
+    sourceItemId: v.id("items"),
+    startedAt: v.number(),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_and_effectType_and_effectScope", [
+      "playerId",
+      "effectType",
+      "effectScope",
+    ]),
 
   skillDefinitions: defineTable({
     skillId: v.string(),
@@ -171,7 +199,7 @@ export default defineSchema({
     outputItemId: v.id("items"),
     minYield: v.number(),
     maxYield: v.number(),
-    durationMs: v.number(),
+    durationMs: v.optional(v.number()),
     experienceReward: v.number(),
     enabled: v.boolean(),
     createdAt: v.number(),
@@ -187,7 +215,7 @@ export default defineSchema({
     tier: v.number(),
     name: v.string(),
     description: v.string(),
-    durationMs: v.number(),
+    durationMs: v.optional(v.number()),
     experienceReward: v.number(),
     outputFamily: v.optional(v.string()),
     stage: v.optional(v.union(v.literal("refinement"), v.literal("product"))),
@@ -231,6 +259,7 @@ export default defineSchema({
     effectType: v.string(),
     effectStat: v.optional(itemEffectStatValidator),
     effectAmount: v.number(),
+    experienceReward: v.optional(v.number()),
     enabled: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -595,10 +624,12 @@ export default defineSchema({
     endTime: v.number(),
     effectType: v.string(),
     effectValue: v.number(),
+    effectScope: v.optional(skillBonusScopeValidator),
     isActive: v.boolean(),
     createdAt: v.number(),
   })
     .index("by_isActive", ["isActive"])
+    .index("by_startTime", ["startTime"])
     .index("by_eventId", ["eventId"]),
 
   // Leaderboards

@@ -11,8 +11,9 @@ import {
 import type { LootSummary } from "./loot";
 import { getEquippedStatBonuses } from "./items";
 import {
+  advanceSkillActionTask,
   prepareSkillAction,
-  refundCraftingTaskReservation,
+  refundSkillTaskReservation,
   resolveSkillTask,
 } from "./skills";
 
@@ -210,7 +211,8 @@ async function assertQueueHasCapacity(
 async function activateNextTask(
   ctx: MutationCtx,
   playerId: PlayerId,
-  now: number
+  now: number,
+  startedAt = now
 ) {
   const activeTask = await getActiveTask(ctx, playerId);
   if (activeTask) return activeTask;
@@ -226,8 +228,8 @@ async function activateNextTask(
 
   await ctx.db.patch(nextTask._id, {
     status: "active",
-    startedAt: now,
-    lastResolvedAt: now,
+    startedAt,
+    lastResolvedAt: startedAt,
     lastHeartbeatAt: now,
     offlineCapped: false,
     updatedAt: now,
@@ -586,12 +588,23 @@ async function resolveTimedQueue(
   const offlineWindowMs = await getOfflineTaskWindow(ctx);
   const heartbeatGraceMs = await getHeartbeatGrace(ctx);
   const elapsedMs = Math.max(0, now - activeTask.lastResolvedAt);
+  const onlineProgressAvailable =
+    onlineHeartbeat && elapsedMs <= heartbeatGraceMs;
   const availableMs = activeTask.canProgressOffline
     ? Math.min(elapsedMs, offlineWindowMs)
-    : onlineHeartbeat && elapsedMs <= heartbeatGraceMs
+    : onlineProgressAvailable
       ? elapsedMs
       : 0;
-  let availableBudgetMs = availableMs;
+  const timeSegments = [
+    ...(isRecord(activeTask.payload) &&
+    activeTask.payload.skillTaskVersion === 1
+      ? readProgressSegments(activeTask.payload.progressSegments)
+      : []),
+    ...(availableMs > 0
+      ? [{ startAt: activeTask.lastResolvedAt, remainingMs: availableMs }]
+      : []),
+  ];
+  let segmentIndex = 0;
   let currentTask: PlayerTask | null = activeTask;
   let isFirstTask = true;
 
@@ -610,52 +623,232 @@ async function resolveTimedQueue(
       continue;
     }
 
-    const remainingMs = Math.max(0, durationMs - currentTask.progressMs);
-    const taskAvailableMs =
-      currentTask.canProgressOffline || onlineHeartbeat
-        ? availableBudgetMs
-        : 0;
-    const appliedMs = Math.min(remainingMs, taskAvailableMs);
-    const nextProgressMs = currentTask.progressMs + appliedMs;
     const wasOfflineCapped =
       isFirstTask &&
       currentTask.canProgressOffline &&
       elapsedMs > availableMs;
-
-    if (nextProgressMs >= durationMs) {
-      const skillResult =
-        currentTask.payload &&
-        isRecord(currentTask.payload) &&
-        (currentTask.payload.actionType === "gathering" ||
-          currentTask.payload.actionType === "crafting")
-          ? await resolveSkillTask(ctx, currentTask, now)
-          : undefined;
-      const resolvedTask = {
-        ...currentTask,
-        progressMs: durationMs,
+    if (
+      !currentTask.canProgressOffline &&
+      !onlineProgressAvailable &&
+      timeSegments.length === 0
+    ) {
+      const payload = isRecord(currentTask.payload)
+        ? { ...currentTask.payload }
+        : currentTask.payload;
+      if (isRecord(payload)) delete payload.progressSegments;
+      await ctx.db.patch(currentTask._id, {
+        ...(isRecord(payload) ? { payload } : {}),
+        lastResolvedAt: now,
         offlineCapped: wasOfflineCapped,
-      };
-      await completeTask(ctx, resolvedTask, "completed", now, {
-        progressMs: durationMs,
-        offlineCapped: wasOfflineCapped,
-        ...(skillResult === undefined ? {} : { skillResult }),
+        updatedAt: now,
       });
-      availableBudgetMs = Math.max(0, availableBudgetMs - appliedMs);
-      currentTask = await activateNextTask(ctx, playerId, now);
-      isFirstTask = false;
-      if (currentTask?.taskType === "battle") {
-        break;
+      return await ctx.db.get(currentTask._id);
+    }
+
+    if (
+      isRecord(currentTask.payload) &&
+      currentTask.payload.skillTaskVersion === 1
+    ) {
+      let skillTask = currentTask;
+      while (
+        currentTask &&
+        currentTask.taskType === "timed" &&
+        isRecord(currentTask.payload) &&
+        currentTask.payload.skillTaskVersion === 1 &&
+        segmentIndex < timeSegments.length
+      ) {
+        const segment = timeSegments[segmentIndex];
+        const result = await advanceSkillActionTask(
+          ctx,
+          skillTask,
+          segment.remainingMs,
+          segment.startAt,
+          now
+        );
+        segment.remainingMs -= result.consumedMs;
+        segment.startAt += result.consumedMs;
+        const nextPayload = { ...result.payload };
+        delete nextPayload.progressSegments;
+        const resolvedTask = {
+          ...skillTask,
+          durationMs: result.durationMs,
+          progressMs: result.progressMs,
+          payload: nextPayload,
+          offlineCapped: wasOfflineCapped,
+        };
+
+        if (result.failureReason) {
+          const refundedIngredients = await refundSkillTaskReservation(
+            ctx,
+            resolvedTask
+          );
+          await completeTask(ctx, resolvedTask, "failed", now, {
+            reason: result.failureReason,
+            ...(refundedIngredients === null
+              ? {}
+              : { refundedIngredients }),
+          });
+          const nextStartAt =
+            segment.remainingMs > 0
+              ? segment.startAt
+              : timeSegments[segmentIndex + 1]?.startAt ?? now;
+          currentTask = await activateNextTask(
+            ctx,
+            playerId,
+            now,
+            nextStartAt
+          );
+          isFirstTask = false;
+          if (segment.remainingMs === 0) segmentIndex += 1;
+          break;
+        }
+
+        if (result.complete) {
+          await completeTask(ctx, resolvedTask, "completed", now, {
+            progressMs: result.progressMs,
+            offlineCapped: wasOfflineCapped,
+            ...(result.skillResult === undefined
+              ? {}
+              : { skillResult: result.skillResult }),
+          });
+          const nextStartAt =
+            segment.remainingMs > 0
+              ? segment.startAt
+              : timeSegments[segmentIndex + 1]?.startAt ?? now;
+          currentTask = await activateNextTask(
+            ctx,
+            playerId,
+            now,
+            nextStartAt
+          );
+          isFirstTask = false;
+          if (segment.remainingMs === 0) segmentIndex += 1;
+          break;
+        }
+
+        if (result.deferred) {
+          const deferredSegments = [
+            ...(segment.remainingMs > 0 ? [segment] : []),
+            ...timeSegments.slice(segmentIndex + 1),
+          ].filter((pending) => pending.remainingMs > 0);
+          await ctx.db.patch(skillTask._id, {
+            durationMs: result.durationMs,
+            progressMs: result.progressMs,
+            payload: {
+              ...nextPayload,
+              progressSegments: deferredSegments,
+            },
+            lastResolvedAt: now,
+            offlineCapped: wasOfflineCapped,
+            updatedAt: now,
+          });
+          return await ctx.db.get(skillTask._id);
+        }
+
+        skillTask = resolvedTask;
+        currentTask = resolvedTask;
+        if (segment.remainingMs === 0) {
+          segmentIndex += 1;
+        }
       }
+
+      if (
+        currentTask &&
+        currentTask.taskType === "timed" &&
+        isRecord(currentTask.payload) &&
+        currentTask.payload.skillTaskVersion === 1 &&
+        segmentIndex >= timeSegments.length
+      ) {
+        const payload = { ...currentTask.payload };
+        delete payload.progressSegments;
+        await ctx.db.patch(currentTask._id, {
+          payload,
+          lastResolvedAt: now,
+          offlineCapped: wasOfflineCapped,
+          updatedAt: now,
+        });
+        return await ctx.db.get(currentTask._id);
+      }
+      if (currentTask?.taskType === "battle") break;
       continue;
     }
 
-    await ctx.db.patch(currentTask._id, {
-      progressMs: nextProgressMs,
-      lastResolvedAt: now,
-      offlineCapped: wasOfflineCapped,
-      updatedAt: now,
-    });
-    return await ctx.db.get(currentTask._id);
+    while (
+      currentTask &&
+      currentTask.taskType === "timed" &&
+      segmentIndex < timeSegments.length
+    ) {
+      const segment = timeSegments[segmentIndex];
+      const remainingMs = Math.max(0, durationMs - currentTask.progressMs);
+      const appliedMs = Math.min(remainingMs, segment.remainingMs);
+      const nextProgressMs: number = currentTask.progressMs + appliedMs;
+      segment.remainingMs -= appliedMs;
+      segment.startAt += appliedMs;
+
+      if (nextProgressMs >= durationMs) {
+        const skillResult =
+          currentTask.payload &&
+          isRecord(currentTask.payload) &&
+          (currentTask.payload.actionType === "gathering" ||
+            currentTask.payload.actionType === "crafting")
+            ? await resolveSkillTask(ctx, currentTask, now)
+            : undefined;
+        const resolvedTask = {
+          ...currentTask,
+          progressMs: durationMs,
+          offlineCapped: wasOfflineCapped,
+        };
+        await completeTask(ctx, resolvedTask, "completed", now, {
+          progressMs: durationMs,
+          offlineCapped: wasOfflineCapped,
+          ...(skillResult === undefined ? {} : { skillResult }),
+        });
+        const nextStartAt =
+          segment.remainingMs > 0
+            ? segment.startAt
+            : timeSegments[segmentIndex + 1]?.startAt ?? now;
+        currentTask = await activateNextTask(
+          ctx,
+          playerId,
+          now,
+          nextStartAt
+        );
+        isFirstTask = false;
+        if (segment.remainingMs === 0) segmentIndex += 1;
+        break;
+      }
+
+      currentTask = {
+        ...currentTask,
+        progressMs: nextProgressMs,
+      };
+      if (segment.remainingMs > 0) {
+        throw new Error("Timed task progress did not consume its available segment");
+      }
+      segmentIndex += 1;
+      if (segmentIndex >= timeSegments.length) {
+        await ctx.db.patch(currentTask._id, {
+          progressMs: nextProgressMs,
+          lastResolvedAt: now,
+          offlineCapped: wasOfflineCapped,
+          updatedAt: now,
+        });
+        return await ctx.db.get(currentTask._id);
+      }
+    }
+
+    if (currentTask?.taskType === "battle") break;
+    if (segmentIndex >= timeSegments.length) {
+      if (currentTask && currentTask.taskType === "timed") {
+        await ctx.db.patch(currentTask._id, {
+          lastResolvedAt: now,
+          offlineCapped: wasOfflineCapped,
+          updatedAt: now,
+        });
+        return await ctx.db.get(currentTask._id);
+      }
+      return currentTask;
+    }
   }
 
   return currentTask;
@@ -869,6 +1062,96 @@ async function processAutoBattle(
   return await ctx.db.get(task._id);
 }
 
+type ProgressSegment = {
+  startAt: number;
+  remainingMs: number;
+};
+
+function readProgressSegments(value: unknown): ProgressSegment[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("Skill task has invalid deferred progress");
+  }
+  return value.map((segment) => {
+    if (
+      !isRecord(segment) ||
+      typeof segment.startAt !== "number" ||
+      !Number.isFinite(segment.startAt) ||
+      typeof segment.remainingMs !== "number" ||
+      !Number.isSafeInteger(segment.remainingMs) ||
+      segment.remainingMs < 1
+    ) {
+      throw new Error("Skill task has invalid deferred progress");
+    }
+    return {
+      startAt: segment.startAt,
+      remainingMs: segment.remainingMs,
+    };
+  });
+}
+
+function getDeferredProgressMs(task: PlayerTask) {
+  if (
+    !isRecord(task.payload) ||
+    task.payload.skillTaskVersion !== 1
+  ) {
+    return 0;
+  }
+  return readProgressSegments(task.payload.progressSegments).reduce(
+    (total, segment) =>
+      Math.min(Number.MAX_SAFE_INTEGER, total + segment.remainingMs),
+    0
+  );
+}
+
+function projectTimedProgress(
+  task: PlayerTask,
+  now: number,
+  offlineWindowMs: number
+) {
+  const elapsedMs =
+    task.taskType === "timed" &&
+    task.status === "active" &&
+    task.canProgressOffline
+      ? Math.max(0, now - task.lastResolvedAt)
+      : 0;
+  return task.taskType === "timed"
+    ? Math.min(
+        task.durationMs ?? task.progressMs,
+      task.progressMs +
+        getDeferredProgressMs(task) +
+        Math.min(elapsedMs, offlineWindowMs)
+    )
+    : task.progressMs;
+}
+
+function calculateOfflineWorkAheadMs(
+  tasks: Array<PlayerTask | null>,
+  now: number,
+  offlineWindowMs: number
+) {
+  return tasks.reduce((total, task) => {
+    if (
+      !task ||
+      task.taskType !== "timed" ||
+      !task.canProgressOffline ||
+      task.durationMs === undefined ||
+      !Number.isSafeInteger(task.durationMs) ||
+      task.durationMs < 1
+    ) {
+      return total;
+    }
+    const projectedProgress =
+      task.status === "active"
+        ? projectTimedProgress(task, now, offlineWindowMs)
+        : task.progressMs;
+    return Math.min(
+      Number.MAX_SAFE_INTEGER,
+      total + Math.max(0, task.durationMs - projectedProgress)
+    );
+  }, 0);
+}
+
 async function getQueueSnapshot(
   ctx: DatabaseCtx,
   playerId: PlayerId,
@@ -890,6 +1173,12 @@ async function getQueueSnapshot(
       getQueueCapacity(ctx),
       getOfflineTaskWindow(ctx),
     ]);
+
+  const offlineWorkAheadMs = calculateOfflineWorkAheadMs(
+    [activeTask, ...queuedTasks],
+    now,
+    offlineWindowMs
+  );
 
   const battleStatsByTaskId = new Map<string, BattleStat[]>();
   const battleTasks = [activeTask, ...queuedTasks].filter(
@@ -913,13 +1202,11 @@ async function getQueueSnapshot(
       task.canProgressOffline
         ? Math.max(0, now - task.lastResolvedAt)
         : 0;
-    const projectedProgressMs =
-      task.taskType === "timed"
-        ? Math.min(
-            task.durationMs ?? task.progressMs,
-            task.progressMs + Math.min(elapsedMs, offlineWindowMs)
-          )
-        : task.progressMs;
+    const projectedProgressMs = projectTimedProgress(
+      task,
+      now,
+      offlineWindowMs
+    );
     return {
       ...task,
       projectedProgressMs,
@@ -944,6 +1231,11 @@ async function getQueueSnapshot(
     capacity,
     usedSlots: (activeTask ? 1 : 0) + queuedTasks.length,
     offlineWindowMs,
+    offlineWorkAheadMs,
+    remainingOfflineWindowMs: Math.max(
+      0,
+      offlineWindowMs - offlineWorkAheadMs
+    ),
     serverTime: now,
   };
 }
@@ -1017,10 +1309,33 @@ export const enqueueTimedTask = mutation({
 export const enqueueSkillAction = mutation({
   args: {
     playerId: v.id("players"),
-    actionType: v.union(v.literal("gathering"), v.literal("crafting")),
+    actionType: v.union(
+      v.literal("gathering"),
+      v.literal("crafting"),
+      v.literal("augmentation")
+    ),
     actionId: v.string(),
+    durationOption: v.optional(
+      v.union(
+        v.literal("one-hour"),
+        v.literal("two-hours"),
+        v.literal("fill-remaining")
+      )
+    ),
+    quantity: v.optional(v.number()),
+    targetPlayerItemId: v.optional(v.id("playerItems")),
   },
-  handler: async (ctx, { playerId, actionType, actionId }) => {
+  handler: async (
+    ctx,
+    {
+      playerId,
+      actionType,
+      actionId,
+      durationOption,
+      quantity,
+      targetPlayerItemId,
+    }
+  ) => {
     await assertQueueHasCapacity(ctx, playerId);
     const definition = await getTaskDefinition(ctx, "skill_action");
     if (!definition || !definition.enabled) {
@@ -1032,28 +1347,153 @@ export const enqueueSkillAction = mutation({
     ) {
       throw new Error("Skill action task definition has an invalid duration");
     }
+    let gatheringDurationMs: number | undefined;
+    if (actionType === "gathering") {
+      if (
+        targetPlayerItemId !== undefined ||
+        (durationOption === undefined && quantity === undefined) ||
+        (durationOption !== undefined && quantity !== undefined)
+      ) {
+        throw new Error(
+          "Gathering tasks require either an action quantity or duration option"
+        );
+      }
+      if (durationOption !== undefined) {
+        if (durationOption === "one-hour") {
+          gatheringDurationMs = 60 * 60 * 1000;
+        } else if (durationOption === "two-hours") {
+          gatheringDurationMs = 2 * 60 * 60 * 1000;
+        } else {
+          const [activeTask, offlineWindowMs, capacity] = await Promise.all([
+            getActiveTask(ctx, playerId),
+            getOfflineTaskWindow(ctx),
+            getQueueCapacity(ctx),
+          ]);
+          const queuedTasks = await getQueuedTasks(ctx, playerId, capacity);
+          const workAheadMs = calculateOfflineWorkAheadMs(
+            [activeTask, ...queuedTasks],
+            Date.now(),
+            offlineWindowMs
+          );
+          gatheringDurationMs = Math.max(0, offlineWindowMs - workAheadMs);
+          if (gatheringDurationMs < 1) {
+            throw new Error("No offline queue time remains to fill");
+          }
+        }
+      }
+    } else if (actionType === "crafting") {
+      if (
+        durationOption !== undefined ||
+        targetPlayerItemId !== undefined
+      ) {
+        throw new Error("Crafting tasks only accept a quantity");
+      }
+    } else if (
+      durationOption !== undefined ||
+      quantity !== undefined ||
+      targetPlayerItemId === undefined
+    ) {
+      throw new Error("Augmentation tasks require one equipment target only");
+    }
+
+    if (actionType === "augmentation" && targetPlayerItemId) {
+      const ownedItem = await ctx.db.get(targetPlayerItemId);
+      if (
+        !ownedItem ||
+        ownedItem.playerId !== playerId ||
+        ownedItem.quantity !== 1
+      ) {
+        throw new Error("Equipment item not found");
+      }
+      const item = await ctx.db.get(ownedItem.itemId);
+      if (!item || item.category !== "equipment") {
+        throw new Error("Only equipment can be augmented");
+      }
+      const existingAugments = await ctx.db
+        .query("playerItemAugments")
+        .withIndex("by_playerItemId", (q) =>
+          q.eq("playerItemId", targetPlayerItemId)
+        )
+        .collect();
+      const [activeTask, capacity] = await Promise.all([
+        getActiveTask(ctx, playerId),
+        getQueueCapacity(ctx),
+      ]);
+      const queuedTasks = await getQueuedTasks(ctx, playerId, capacity);
+      let reservedSlots = 0;
+      for (const task of [activeTask, ...queuedTasks]) {
+        if (
+          !task ||
+          !isRecord(task.payload) ||
+          task.payload.skillTaskVersion !== 1 ||
+          task.payload.actionType !== "augmentation" ||
+          task.payload.targetPlayerItemId !== targetPlayerItemId
+        ) {
+          continue;
+        }
+        if (task.payload.actionId === actionId) {
+          throw new Error("That augmentation is already queued for this item");
+        }
+        reservedSlots += 1;
+      }
+      if (existingAugments.length + reservedSlots >= (item.augmentSlots ?? 1)) {
+        throw new Error("That equipment has no open augmentation slots");
+      }
+    }
+
     const prepared = await prepareSkillAction(
       ctx,
       playerId,
       actionType,
-      actionId
+      actionId,
+      {
+        ...(quantity === undefined ? {} : { quantity }),
+        ...(targetPlayerItemId === undefined
+          ? {}
+          : { playerItemId: targetPlayerItemId }),
+      }
     );
+    const durationMs =
+      actionType === "gathering" && gatheringDurationMs !== undefined
+        ? gatheringDurationMs
+        : prepared.baseDurationMs * (prepared.quantity ?? 1);
+    if (
+      durationMs === undefined ||
+      !Number.isSafeInteger(durationMs) ||
+      durationMs < 1
+    ) {
+      throw new Error("Skill task has an invalid estimated duration");
+    }
 
     return await insertTask(ctx, {
       playerId,
       definition,
       taskType: "timed",
       displayName: prepared.displayName,
-      durationMs: prepared.durationMs,
+      durationMs,
       payload: {
+        skillTaskVersion: 1,
         actionType: prepared.actionType,
         actionId: prepared.actionId,
-        ...(prepared.actionType === "crafting"
-          ? {
-              reservedIngredients: prepared.reservedIngredients,
-              recipeSnapshot: prepared.recipeSnapshot,
-            }
+        skillId: prepared.skillId,
+        skillCategory: prepared.skillCategory,
+        baseExperienceReward: prepared.baseExperienceReward,
+        completedActions: 0,
+        totalExperienceEarned: 0,
+        ...(prepared.actionType === "gathering" &&
+        gatheringDurationMs !== undefined
+          ? {}
+          : { targetActionCount: prepared.quantity }),
+        ...("reservedIngredients" in prepared
+          ? { reservedIngredients: prepared.reservedIngredients }
           : {}),
+        ...("recipeSnapshot" in prepared
+          ? { recipeSnapshot: prepared.recipeSnapshot }
+          : {}),
+        ...("targetPlayerItemId" in prepared
+          ? { targetPlayerItemId: prepared.targetPlayerItemId }
+          : {}),
+        skillActionSnapshot: prepared.skillActionSnapshot,
       },
     });
   },
@@ -1119,7 +1559,7 @@ export const cancel = mutation({
     if (!currentTask) {
       return { cancelled: true };
     }
-    const refundedIngredients = await refundCraftingTaskReservation(
+    const refundedIngredients = await refundSkillTaskReservation(
       ctx,
       currentTask
     );

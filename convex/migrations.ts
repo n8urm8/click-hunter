@@ -19,10 +19,12 @@ import {
   DEFAULT_TASK_HEARTBEAT_GRACE_MS,
   DEFAULT_TASK_QUEUE_CAPACITY,
 } from "./tasks";
+import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
   DEFAULT_ITEM_RARITIES,
 } from "./itemTypes";
+import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
 
 /**
  * Migration: add item rarity definitions and assign existing items to Common.
@@ -195,6 +197,86 @@ export const backfillTaskQueueConfig = internalMutation({
     }
 
     return { created };
+  },
+});
+
+/**
+ * Migration: add XP-based skill timing and scoped global skill modifiers.
+ *
+ * Run: npx convex run migrations:backfillSkillTaskBalance
+ */
+export const backfillSkillTaskBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let createdBalanceEntries = 0;
+    for (const entry of SKILL_TASK_BALANCE_DEFAULTS) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (existing) continue;
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+      createdBalanceEntries += 1;
+    }
+
+    const augmentations = await ctx.db
+      .query("augmentationDefinitions")
+      .collect();
+    let updatedAugmentations = 0;
+    for (const augmentation of augmentations) {
+      if (augmentation.experienceReward !== undefined) continue;
+      await ctx.db.patch(augmentation._id, {
+        experienceReward: 50 * augmentation.tier,
+        updatedAt: Date.now(),
+      });
+      updatedAugmentations += 1;
+    }
+    return { createdBalanceEntries, updatedAugmentations };
+  },
+});
+
+/**
+ * Migration: raise the default skill XP requirement and configure level scaling.
+ *
+ * Run: npx convex run migrations:backfillSkillXpProgression
+ */
+export const backfillSkillXpProgression = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) =>
+        q.eq("key", SKILL_XP_BALANCE_DEFAULT.key)
+      )
+      .first();
+
+    if (!existing) {
+      await ctx.db.insert("gameBalance", {
+        ...SKILL_XP_BALANCE_DEFAULT,
+        lastUpdated: Date.now(),
+      });
+      return { created: true, updated: false };
+    }
+
+    const updateDefaultValue = existing.value === 100;
+    if (
+      !updateDefaultValue &&
+      existing.description === SKILL_XP_BALANCE_DEFAULT.description
+    ) {
+      return { created: false, updated: false };
+    }
+
+    await ctx.db.patch(existing._id, {
+      ...(updateDefaultValue
+        ? { value: SKILL_XP_BALANCE_DEFAULT.value }
+        : {}),
+      description: SKILL_XP_BALANCE_DEFAULT.description,
+      lastUpdated: Date.now(),
+    });
+    return { created: false, updated: true };
   },
 });
 

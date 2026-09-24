@@ -3,7 +3,7 @@ import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { usePlayerInventory } from "~/hooks/useInventory";
 import { useEnqueueSkillAction } from "~/hooks/useTasks";
-import { useAugmentEquipment, useSkillPanel } from "~/hooks/useSkills";
+import { useSkillPanel } from "~/hooks/useSkills";
 import {
   Tabs,
   TabsContent,
@@ -116,15 +116,20 @@ function isCompatibleEquipment(
 function SkillSummary({
   skill,
   state,
-  xpPerLevel,
+  skillXpBase,
 }: {
   skill: SkillDefinition;
   state: SkillState | null;
-  xpPerLevel: number;
+  skillXpBase: number;
 }) {
   const level = state?.level ?? 1;
   const experience = state?.experience ?? 0;
-  const progress = Math.min(100, (experience / xpPerLevel) * 100);
+  const xpRequiredForNextLevel =
+    state?.xpRequiredForNextLevel ?? skillXpBase;
+  const progress = Math.min(
+    100,
+    (experience / xpRequiredForNextLevel) * 100
+  );
 
   return (
     <div className="border border-forest-light/25 bg-forest-dark/35 p-3">
@@ -145,7 +150,7 @@ function SkillSummary({
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
         <span>
-          {experience} / {xpPerLevel} XP
+          {experience} / {xpRequiredForNextLevel} XP
         </span>
         <span>{state?.actionsCompleted ?? 0} actions</span>
       </div>
@@ -184,12 +189,16 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   const panel = useSkillPanel(playerId);
   const inventory = usePlayerInventory(playerId);
   const enqueueSkillAction = useEnqueueSkillAction();
-  const augmentEquipment = useAugmentEquipment();
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedEquipmentByAugmentation, setSelectedEquipmentByAugmentation] =
     useState<Record<string, string>>({});
+  const [quantityByGatheringActivity, setQuantityByGatheringActivity] =
+    useState<Record<string, string>>({});
+  const [quantityByRecipe, setQuantityByRecipe] = useState<
+    Record<string, string>
+  >({});
 
   const itemQuantities = useMemo(() => {
     const quantities = new Map<string, number>();
@@ -273,16 +282,16 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   }
 
   const runAction = async (
-    actionType: "gathering" | "crafting",
-    actionId: string
+    requestKey: string,
+    enqueue: () => Promise<unknown>,
+    fallback = "Unable to start skill action."
   ) => {
-    const key = `${actionType}:${actionId}`;
-    setActiveAction(key);
+    setActiveAction(requestKey);
     setError(null);
     try {
-      await enqueueSkillAction({ playerId, actionType, actionId });
+      await enqueue();
     } catch (actionError) {
-      setError(errorMessage(actionError));
+      setError(errorMessage(actionError, fallback));
     } finally {
       setActiveAction(null);
     }
@@ -293,17 +302,17 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
     playerItemId: Id<"playerItems">
   ) => {
     const key = `augmentation:${augmentationId}:${playerItemId}`;
-    setActiveAction(key);
-    setError(null);
-    try {
-      await augmentEquipment({ playerId, playerItemId, augmentationId });
-    } catch (augmentationError) {
-      setError(
-        errorMessage(augmentationError, "Unable to apply augmentation.")
-      );
-    } finally {
-      setActiveAction(null);
-    }
+    await runAction(
+      key,
+      () =>
+        enqueueSkillAction({
+          playerId,
+          actionType: "augmentation",
+          actionId: augmentationId,
+          targetPlayerItemId: playerItemId,
+        }),
+      "Unable to queue augmentation."
+    );
   };
 
   const renderGatheringActivity = (
@@ -314,6 +323,25 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
     const tier = tierFor(data.tiers, skill.skillId, activity.tier);
     const unlocked = (state?.level ?? 1) >= (tier?.requiredLevel ?? 1);
     const actionKey = `gathering:${activity.activityId}`;
+    const baseActionDurationMs =
+      activity.experienceReward * data.skillTaskMsPerXp;
+    const rawGatheringQuantity =
+      quantityByGatheringActivity[activity.activityId] ?? "1";
+    const gatheringQuantity = Number(rawGatheringQuantity);
+    const validGatheringQuantity =
+      Number.isSafeInteger(gatheringQuantity) &&
+      gatheringQuantity >= 1 &&
+      gatheringQuantity <= data.maxSkillBatchSize;
+    const gatheringRequestKey = `${actionKey}:${gatheringQuantity}`;
+    const durationOptions = [
+      { label: "+1 hr", description: "one hour", value: "one-hour" as const },
+      { label: "+2 hr", description: "two hours", value: "two-hours" as const },
+      {
+        label: "Fill",
+        description: "the remaining offline time",
+        value: "fill-remaining" as const,
+      },
+    ];
 
     return (
       <div
@@ -330,18 +358,84 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
           </p>
           <p className="mt-2 text-xs text-forest-glow">
             Yields {activity.minYield}–{activity.maxYield}{" "}
-            {activity.outputItem?.name ?? "resource"} ·{" "}
-            {formatDuration(activity.durationMs)} · +{activity.experienceReward} XP
+            {activity.outputItem?.name ?? "resource"} · Base action{" "}
+            {formatDuration(baseActionDurationMs)} · +{activity.experienceReward} XP
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          disabled={!unlocked || activeAction !== null}
-          onClick={() => void runAction("gathering", activity.activityId)}
-        >
-          {activeAction === actionKey ? "Queueing..." : "Gather"}
-        </Button>
+        <div className="flex flex-col gap-2 sm:items-end">
+          <div className="flex items-center gap-1.5">
+            <label className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Actions
+              <input
+                type="number"
+                min="1"
+                max={data.maxSkillBatchSize}
+                step="1"
+                value={rawGatheringQuantity}
+                aria-label={`${activity.name} action quantity, maximum ${data.maxSkillBatchSize}`}
+                onChange={(event) =>
+                  setQuantityByGatheringActivity((current) => ({
+                    ...current,
+                    [activity.activityId]: event.currentTarget.value,
+                  }))
+                }
+                className="min-h-9 w-20 border border-forest-light/30 bg-forest-deep px-2 text-xs font-normal normal-case tracking-normal text-foreground outline-none focus:border-gold focus:ring-1 focus:ring-gold/40"
+              />
+            </label>
+            <Button
+              type="button"
+              size="sm"
+              disabled={
+                !unlocked ||
+                !validGatheringQuantity ||
+                activeAction !== null
+              }
+              aria-label={`Start ${gatheringQuantity} ${activity.name} actions`}
+              onClick={() =>
+                void runAction(
+                  gatheringRequestKey,
+                  () =>
+                    enqueueSkillAction({
+                      playerId,
+                      actionType: "gathering",
+                      actionId: activity.activityId,
+                      quantity: gatheringQuantity,
+                    }),
+                  "Unable to queue gathering actions."
+                )
+              }
+            >
+              {activeAction === gatheringRequestKey ? "Starting..." : "Start"}
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-1 sm:justify-end">
+            {durationOptions.map((option) => {
+              const requestKey = `${actionKey}:${option.value}`;
+              return (
+                <Button
+                  key={option.value}
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  disabled={!unlocked || activeAction !== null}
+                  aria-label={`Queue ${option.description} of ${activity.name}`}
+                  onClick={() =>
+                    void runAction(requestKey, () =>
+                      enqueueSkillAction({
+                        playerId,
+                        actionType: "gathering",
+                        actionId: activity.activityId,
+                        durationOption: option.value,
+                      })
+                    )
+                  }
+                >
+                  {activeAction === requestKey ? "Queueing..." : option.label}
+                </Button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     );
   };
@@ -353,10 +447,23 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   ) => {
     const tier = tierFor(data.tiers, skill.skillId, recipe.tier);
     const unlocked = (state?.level ?? 1) >= (tier?.requiredLevel ?? 1);
-    const hasIngredients = recipe.ingredients.every(
-      (ingredient) =>
-        (itemQuantities.get(ingredient.itemId) ?? 0) >= ingredient.quantity
-    );
+    const ingredientRequirements = new Map<string, number>();
+    for (const ingredient of recipe.ingredients) {
+      ingredientRequirements.set(
+        ingredient.itemId,
+        (ingredientRequirements.get(ingredient.itemId) ?? 0) +
+          ingredient.quantity
+      );
+    }
+    const maxCraftQuantity =
+      ingredientRequirements.size === 0
+        ? 0
+        : Math.min(
+            data.maxSkillBatchSize,
+            ...Array.from(ingredientRequirements, ([itemId, quantity]) =>
+              Math.floor((itemQuantities.get(itemId) ?? 0) / quantity)
+            )
+          );
     const missingIngredients = recipe.ingredients.filter(
       (ingredient) =>
         (itemQuantities.get(ingredient.itemId) ?? 0) < ingredient.quantity
@@ -365,6 +472,15 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
     const monsterDrop = recipe.ingredients.find((ingredient) =>
       ingredient.item?.itemFamily?.includes("monster")
     );
+    const baseActionDurationMs =
+      recipe.experienceReward * data.skillTaskMsPerXp;
+    const rawCraftQuantity = quantityByRecipe[recipe.recipeId] ?? "1";
+    const craftQuantity = Number(rawCraftQuantity);
+    const validCraftQuantity =
+      Number.isSafeInteger(craftQuantity) &&
+      craftQuantity >= 1 &&
+      craftQuantity <= maxCraftQuantity;
+    const craftRequestKey = `${actionKey}:${craftQuantity}`;
 
     return (
       <div
@@ -438,7 +554,8 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
               </p>
             )}
             <p className="mt-2 text-xs text-forest-glow">
-              {formatDuration(recipe.durationMs)} · +{recipe.experienceReward} XP
+              Base action {formatDuration(baseActionDurationMs)} · +
+              {recipe.experienceReward} XP
             </p>
             {missingIngredients.length > 0 && (
               <p className="mt-1 text-[11px] text-blood-light">
@@ -454,13 +571,88 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
               </p>
             )}
           </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-end gap-1.5 border-t border-forest-light/15 pt-3">
+          <label className="flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Quantity · max {maxCraftQuantity}
+            <input
+              type="number"
+              min="1"
+              max={maxCraftQuantity}
+              step="1"
+              value={rawCraftQuantity}
+              aria-label={`${recipe.name} craft quantity`}
+              onChange={(event) =>
+                setQuantityByRecipe((current) => ({
+                  ...current,
+                  [recipe.recipeId]: event.currentTarget.value,
+                }))
+              }
+              className="min-h-8 w-24 border border-forest-light/30 bg-forest-deep px-2 text-xs font-normal normal-case tracking-normal text-foreground outline-none focus:border-gold focus:ring-1 focus:ring-gold/40"
+            />
+          </label>
+          {[1, 5, 10].map((quantity) => (
+            <Button
+              key={quantity}
+              type="button"
+              size="xs"
+              variant="outline"
+              disabled={
+                quantity > maxCraftQuantity || activeAction !== null
+              }
+              aria-label={`Set ${recipe.name} quantity to ${quantity}`}
+              onClick={() =>
+                setQuantityByRecipe((current) => ({
+                  ...current,
+                  [recipe.recipeId]: String(quantity),
+                }))
+              }
+            >
+              {quantity}
+            </Button>
+          ))}
           <Button
             type="button"
-            size="sm"
-            disabled={!unlocked || !hasIngredients || activeAction !== null}
-            onClick={() => void runAction("crafting", recipe.recipeId)}
+            size="xs"
+            variant="outline"
+            disabled={
+              !unlocked ||
+              maxCraftQuantity < 1 ||
+              !validCraftQuantity ||
+              activeAction !== null
+            }
+            aria-label={`Set ${recipe.name} quantity to maximum`}
+            onClick={() => {
+              setQuantityByRecipe((current) => ({
+                ...current,
+                [recipe.recipeId]: String(maxCraftQuantity),
+              }));
+            }}
           >
-            {activeAction === actionKey ? "Queueing..." : "Craft"}
+            Max
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            disabled={
+              !unlocked ||
+              !validCraftQuantity ||
+              activeAction !== null
+            }
+            onClick={() =>
+              void runAction(craftRequestKey, () =>
+                enqueueSkillAction({
+                  playerId,
+                  actionType: "crafting",
+                  actionId: recipe.recipeId,
+                  quantity: craftQuantity,
+                })
+              )
+            }
+          >
+            {activeAction === craftRequestKey
+              ? "Queueing..."
+              : `Queue ${validCraftQuantity ? craftQuantity : "craft"}`}
           </Button>
         </div>
       </div>
@@ -551,6 +743,13 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
                 ? ` +${augmentation.effectAmount}`
                 : ""}
             </p>
+            <p className="mt-1 text-xs text-forest-glow">
+              Base action{" "}
+              {formatDuration(
+                augmentation.experienceReward * data.skillTaskMsPerXp
+              )}{" "}
+              · +{augmentation.experienceReward} XP
+            </p>
             {!unlocked && (
               <p className="mt-1 text-[11px] text-blood-light">
                 Requires {skill.name} level {tier?.requiredLevel ?? augmentation.tier}
@@ -616,8 +815,8 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
               }}
             >
               {actionKey !== null && activeAction === actionKey
-                ? "Applying..."
-                : "Apply"}
+                ? "Queueing..."
+                : "Queue"}
             </Button>
           </div>
         </div>
@@ -654,7 +853,11 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
 
     return (
       <div className="space-y-5">
-        <SkillSummary skill={skill} state={state} xpPerLevel={data.xpPerLevel} />
+        <SkillSummary
+          skill={skill}
+          state={state}
+          skillXpBase={data.skillXpBase}
+        />
         {tierNumbers.length === 0 ? (
           <p className="border border-forest-light/20 bg-forest-dark/25 p-3 text-xs text-muted-foreground">
             No options are configured for this skill yet.

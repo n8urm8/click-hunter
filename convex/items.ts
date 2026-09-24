@@ -6,10 +6,15 @@ import {
   DEFAULT_ITEM_RARITY_LEVEL,
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
+  SKILL_BONUS_SCOPE_VALUES,
+  SKILL_TASK_EFFECT_TYPES,
   type EquipmentSlot,
   type ItemCategory,
   type ItemEffectStat,
+  type SkillBonusScope,
+  type SkillTaskEffectType,
 } from "./itemTypes";
+import { MAX_SKILL_MODIFIER_MULTIPLIER } from "./skillBonuses";
 
 const itemCategoryValidator = v.union(
   v.literal("crafting"),
@@ -30,6 +35,10 @@ const equipmentSlotValidator = v.union(
 const itemEffectStatValidator = v.union(
   ...ITEM_EFFECT_STAT_VALUES.map((value) => v.literal(value))
 );
+
+function isSkillTaskEffectType(value: unknown): value is SkillTaskEffectType {
+  return SKILL_TASK_EFFECT_TYPES.some((effectType) => effectType === value);
+}
 
 export const DEFAULT_INVENTORY_SLOT_CAPACITY = 50;
 
@@ -117,6 +126,7 @@ export interface ItemDefinitionInput {
   effectStat?: ItemEffectStat;
   effectAmount?: number;
   effectDurationMs?: number;
+  effectScope?: SkillBonusScope;
   augmentSlots?: number;
 }
 
@@ -220,6 +230,23 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
   ) {
     throw new Error("Stat-bonus items require an effect stat and amount");
   }
+  if (
+    isSkillTaskEffectType(input.effectType)
+  ) {
+    if (
+      input.category !== "crafting" ||
+      input.effectAmount === undefined ||
+      input.effectAmount <= 0 ||
+      input.effectAmount > MAX_SKILL_MODIFIER_MULTIPLIER ||
+      input.effectDurationMs === undefined
+    ) {
+      throw new Error(
+        "Skill boost items require a crafting item, positive multiplier, and duration"
+      );
+    }
+  } else if (input.effectScope !== undefined) {
+    throw new Error("Only skill boost items can define an effect scope");
+  }
 
   return {
     itemId,
@@ -242,6 +269,11 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
     ...(input.effectAmount === undefined
       ? {}
       : { effectAmount: input.effectAmount }),
+    ...(input.effectScope === undefined
+      ? isSkillTaskEffectType(input.effectType)
+        ? { effectScope: "all" as const }
+        : {}
+      : { effectScope: input.effectScope }),
     ...(input.effectDurationMs === undefined
       ? {}
       : { effectDurationMs: input.effectDurationMs }),
@@ -250,6 +282,91 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
       : { augmentSlots: input.augmentSlots }),
   };
 }
+
+export const useSkillBoost = mutation({
+  args: {
+    playerId: v.id("players"),
+    playerItemId: v.id("playerItems"),
+  },
+  handler: async (ctx, { playerId, playerItemId }) => {
+    const ownedItem = await ctx.db.get(playerItemId);
+    if (!ownedItem || ownedItem.playerId !== playerId) {
+      throw new Error("Owned item not found");
+    }
+    const item = await ctx.db.get(ownedItem.itemId);
+    if (
+      !item ||
+      item.category !== "crafting" ||
+      !isSkillTaskEffectType(item.effectType)
+    ) {
+      throw new Error("That item is not a skill boost");
+    }
+    const effectAmount = item.effectAmount;
+    const durationMs = item.effectDurationMs;
+    if (
+      typeof effectAmount !== "number" ||
+      !Number.isFinite(effectAmount) ||
+      effectAmount <= 0 ||
+      effectAmount > MAX_SKILL_MODIFIER_MULTIPLIER ||
+      typeof durationMs !== "number" ||
+      !Number.isSafeInteger(durationMs) ||
+      durationMs < 1
+    ) {
+      throw new Error("Skill boost item has invalid effect settings");
+    }
+
+    const effectType = item.effectType as SkillTaskEffectType;
+    const effectScope = item.effectScope ?? "all";
+    if (!SKILL_BONUS_SCOPE_VALUES.includes(effectScope)) {
+      throw new Error("Skill boost item has an invalid effect scope");
+    }
+    const now = Date.now();
+    await consumeItems(ctx, playerId, [{ itemId: item._id, quantity: 1 }]);
+
+    const existing = await ctx.db
+      .query("playerSkillBoosts")
+      .withIndex("by_playerId_and_effectType_and_effectScope", (q) =>
+        q
+          .eq("playerId", playerId)
+          .eq("effectType", effectType)
+          .eq("effectScope", effectScope)
+      )
+      .first();
+    const effectiveAmount =
+      existing && existing.expiresAt > now
+        ? existing.effectAmount
+        : effectAmount;
+    const expiresAt =
+      existing && existing.expiresAt > now
+        ? existing.expiresAt + durationMs
+        : now + durationMs;
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        effectAmount: effectiveAmount,
+        sourceItemId:
+          existing.expiresAt > now ? existing.sourceItemId : item._id,
+        startedAt: existing.expiresAt > now ? existing.startedAt : now,
+        expiresAt,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("playerSkillBoosts", {
+        playerId,
+        effectType,
+        effectScope,
+        effectAmount: effectiveAmount,
+        sourceItemId: item._id,
+        startedAt: now,
+        expiresAt,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    return { effectType, effectScope, effectAmount: effectiveAmount, expiresAt };
+  },
+});
 
 async function getInventorySlotCapacity(ctx: DatabaseCtx) {
   const row = await ctx.db

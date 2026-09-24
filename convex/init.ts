@@ -12,6 +12,7 @@ import {
 } from "./bossData";
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
+import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 
 async function seedMonsters(ctx: MutationCtx) {
   const existing = await ctx.db.query("monsters").first();
@@ -90,6 +91,20 @@ async function seedGameBalance(ctx: MutationCtx) {
   ];
   for (const e of entries) {
     await ctx.db.insert("gameBalance", { ...e, lastUpdated: Date.now() });
+  }
+}
+
+async function seedSkillTaskBalance(ctx: MutationCtx) {
+  for (const entry of SKILL_TASK_BALANCE_DEFAULTS) {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", entry.key))
+      .first();
+    if (existing) continue;
+    await ctx.db.insert("gameBalance", {
+      ...entry,
+      lastUpdated: Date.now(),
+    });
   }
 }
 
@@ -253,6 +268,7 @@ export default internalMutation({
     await seedUpgrades(ctx);
     await seedItemRarities(ctx);
     await seedGameBalance(ctx);
+    await seedSkillTaskBalance(ctx);
     await seedTaskQueueConfig(ctx);
     await seedTaskDefinitions(ctx);
     await ensureBossForTier(ctx, 1);

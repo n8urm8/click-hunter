@@ -1,5 +1,7 @@
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
+import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 
 type SeedItem = {
   itemId: string;
@@ -598,7 +600,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
   }
 
   for (const entry of [
-    { key: "skillXpPerLevel", value: 100, description: "Skill XP required per level" },
+    SKILL_XP_BALANCE_DEFAULT,
     { key: "bossGoldPerTier", value: 500, description: "Base boss gold reward per tier" },
     { key: "bossExperiencePerTier", value: 250, description: "Base boss experience reward per tier" },
   ]) {
@@ -618,6 +620,17 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
         lastUpdated: now,
       });
     }
+  }
+  for (const entry of SKILL_TASK_BALANCE_DEFAULTS) {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", entry.key))
+      .first();
+    if (existing) continue;
+    await ctx.db.insert("gameBalance", {
+      ...entry,
+      lastUpdated: now,
+    });
   }
 
   for (const skill of SKILLS) {
@@ -1012,6 +1025,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       effectType: "stat-bonus",
       effectStat: stat,
       effectAmount: tier * 2,
+      experienceReward: 50 * tier,
       enabled: true,
       updatedAt: now,
     };

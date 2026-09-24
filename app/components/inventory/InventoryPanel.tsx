@@ -12,13 +12,18 @@ import {
   useClaimPendingReward,
   useEquipItem,
   usePlayerInventory,
+  useSkillBoost,
   useUnequipItem,
 } from "~/hooks/useInventory";
-import { useAugmentEquipment, useSkillPanel } from "~/hooks/useSkills";
+import { useSkillPanel } from "~/hooks/useSkills";
+import { useEnqueueSkillAction } from "~/hooks/useTasks";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
 import {
   EQUIPMENT_SLOT_VALUES,
+  SKILL_TASK_EFFECT_TYPES,
   type EquipmentSlot,
+  type SkillBonusScope,
+  type SkillTaskEffectType,
 } from "../../../convex/itemTypes";
 
 interface InventoryPanelProps {
@@ -64,8 +69,28 @@ const SLOT_LAYOUT: Record<EquipmentSlot, string> = {
 
 type InventoryTab = "crafting" | "equipment";
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unable to update inventory.";
+function isSkillTaskEffectType(
+  value: string | undefined
+): value is SkillTaskEffectType {
+  return SKILL_TASK_EFFECT_TYPES.some((effectType) => effectType === value);
+}
+
+function skillScopeLabel(scope: SkillBonusScope | undefined) {
+  if (scope === "all" || scope === undefined) return "all skills";
+  return scope;
+}
+
+function formatDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${totalSeconds}s`;
+}
+
+function errorMessage(error: unknown, fallback = "Unable to update inventory.") {
+  return error instanceof Error ? error.message : fallback;
 }
 
 function isCompatible(item: OwnedItem, slot: EquipmentSlot) {
@@ -267,10 +292,14 @@ function ItemDetails({
             ownedItem.item.effectType !== "stat-bonus" && (
               <p className="mt-2 text-xs font-semibold text-forest-glow">
                 Stored effect: {ownedItem.item.effectType}
+                {isSkillTaskEffectType(ownedItem.item.effectType) &&
+                  ` · ${skillScopeLabel(ownedItem.item.effectScope)} scope`}
                 {ownedItem.item.effectStat &&
                   ` · ${statLabel(ownedItem.item.effectStat) ?? ownedItem.item.effectStat}`}
                 {ownedItem.item.effectAmount !== undefined &&
-                  ` +${ownedItem.item.effectAmount}`}
+                  (isSkillTaskEffectType(ownedItem.item.effectType)
+                    ? ` ×${ownedItem.item.effectAmount}`
+                    : ` +${ownedItem.item.effectAmount}`)}
                 {ownedItem.item.effectDurationMs !== undefined &&
                   ` · ${Math.round(ownedItem.item.effectDurationMs / 1000)}s`}
               </p>
@@ -307,7 +336,7 @@ function AugmentationControls({
   itemQuantities: Map<string, number>;
 }) {
   const skillPanel = useSkillPanel(playerId);
-  const augmentEquipment = useAugmentEquipment();
+  const enqueueSkillAction = useEnqueueSkillAction();
   const [activeAugmentation, setActiveAugmentation] = useState<string | null>(
     null
   );
@@ -329,20 +358,21 @@ function AugmentationControls({
       )
   );
 
-  const applyAugmentation = async (augmentationId: string) => {
+  const queueAugmentation = async (augmentationId: string) => {
     setActiveAugmentation(augmentationId);
     setError(null);
     try {
-      await augmentEquipment({
+      await enqueueSkillAction({
         playerId,
-        playerItemId: ownedItem._id,
-        augmentationId,
+        actionType: "augmentation",
+        actionId: augmentationId,
+        targetPlayerItemId: ownedItem._id,
       });
     } catch (augmentationError) {
       setError(
         augmentationError instanceof Error
           ? augmentationError.message
-          : "Unable to apply augmentation."
+          : "Unable to queue augmentation."
       );
     } finally {
       setActiveAugmentation(null);
@@ -440,12 +470,12 @@ function AugmentationControls({
                       activeAugmentation !== null
                     }
                     onClick={() =>
-                      void applyAugmentation(augmentation.augmentationId)
+                      void queueAugmentation(augmentation.augmentationId)
                     }
                   >
                     {activeAugmentation === augmentation.augmentationId
-                      ? "Applying..."
-                      : "Apply"}
+                      ? "Queueing..."
+                      : "Queue"}
                   </Button>
                 </div>
               );
@@ -639,6 +669,7 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
   const inventory = usePlayerInventory(playerId);
   const equipItem = useEquipItem();
   const unequipItem = useUnequipItem();
+  const activateSkillBoost = useSkillBoost();
   const [draggingItemId, setDraggingItemId] = useState<Id<"playerItems"> | null>(
     null
   );
@@ -649,6 +680,9 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
     useState<Id<"playerItems"> | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [usingSkillBoostId, setUsingSkillBoostId] =
+    useState<Id<"playerItems"> | null>(null);
+  const [skillBoostStatus, setSkillBoostStatus] = useState<string | null>(null);
 
   if (inventory.isPending) {
     return (
@@ -758,6 +792,38 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
     }
   };
 
+  const handleUseSkillBoost = async (ownedItem: OwnedItem) => {
+    if (!isSkillTaskEffectType(ownedItem.item.effectType)) {
+      setActionError("That item is not a skill boost.");
+      return;
+    }
+    if (usingSkillBoostId !== null || isUpdating) return;
+
+    setActionError(null);
+    setSkillBoostStatus(null);
+    setUsingSkillBoostId(ownedItem._id);
+    try {
+      const result = await activateSkillBoost({
+        playerId,
+        playerItemId: ownedItem._id,
+      });
+      const effectLabel =
+        result.effectType === "skill-speed-multiplier"
+          ? "skill speed"
+          : "skill XP";
+      const scopeLabel = skillScopeLabel(result.effectScope);
+      setSkillBoostStatus(
+        `${scopeLabel} ${effectLabel} ×${result.effectAmount} active for ${formatDuration(
+          result.expiresAt - Date.now()
+        )}.`
+      );
+    } catch (boostError) {
+      setActionError(errorMessage(boostError, "Unable to use skill boost."));
+    } finally {
+      setUsingSkillBoostId(null);
+    }
+  };
+
   const selectedCraftingItem =
     craftingItems.find((item) => item._id === selectedCraftingItemId) ?? null;
   const selectedEquipmentItem =
@@ -794,6 +860,7 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
               onSelect={(ownedItem) => {
                 setSelectedCraftingItemId(ownedItem._id);
                 setActionError(null);
+                setSkillBoostStatus(null);
               }}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
@@ -802,7 +869,34 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
               ownedItem={selectedCraftingItem}
               emptyMessage="Select a crafting item to view its description and available actions."
               error={actionError}
+              actions={
+                selectedCraftingItem &&
+                isSkillTaskEffectType(selectedCraftingItem.item.effectType) ? (
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="outline"
+                    disabled={
+                      usingSkillBoostId !== null ||
+                      isUpdating ||
+                      selectedCraftingItem._id === usingSkillBoostId
+                    }
+                    onClick={() =>
+                      void handleUseSkillBoost(selectedCraftingItem)
+                    }
+                  >
+                    {selectedCraftingItem._id === usingSkillBoostId
+                      ? "Activating..."
+                      : "Use boost"}
+                  </Button>
+                ) : undefined
+              }
             />
+            {skillBoostStatus && (
+              <p className="text-xs text-forest-glow" role="status">
+                {skillBoostStatus}
+              </p>
+            )}
           </div>
         </TabsContent>
 

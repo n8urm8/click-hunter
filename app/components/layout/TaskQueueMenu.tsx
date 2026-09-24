@@ -20,24 +20,38 @@ function formatDuration(durationMs: number | null | undefined) {
   return `${seconds}s`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readActionCount(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : 0;
+}
+
 function getTaskProgress(
   task: QueueTask,
   now: number,
-  offlineWindowMs: number
+  offlineWindowMs: number,
+  serverTime: number
 ) {
-  const elapsedMs =
+  const elapsedSinceSnapshot =
     task.taskType === "timed" &&
     task.status === "active" &&
     task.canProgressOffline
-      ? Math.max(0, now - task.lastResolvedAt)
+      ? Math.min(
+          Math.max(0, now - serverTime),
+          offlineWindowMs
+        )
       : 0;
   const projectedProgressMs =
     task.taskType === "timed"
       ? Math.min(
           task.durationMs ?? task.progressMs,
-          task.progressMs + Math.min(elapsedMs, offlineWindowMs)
+          task.projectedProgressMs + elapsedSinceSnapshot
         )
-      : task.progressMs;
+      : task.projectedProgressMs;
 
   if (task.taskType === "battle") {
     if (task.battleMode === "count") {
@@ -51,12 +65,30 @@ function getTaskProgress(
     return `${task.completedBattles} battles`;
   }
 
+  if (
+    isRecord(task.payload) &&
+    task.payload.skillTaskVersion === 1
+  ) {
+    const completedActions = readActionCount(task.payload.completedActions);
+    if (task.payload.actionType === "gathering") {
+      const targetActionCount = readActionCount(task.payload.targetActionCount);
+      if (targetActionCount > 0) {
+        return `${completedActions} / ${targetActionCount} actions`;
+      }
+      return `${completedActions} actions · ${formatDuration(
+        projectedProgressMs
+      )} / ${formatDuration(task.durationMs)}`;
+    }
+    const targetActionCount = readActionCount(task.payload.targetActionCount);
+    return `${completedActions} / ${targetActionCount} actions`;
+  }
+
   return `${formatDuration(projectedProgressMs)} / ${formatDuration(
     task.durationMs
   )}${
     task.status === "active" &&
     task.canProgressOffline &&
-    elapsedMs > offlineWindowMs
+    now - task.lastResolvedAt > offlineWindowMs
       ? " · offline window capped"
       : ""
   }`;
@@ -68,6 +100,7 @@ function TaskRow({
   isCancelling,
   now,
   offlineWindowMs,
+  serverTime,
   onCancel,
 }: {
   task: QueueTask;
@@ -75,6 +108,7 @@ function TaskRow({
   isCancelling: boolean;
   now: number;
   offlineWindowMs: number;
+  serverTime: number;
   onCancel: (taskId: Id<"playerTasks">) => void;
 }) {
   return (
@@ -86,7 +120,7 @@ function TaskRow({
         </p>
         <p className="text-xs text-muted-foreground">
           {isActive ? "Active" : "Queued"} ·{" "}
-          {getTaskProgress(task, now, offlineWindowMs)}
+          {getTaskProgress(task, now, offlineWindowMs, serverTime)}
         </p>
       </div>
       <Button
@@ -123,6 +157,19 @@ export function TaskQueueMenu({ playerId }: { playerId: Id<"players"> }) {
   const activeCount = queueData?.active ? 1 : 0;
   const queuedCount = queueData?.queued.length ?? 0;
   const taskCount = activeCount + queuedCount;
+  const elapsedSinceSnapshot = queueData
+    ? Math.min(
+        Math.max(0, now - queueData.serverTime),
+        queueData.offlineWindowMs
+      )
+    : 0;
+  const remainingOfflineWindowMs = queueData
+    ? Math.max(
+        0,
+        queueData.offlineWindowMs -
+          Math.max(0, queueData.offlineWorkAheadMs - elapsedSinceSnapshot)
+      )
+    : 0;
 
   const handleCancel = async (taskId: Id<"playerTasks">) => {
     setCancellingTaskId(taskId);
@@ -193,7 +240,9 @@ export function TaskQueueMenu({ playerId }: { playerId: Id<"players"> }) {
               </div>
               {queueData && (
                 <span className="text-right text-[11px] leading-4 text-muted-foreground">
-                  Offline tasks: {formatDuration(queueData.offlineWindowMs)}
+                  Offline window: {formatDuration(queueData.offlineWindowMs)}
+                  <br />
+                  Remaining: {formatDuration(remainingOfflineWindowMs)}
                   <br />
                   Battles: online only
                 </span>
@@ -217,6 +266,7 @@ export function TaskQueueMenu({ playerId }: { playerId: Id<"players"> }) {
                     isCancelling={cancellingTaskId === queueData.active._id}
                     now={now}
                     offlineWindowMs={queueData.offlineWindowMs}
+                    serverTime={queueData.serverTime}
                     onCancel={(taskId) => void handleCancel(taskId)}
                   />
                 )}
@@ -228,6 +278,7 @@ export function TaskQueueMenu({ playerId }: { playerId: Id<"players"> }) {
                     isCancelling={cancellingTaskId === task._id}
                     now={now}
                     offlineWindowMs={queueData.offlineWindowMs}
+                    serverTime={queueData.serverTime}
                     onCancel={(taskId) => void handleCancel(taskId)}
                   />
                 ))}

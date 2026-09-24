@@ -12,6 +12,19 @@ export const ITEM_EFFECT_STAT_VALUES = [
 ] as const;
 export type ItemEffectStat = (typeof ITEM_EFFECT_STAT_VALUES)[number];
 
+export const SKILL_BONUS_SCOPE_VALUES = [
+  "all",
+  "gathering",
+  "crafting",
+] as const;
+export type SkillBonusScope = (typeof SKILL_BONUS_SCOPE_VALUES)[number];
+
+export const SKILL_TASK_EFFECT_TYPES = [
+  "skill-speed-multiplier",
+  "skill-xp-multiplier",
+] as const;
+export type SkillTaskEffectType = (typeof SKILL_TASK_EFFECT_TYPES)[number];
+
 export const DEFAULT_ITEM_RARITIES = [
   { level: 10, name: "Common", color: "#9ca3af" },
   { level: 20, name: "Uncommon", color: "#22c55e" },

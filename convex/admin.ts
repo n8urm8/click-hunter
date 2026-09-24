@@ -6,7 +6,10 @@ import {
   DEFAULT_ITEM_RARITY_LEVEL,
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
+  SKILL_BONUS_SCOPE_VALUES,
+  SKILL_TASK_EFFECT_TYPES,
   type ItemEffectStat,
+  type SkillBonusScope,
 } from "./itemTypes";
 import {
   equipmentSlotValidator,
@@ -41,6 +44,9 @@ const lootPurposeValidator = v.union(
 const itemEffectStatValidator = v.union(
   ...ITEM_EFFECT_STAT_VALUES.map((value) => v.literal(value))
 );
+const skillBonusScopeValidator = v.union(
+  ...SKILL_BONUS_SCOPE_VALUES.map((value) => v.literal(value))
+);
 const recipeItemInputValidator = v.object({
   itemId: v.string(),
   quantity: v.number(),
@@ -49,6 +55,34 @@ const recipeStageValidator = v.union(
   v.literal("refinement"),
   v.literal("product")
 );
+
+function isSkillTaskEffectType(value: string) {
+  return SKILL_TASK_EFFECT_TYPES.some((effectType) => effectType === value);
+}
+
+function normalizeItemEffectScope(
+  effectType: string | undefined,
+  effectAmount: number | undefined,
+  effectDurationMs: number | undefined,
+  effectScope: SkillBonusScope | undefined
+) {
+  if (effectType !== undefined && isSkillTaskEffectType(effectType)) {
+    if (
+      effectAmount === undefined ||
+      effectAmount <= 0 ||
+      effectDurationMs === undefined
+    ) {
+      throw new Error(
+        "Skill boost items require a positive multiplier and duration"
+      );
+    }
+    return effectScope ?? "all";
+  }
+  if (effectScope !== undefined) {
+    throw new Error("Only skill boost items can define an effect scope");
+  }
+  return undefined;
+}
 
 function requiredText(value: string, field: string, maxLength = 500) {
   const text = value.trim();
@@ -881,6 +915,7 @@ export const createItem = mutation({
     effectStat: v.optional(v.union(itemEffectStatValidator, v.null())),
     effectAmount: v.optional(v.union(v.number(), v.null())),
     effectDurationMs: v.optional(v.union(v.number(), v.null())),
+    effectScope: v.optional(v.union(skillBonusScopeValidator, v.null())),
     augmentSlots: v.optional(v.union(v.number(), v.null())),
   },
   handler: async (ctx, args) => {
@@ -910,6 +945,16 @@ export const createItem = mutation({
       "Effect duration",
       1
     );
+    const effectScope =
+      args.effectScope === undefined || args.effectScope === null
+        ? undefined
+        : args.effectScope;
+    const normalizedEffectScope = normalizeItemEffectScope(
+      effectType,
+      effectAmount,
+      effectDurationMs,
+      effectScope
+    );
     const augmentSlots = optionalItemInteger(
       args.augmentSlots,
       "Augmentation slots",
@@ -933,6 +978,9 @@ export const createItem = mutation({
         : { effectStat: args.effectStat }),
       ...(effectAmount === undefined ? {} : { effectAmount }),
       ...(effectDurationMs === undefined ? {} : { effectDurationMs }),
+      ...(normalizedEffectScope === undefined
+        ? {}
+        : { effectScope: normalizedEffectScope }),
       ...(augmentSlots === undefined ? {} : { augmentSlots }),
     });
     const existing = await ctx.db
@@ -971,6 +1019,7 @@ export const updateItem = mutation({
     effectStat: v.optional(v.union(itemEffectStatValidator, v.null())),
     effectAmount: v.optional(v.union(v.number(), v.null())),
     effectDurationMs: v.optional(v.union(v.number(), v.null())),
+    effectScope: v.optional(v.union(skillBonusScopeValidator, v.null())),
     augmentSlots: v.optional(v.union(v.number(), v.null())),
   },
   handler: async (ctx, args) => {
@@ -1012,6 +1061,18 @@ export const updateItem = mutation({
       args.effectDurationMs === undefined
         ? existing.effectDurationMs
         : optionalItemInteger(args.effectDurationMs, "Effect duration", 1);
+    const effectScope =
+      args.effectScope === undefined
+        ? existing.effectScope
+        : args.effectScope === null
+          ? undefined
+          : args.effectScope;
+    const normalizedEffectScope = normalizeItemEffectScope(
+      effectType,
+      effectAmount,
+      effectDurationMs,
+      effectScope
+    );
     const augmentSlots =
       args.augmentSlots === undefined
         ? existing.augmentSlots
@@ -1040,6 +1101,9 @@ export const updateItem = mutation({
         : { effectStat }),
       ...(effectAmount === undefined ? {} : { effectAmount }),
       ...(effectDurationMs === undefined ? {} : { effectDurationMs }),
+      ...(normalizedEffectScope === undefined
+        ? {}
+        : { effectScope: normalizedEffectScope }),
       ...(augmentSlots === undefined ? {} : { augmentSlots }),
     });
 
@@ -1578,7 +1642,7 @@ export const createGatheringActivity = mutation({
     outputItemId: v.string(),
     minYield: v.number(),
     maxYield: v.number(),
-    durationMs: v.number(),
+    durationMs: v.optional(v.number()),
     experienceReward: v.number(),
     enabled: v.boolean(),
   },
@@ -1597,6 +1661,15 @@ export const createGatheringActivity = mutation({
     await validateSkillReference(ctx, skillId, tier);
     const minYield = integerAtLeast(args.minYield, "Minimum yield", 1);
     const maxYield = integerAtLeast(args.maxYield, "Maximum yield", minYield);
+    const durationMs =
+      args.durationMs === undefined
+        ? undefined
+        : integerAtLeast(args.durationMs, "Duration", 1);
+    const experienceReward = integerAtLeast(
+      args.experienceReward,
+      "Experience reward",
+      1
+    );
     const now = Date.now();
     const id = await ctx.db.insert("gatheringActivities", {
       activityId,
@@ -1607,12 +1680,8 @@ export const createGatheringActivity = mutation({
       outputItemId: await resolveItemId(ctx, args.outputItemId, "Output item ID"),
       minYield,
       maxYield,
-      durationMs: integerAtLeast(args.durationMs, "Duration", 1),
-      experienceReward: integerAtLeast(
-        args.experienceReward,
-        "Experience reward",
-        0
-      ),
+      ...(durationMs === undefined ? {} : { durationMs }),
+      experienceReward,
       enabled: args.enabled,
       createdAt: now,
       updatedAt: now,
@@ -1632,7 +1701,7 @@ export const updateGatheringActivity = mutation({
     outputItemId: v.string(),
     minYield: v.number(),
     maxYield: v.number(),
-    durationMs: v.number(),
+    durationMs: v.optional(v.number()),
     experienceReward: v.number(),
     enabled: v.boolean(),
   },
@@ -1647,6 +1716,10 @@ export const updateGatheringActivity = mutation({
     await validateSkillReference(ctx, skillId, tier);
     const minYield = integerAtLeast(args.minYield, "Minimum yield", 1);
     const maxYield = integerAtLeast(args.maxYield, "Maximum yield", minYield);
+    const durationMs =
+      args.durationMs === undefined
+        ? existing.durationMs
+        : integerAtLeast(args.durationMs, "Duration", 1);
     await ctx.db.replace(existing._id, {
       activityId: existing.activityId,
       skillId,
@@ -1656,11 +1729,11 @@ export const updateGatheringActivity = mutation({
       outputItemId: await resolveItemId(ctx, args.outputItemId, "Output item ID"),
       minYield,
       maxYield,
-      durationMs: integerAtLeast(args.durationMs, "Duration", 1),
+      ...(durationMs === undefined ? {} : { durationMs }),
       experienceReward: integerAtLeast(
         args.experienceReward,
         "Experience reward",
-        0
+        1
       ),
       enabled: args.enabled,
       createdAt: existing.createdAt,
@@ -1678,7 +1751,7 @@ export const createRecipe = mutation({
     tier: v.number(),
     name: v.string(),
     description: v.string(),
-    durationMs: v.number(),
+    durationMs: v.optional(v.number()),
     experienceReward: v.number(),
     outputFamily: v.union(v.string(), v.null()),
     stage: v.optional(recipeStageValidator),
@@ -1707,6 +1780,15 @@ export const createRecipe = mutation({
     );
     const outputs = await recipeItemRowsFromArgs(ctx, args.outputs, "Outputs");
     const outputFamily = optionalTextArg(args.outputFamily, "Output family", 100);
+    const durationMs =
+      args.durationMs === undefined
+        ? undefined
+        : integerAtLeast(args.durationMs, "Duration", 1);
+    const experienceReward = integerAtLeast(
+      args.experienceReward,
+      "Experience reward",
+      1
+    );
     const now = Date.now();
     const id = await ctx.db.insert("recipes", {
       recipeId,
@@ -1714,12 +1796,8 @@ export const createRecipe = mutation({
       tier,
       name: requiredText(args.name, "Name", 200),
       description: requiredText(args.description, "Description", 1000),
-      durationMs: integerAtLeast(args.durationMs, "Duration", 1),
-      experienceReward: integerAtLeast(
-        args.experienceReward,
-        "Experience reward",
-        0
-      ),
+      ...(durationMs === undefined ? {} : { durationMs }),
+      experienceReward,
       ...(outputFamily === undefined ? {} : { outputFamily }),
       ...(args.stage === undefined ? {} : { stage: args.stage }),
       ...(args.requiresMonsterDrop === undefined
@@ -1743,7 +1821,7 @@ export const updateRecipe = mutation({
     tier: v.number(),
     name: v.string(),
     description: v.string(),
-    durationMs: v.number(),
+    durationMs: v.optional(v.number()),
     experienceReward: v.number(),
     outputFamily: v.union(v.string(), v.null()),
     stage: v.optional(recipeStageValidator),
@@ -1773,17 +1851,21 @@ export const updateRecipe = mutation({
       args.requiresMonsterDrop === undefined
         ? existing.requiresMonsterDrop
         : args.requiresMonsterDrop;
+    const durationMs =
+      args.durationMs === undefined
+        ? existing.durationMs
+        : integerAtLeast(args.durationMs, "Duration", 1);
     await ctx.db.replace(existing._id, {
       recipeId: existing.recipeId,
       skillId,
       tier,
       name: requiredText(args.name, "Name", 200),
       description: requiredText(args.description, "Description", 1000),
-      durationMs: integerAtLeast(args.durationMs, "Duration", 1),
+      ...(durationMs === undefined ? {} : { durationMs }),
       experienceReward: integerAtLeast(
         args.experienceReward,
         "Experience reward",
-        0
+        1
       ),
       ...(outputFamily === undefined ? {} : { outputFamily }),
       ...(stage === undefined ? {} : { stage }),
@@ -1815,6 +1897,7 @@ export const createAugmentationDefinition = mutation({
     effectType: v.string(),
     effectStat: v.union(itemEffectStatValidator, v.null()),
     effectAmount: v.number(),
+    experienceReward: v.optional(v.number()),
     enabled: v.boolean(),
   },
   handler: async (ctx, args) => {
@@ -1884,6 +1967,10 @@ export const createAugmentationDefinition = mutation({
       effectType: requiredText(args.effectType, "Effect type", 100),
       ...(args.effectStat === null ? {} : { effectStat: args.effectStat }),
       effectAmount: numberAtLeast(args.effectAmount, "Effect amount", 0),
+      experienceReward:
+        args.experienceReward === undefined
+          ? 50 * tier
+          : integerAtLeast(args.experienceReward, "Base experience reward", 1),
       enabled: args.enabled,
       createdAt: now,
       updatedAt: now,
@@ -1909,6 +1996,7 @@ export const updateAugmentationDefinition = mutation({
     effectType: v.string(),
     effectStat: v.union(itemEffectStatValidator, v.null()),
     effectAmount: v.number(),
+    experienceReward: v.optional(v.number()),
     enabled: v.boolean(),
   },
   handler: async (ctx, args) => {
@@ -1968,6 +2056,10 @@ export const updateAugmentationDefinition = mutation({
       effectType,
       ...(args.effectStat === null ? {} : { effectStat: args.effectStat }),
       effectAmount: numberAtLeast(args.effectAmount, "Effect amount", 0),
+      experienceReward:
+        args.experienceReward === undefined
+          ? existing.experienceReward ?? 50 * tier
+          : integerAtLeast(args.experienceReward, "Base experience reward", 1),
       enabled: args.enabled,
       createdAt: existing.createdAt,
       updatedAt: Date.now(),
@@ -2332,6 +2424,10 @@ export const saveCraftingConfig = mutation({
         "outputItemId",
         "Output item ID"
       );
+      const durationMs =
+        value.durationMs === undefined
+          ? existing.durationMs
+          : integerValue(value, "durationMs", "Duration", 1);
       await ctx.db.replace(existing._id, {
         activityId,
         skillId,
@@ -2341,12 +2437,12 @@ export const saveCraftingConfig = mutation({
         outputItemId,
         minYield,
         maxYield,
-        durationMs: integerValue(value, "durationMs", "Duration", 1),
+        ...(durationMs === undefined ? {} : { durationMs }),
         experienceReward: integerValue(
           value,
           "experienceReward",
           "Experience reward",
-          0
+          1
         ),
         enabled: booleanValue(value, "enabled", "Enabled"),
         createdAt: existing.createdAt,
@@ -2394,18 +2490,22 @@ export const saveCraftingConfig = mutation({
         value.requiresMonsterDrop === undefined
           ? existing.requiresMonsterDrop
           : booleanValue(value, "requiresMonsterDrop", "Requires monster drop");
+      const durationMs =
+        value.durationMs === undefined
+          ? existing.durationMs
+          : integerValue(value, "durationMs", "Duration", 1);
       await ctx.db.replace(existing._id, {
         recipeId,
         skillId,
         tier,
         name: stringValue(value, "name", "Name", 200),
         description: stringValue(value, "description", "Description", 1000),
-        durationMs: integerValue(value, "durationMs", "Duration", 1),
+        ...(durationMs === undefined ? {} : { durationMs }),
         experienceReward: integerValue(
           value,
           "experienceReward",
           "Experience reward",
-          0
+          1
         ),
         ...(outputFamily === undefined ? {} : { outputFamily }),
         ...(stage === undefined ? {} : { stage }),
@@ -2468,6 +2568,15 @@ export const saveCraftingConfig = mutation({
       if (effectType === "stat-bonus" && effectStat === undefined) {
         throw new Error("Stat-bonus effects require an effect stat");
       }
+      const experienceReward =
+        value.experienceReward === undefined
+          ? existing.experienceReward ?? 50 * tier
+          : integerValue(
+              value,
+              "experienceReward",
+              "Base experience reward",
+              1
+            );
       await ctx.db.replace(existing._id, {
         augmentationId,
         skillId,
@@ -2514,6 +2623,7 @@ export const saveCraftingConfig = mutation({
         effectType,
         ...(effectStat === undefined ? {} : { effectStat }),
         effectAmount: numberValue(value, "effectAmount", "Effect amount", 0),
+        experienceReward,
         enabled: booleanValue(value, "enabled", "Enabled"),
         createdAt: existing.createdAt,
         updatedAt: now,

@@ -1,6 +1,15 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireAdmin } from "./adminAuth";
+import {
+  SKILL_BONUS_SCOPE_VALUES,
+  SKILL_TASK_EFFECT_TYPES,
+} from "./itemTypes";
+import { MAX_SKILL_MODIFIER_MULTIPLIER } from "./skillBonuses";
+
+const skillBonusScopeValidator = v.union(
+  ...SKILL_BONUS_SCOPE_VALUES.map((scope) => v.literal(scope))
+);
 
 /**
  * Create or update a game event (admin)
@@ -15,19 +24,42 @@ export const createEvent = mutation({
     endTime: v.number(),
     effectType: v.string(), // "gold-multiplier", "xp-multiplier"
     effectValue: v.number(),
+    effectScope: v.optional(v.union(skillBonusScopeValidator, v.null())),
   },
   async handler(ctx, args) {
     await requireAdmin(ctx, args.playerId);
-    const { playerId: _playerId, ...eventArgs } = args;
+    const {
+      playerId: _playerId,
+      effectScope: rawEffectScope,
+      ...eventArgs
+    } = args;
     const eventId = eventArgs.eventId.trim();
     const name = eventArgs.name.trim();
     const description = eventArgs.description.trim();
     const effectType = eventArgs.effectType.trim();
+    const isSkillEffect = SKILL_TASK_EFFECT_TYPES.some(
+      (supportedEffectType) => supportedEffectType === effectType
+    );
+    const effectScope =
+      rawEffectScope === undefined || rawEffectScope === null
+        ? undefined
+        : rawEffectScope;
+    if (isSkillEffect && effectScope === undefined) {
+      throw new Error("Skill bonus events require an effect scope");
+    }
+    if (!isSkillEffect && effectScope !== undefined) {
+      throw new Error("Only skill bonus events can define an effect scope");
+    }
     if (!eventId || !name || !description || !effectType) {
       throw new Error("Event ID, name, description, and effect type are required");
     }
     if (!Number.isFinite(eventArgs.effectValue) || eventArgs.effectValue <= 0) {
       throw new Error("Event effect value must be a finite number greater than 0");
+    }
+    if (isSkillEffect && eventArgs.effectValue > MAX_SKILL_MODIFIER_MULTIPLIER) {
+      throw new Error(
+        `Skill event multipliers must be at most ${MAX_SKILL_MODIFIER_MULTIPLIER}`
+      );
     }
     if (
       !Number.isFinite(eventArgs.startTime) ||
@@ -50,6 +82,7 @@ export const createEvent = mutation({
         name,
         description,
         effectType,
+        effectScope,
         isActive:
           eventArgs.startTime <= Date.now() && eventArgs.endTime > Date.now(),
       });
@@ -62,6 +95,7 @@ export const createEvent = mutation({
       name,
       description,
       effectType,
+      ...(effectScope === undefined ? {} : { effectScope }),
       isActive:
         eventArgs.startTime <= Date.now() && eventArgs.endTime > Date.now(),
       createdAt: Date.now(),

@@ -67,14 +67,23 @@ import {
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
   ITEM_CATEGORY_VALUES,
+  SKILL_BONUS_SCOPE_VALUES,
+  SKILL_TASK_EFFECT_TYPES,
   type EquipmentSlot,
   type ItemEffectStat,
   type ItemCategory,
+  type SkillBonusScope,
 } from "../../../convex/itemTypes";
 
 const inputClass =
   "w-full border border-forest-light/30 bg-forest-dark/70 px-2 py-1.5 text-sm text-foreground outline-none focus:border-gold/70";
 const textareaClass = `${inputClass} min-h-12 resize-y`;
+
+function isSkillTaskEffectType(value: string) {
+  return SKILL_TASK_EFFECT_TYPES.some(
+    (effectType) => effectType === value.trim()
+  );
+}
 
 interface AdminPanelProps {
   playerId: Id<"players">;
@@ -1180,7 +1189,6 @@ interface GatheringActivityForm {
   outputItemId: string;
   minYield: string;
   maxYield: string;
-  durationMs: string;
   experienceReward: string;
   enabled: boolean;
 }
@@ -1199,8 +1207,7 @@ function gatheringActivityForm(
     outputItemId: row ? itemStableId(items, row.outputItemId) : sortedItems(items)[0]?.itemId ?? "",
     minYield: String(row?.minYield ?? 1),
     maxYield: String(row?.maxYield ?? 1),
-    durationMs: String(row?.durationMs ?? 30000),
-    experienceReward: String(row?.experienceReward ?? 0),
+    experienceReward: String(row?.experienceReward ?? 1),
     enabled: row?.enabled ?? true,
   };
 }
@@ -1239,8 +1246,7 @@ function GatheringActivityEditor({
         outputItemId: form.outputItemId,
         minYield,
         maxYield: requiredInteger(form.maxYield, "Maximum yield", minYield),
-        durationMs: requiredInteger(form.durationMs, "Duration", 1),
-        experienceReward: requiredInteger(form.experienceReward, "Experience reward", 0),
+        experienceReward: requiredInteger(form.experienceReward, "Experience reward", 1),
         enabled: form.enabled,
       };
       if (row) {
@@ -1260,7 +1266,7 @@ function GatheringActivityEditor({
     <EditorShell
       title={row ? row.name : "Create gathering"}
       identifier={row ? `ID: ${row.activityId}` : "New gathering activity"}
-      columns={["Activity ID", "Skill", "Tier", "Name", "Output item", "Yield", "Duration", "XP", "Enabled", "Description"]}
+      columns={["Activity ID", "Skill", "Tier", "Name", "Output item", "Yield", "XP", "Enabled", "Description"]}
       onSubmit={handleSubmit}
       isSaving={isSaving}
       error={error}
@@ -1271,8 +1277,7 @@ function GatheringActivityEditor({
       <Field label="Name"><TextInput value={form.name} onChange={(event) => setForm({ ...form, name: event.currentTarget.value })} /></Field>
       <Field label="Output item"><select value={form.outputItemId} onChange={(event) => setForm({ ...form, outputItemId: event.currentTarget.value })} className={inputClass}>{itemOptions(items)}</select></Field>
       <Field label="Yield"><div className="grid grid-cols-2 gap-2"><TextInput aria-label="Minimum yield" type="number" min="1" step="1" value={form.minYield} onChange={(event) => setForm({ ...form, minYield: event.currentTarget.value })} /><TextInput aria-label="Maximum yield" type="number" min="1" step="1" value={form.maxYield} onChange={(event) => setForm({ ...form, maxYield: event.currentTarget.value })} /></div></Field>
-      <Field label="Duration"><TextInput type="number" min="1" step="1" value={form.durationMs} onChange={(event) => setForm({ ...form, durationMs: event.currentTarget.value })} /></Field>
-      <Field label="XP"><TextInput type="number" min="0" step="1" value={form.experienceReward} onChange={(event) => setForm({ ...form, experienceReward: event.currentTarget.value })} /></Field>
+      <Field label="Base XP"><TextInput type="number" min="1" step="1" value={form.experienceReward} onChange={(event) => setForm({ ...form, experienceReward: event.currentTarget.value })} /></Field>
       <Field label="Enabled"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.currentTarget.checked })} className="mt-2 size-4 accent-gold" /></Field>
       <Field label="Description"><textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.currentTarget.value })} className={textareaClass} rows={2} /></Field>
     </EditorShell>
@@ -1285,7 +1290,6 @@ interface RecipeForm {
   tier: string;
   name: string;
   description: string;
-  durationMs: string;
   experienceReward: string;
   outputFamily: string;
   stage: "" | "refinement" | "product";
@@ -1309,8 +1313,7 @@ function recipeForm(
     tier: String(row?.tier ?? 1),
     name: row?.name ?? "",
     description: row?.description ?? "",
-    durationMs: String(row?.durationMs ?? 45000),
-    experienceReward: String(row?.experienceReward ?? 0),
+    experienceReward: String(row?.experienceReward ?? 1),
     outputFamily: row?.outputFamily ?? "",
     stage: row?.stage ?? "",
     requiresMonsterDrop: row?.requiresMonsterDrop ?? false,
@@ -1354,8 +1357,7 @@ function RecipeEditor({
         tier: requiredInteger(form.tier, "Tier", 1),
         name: form.name,
         description: form.description,
-        durationMs: requiredInteger(form.durationMs, "Duration", 1),
-        experienceReward: requiredInteger(form.experienceReward, "Experience reward", 0),
+        experienceReward: requiredInteger(form.experienceReward, "Experience reward", 1),
         outputFamily: form.outputFamily.trim() || null,
         ...(form.stage === "" ? {} : { stage: form.stage }),
         requiresMonsterDrop: form.requiresMonsterDrop,
@@ -1380,7 +1382,7 @@ function RecipeEditor({
     <EditorShell
       title={row ? row.name : "Create recipe"}
       identifier={row ? `ID: ${row.recipeId}` : "New recipe"}
-      columns={["Recipe ID", "Skill", "Tier", "Name", "Duration", "XP", "Output family", "Stage", "Monster drop", "Enabled", "Ingredients", "Outputs", "Description"]}
+      columns={["Recipe ID", "Skill", "Tier", "Name", "Base XP", "Output family", "Stage", "Monster drop", "Enabled", "Ingredients", "Outputs", "Description"]}
       onSubmit={handleSubmit}
       isSaving={isSaving}
       error={error}
@@ -1389,8 +1391,7 @@ function RecipeEditor({
       <Field label="Skill"><select value={form.skillId} onChange={(event) => setForm({ ...form, skillId: event.currentTarget.value })} className={inputClass}>{skillOptions(skills, "crafting")}</select></Field>
       <Field label="Tier"><TextInput type="number" min="1" step="1" value={form.tier} onChange={(event) => setForm({ ...form, tier: event.currentTarget.value })} /></Field>
       <Field label="Name"><TextInput value={form.name} onChange={(event) => setForm({ ...form, name: event.currentTarget.value })} /></Field>
-      <Field label="Duration"><TextInput type="number" min="1" step="1" value={form.durationMs} onChange={(event) => setForm({ ...form, durationMs: event.currentTarget.value })} /></Field>
-      <Field label="XP"><TextInput type="number" min="0" step="1" value={form.experienceReward} onChange={(event) => setForm({ ...form, experienceReward: event.currentTarget.value })} /></Field>
+      <Field label="Base XP"><TextInput type="number" min="1" step="1" value={form.experienceReward} onChange={(event) => setForm({ ...form, experienceReward: event.currentTarget.value })} /></Field>
       <Field label="Output family"><TextInput value={form.outputFamily} onChange={(event) => setForm({ ...form, outputFamily: event.currentTarget.value })} /></Field>
       <Field label="Stage">
         <select
@@ -1446,6 +1447,7 @@ interface AugmentationForm {
   effectType: string;
   effectStat: ItemEffectStat | "";
   effectAmount: string;
+  experienceReward: string;
   enabled: boolean;
 }
 
@@ -1470,6 +1472,9 @@ function augmentationForm(
     effectType: row?.effectType ?? "stat-bonus",
     effectStat: row?.effectStat ?? "",
     effectAmount: String(row?.effectAmount ?? 1),
+    experienceReward: String(
+      row?.experienceReward ?? 50 * (row?.tier ?? 1)
+    ),
     enabled: row?.enabled ?? true,
   };
 }
@@ -1513,6 +1518,11 @@ function AugmentationDefinitionEditor({
         effectType: form.effectType,
         effectStat: form.effectStat || null,
         effectAmount: requiredNumber(form.effectAmount, "Effect amount", 0),
+        experienceReward: requiredInteger(
+          form.experienceReward,
+          "Base experience reward",
+          1
+        ),
         enabled: form.enabled,
       };
       if (row) {
@@ -1532,7 +1542,7 @@ function AugmentationDefinitionEditor({
     <EditorShell
       title={row ? row.name : "Create augmentation"}
       identifier={row ? `ID: ${row.augmentationId}` : "New augmentation"}
-      columns={["Augmentation ID", "Skill", "Tier", "Name", "Base family", "Slots", "Material", "Qty", "Catalyst", "Catalyst qty", "Effect type", "Effect stat", "Amount", "Enabled", "Description"]}
+      columns={["Augmentation ID", "Skill", "Tier", "Name", "Base family", "Slots", "Material", "Qty", "Catalyst", "Catalyst qty", "Effect type", "Effect stat", "Amount", "Base XP", "Enabled", "Description"]}
       onSubmit={handleSubmit}
       isSaving={isSaving}
       error={error}
@@ -1550,6 +1560,7 @@ function AugmentationDefinitionEditor({
       <Field label="Effect type"><TextInput value={form.effectType} onChange={(event) => setForm({ ...form, effectType: event.currentTarget.value })} /></Field>
       <Field label="Effect stat"><select value={form.effectStat} onChange={(event) => setForm({ ...form, effectStat: event.currentTarget.value as ItemEffectStat | "" })} className={inputClass}><option value="">None</option>{ITEM_EFFECT_STAT_VALUES.map((stat) => (<option key={stat} value={stat}>{stat.toUpperCase()}</option>))}</select></Field>
       <Field label="Amount"><TextInput type="number" min="0" step="any" value={form.effectAmount} onChange={(event) => setForm({ ...form, effectAmount: event.currentTarget.value })} /></Field>
+      <Field label="Base XP"><TextInput type="number" min="1" step="1" value={form.experienceReward} onChange={(event) => setForm({ ...form, experienceReward: event.currentTarget.value })} /></Field>
       <Field label="Enabled"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.currentTarget.checked })} className="mt-2 size-4 accent-gold" /></Field>
       <Field label="Description"><textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.currentTarget.value })} className={textareaClass} rows={2} /></Field>
     </EditorShell>
@@ -2291,6 +2302,7 @@ interface ItemForm {
   effectStat: ItemEffectStat | "";
   effectAmount: string;
   effectDurationMs: string;
+  effectScope: SkillBonusScope;
   augmentSlots: string;
 }
 
@@ -2317,6 +2329,7 @@ function itemForm(
       row?.effectAmount === undefined ? "" : String(row.effectAmount),
     effectDurationMs:
       row?.effectDurationMs === undefined ? "" : String(row.effectDurationMs),
+    effectScope: row?.effectScope ?? "all",
     augmentSlots:
       row?.augmentSlots === undefined ? "" : String(row.augmentSlots),
   };
@@ -2361,6 +2374,7 @@ function ItemEditor({
         : 1;
       const allowedEquipmentSlots =
         form.category === "equipment" ? form.allowedEquipmentSlots : [];
+      const skillBoost = isSkillTaskEffectType(form.effectType);
 
       if (form.category === "equipment" && allowedEquipmentSlots.length === 0) {
         throw new Error("Select at least one compatible equipment slot.");
@@ -2380,12 +2394,13 @@ function ItemEditor({
         craftingTier: optionalNumber(form.craftingTier, "Crafting tier", 1),
         effectType: form.effectType.trim() || null,
         effectStat: form.effectStat || null,
-        effectAmount: optionalNumber(form.effectAmount, "Effect amount", 0),
-        effectDurationMs: optionalNumber(
-          form.effectDurationMs,
-          "Effect duration",
-          1
-        ),
+        effectAmount: skillBoost
+          ? requiredNumber(form.effectAmount, "Effect multiplier", 0.000001)
+          : optionalNumber(form.effectAmount, "Effect amount", 0),
+        effectDurationMs: skillBoost
+          ? requiredInteger(form.effectDurationMs, "Effect duration", 1)
+          : optionalNumber(form.effectDurationMs, "Effect duration", 1),
+        effectScope: skillBoost ? form.effectScope : null,
         augmentSlots: optionalNumber(form.augmentSlots, "Augmentation slots", 0),
       };
 
@@ -2418,6 +2433,7 @@ function ItemEditor({
         "Crafting skill",
         "Crafting tier",
         "Effect type",
+        "Effect scope",
         "Effect stat",
         "Effect amount",
         "Effect duration",
@@ -2568,6 +2584,28 @@ function ItemEditor({
           }
         />
       </Field>
+      {isSkillTaskEffectType(form.effectType) ? (
+        <Field label="Skill bonus scope">
+          <select
+            value={form.effectScope}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                effectScope: event.currentTarget.value as SkillBonusScope,
+              })
+            }
+            className={inputClass}
+          >
+            {SKILL_BONUS_SCOPE_VALUES.map((scope) => (
+              <option key={scope} value={scope}>
+                {scope}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : (
+        <div role="cell" />
+      )}
       <Field label="Effect stat">
         <select
           value={form.effectStat}
@@ -2591,6 +2629,7 @@ function ItemEditor({
         <TextInput
           type="number"
           min="0"
+          max={isSkillTaskEffectType(form.effectType) ? "1000" : undefined}
           step="any"
           value={form.effectAmount}
           onChange={(event) =>
@@ -3273,6 +3312,7 @@ interface EventForm {
   endTime: string;
   effectType: string;
   effectValue: string;
+  effectScope: SkillBonusScope;
 }
 
 function toDatetimeLocal(timestamp: number) {
@@ -3290,6 +3330,7 @@ function eventForm(row?: Doc<"gameEvents">): EventForm {
     endTime: row ? toDatetimeLocal(row.endTime) : "",
     effectType: row?.effectType ?? "gold-multiplier",
     effectValue: row ? String(row.effectValue) : "1.1",
+    effectScope: row?.effectScope ?? "all",
   };
 }
 
@@ -3331,6 +3372,9 @@ function EventEditor({
         endTime,
         effectType: form.effectType,
         effectValue: requiredNumber(form.effectValue, "Effect value", 0.000001),
+        effectScope: isSkillTaskEffectType(form.effectType)
+          ? form.effectScope
+          : null,
       });
       if (!row) setForm(eventForm());
     } catch (saveError) {
@@ -3350,6 +3394,7 @@ function EventEditor({
         "Start",
         "End",
         "Effect type",
+        "Skill scope",
         "Effect value",
         "Description",
         "Status",
@@ -3399,10 +3444,35 @@ function EventEditor({
           }
         />
       </Field>
+      {isSkillTaskEffectType(form.effectType) ? (
+        <Field label="Skill scope">
+          <select
+            value={form.effectScope}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                effectScope: event.currentTarget.value as SkillBonusScope,
+              })
+            }
+            className={inputClass}
+          >
+            {SKILL_BONUS_SCOPE_VALUES.map((scope) => (
+              <option key={scope} value={scope}>
+                {scope}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : (
+        <div role="cell" />
+      )}
       <Field label="Effect value">
         <TextInput
           type="number"
           min="0.000001"
+          max={
+            isSkillTaskEffectType(form.effectType) ? "1000" : undefined
+          }
           step="any"
           value={form.effectValue}
           onChange={(event) =>
