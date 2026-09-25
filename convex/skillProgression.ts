@@ -35,13 +35,16 @@ export function applySkillExperience(
   currentLevel: number,
   currentExperience: number,
   earnedExperience: number,
-  maxLevel: number,
+  maxLevel: number | undefined,
   baseXp: number
 ) {
   if (!Number.isSafeInteger(currentLevel) || currentLevel < 1) {
     throw new Error("Skill level must be a positive safe integer");
   }
-  if (!Number.isSafeInteger(maxLevel) || maxLevel < 1) {
+  if (
+    maxLevel !== undefined &&
+    (!Number.isSafeInteger(maxLevel) || maxLevel < 1)
+  ) {
     throw new Error("Skill maximum level must be a positive safe integer");
   }
   if (
@@ -59,11 +62,12 @@ export function applySkillExperience(
     throw new Error("Skill experience exceeds the supported limit");
   }
 
+  const capped = maxLevel ?? Number.MAX_SAFE_INTEGER;
   let xpRequired = getSkillXpRequiredForLevel(level, baseXp);
-  while (level < maxLevel && experience >= xpRequired) {
+  while (level < capped && experience >= xpRequired) {
     experience -= xpRequired;
     level += 1;
-    if (level < maxLevel) {
+    if (level < capped) {
       xpRequired += level * baseXp;
       if (!Number.isSafeInteger(xpRequired)) {
         throw new Error("Skill XP requirement exceeds the supported limit");

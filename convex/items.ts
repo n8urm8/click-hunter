@@ -3,11 +3,19 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  BUFF_VARIANT_VALUES,
+  COMBAT_EFFECT_TYPES,
+  DAMAGE_STAT_VALUES,
+  DAMAGE_TYPE_VALUES,
   DEFAULT_ITEM_RARITY_LEVEL,
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
   SKILL_BONUS_SCOPE_VALUES,
   SKILL_TASK_EFFECT_TYPES,
+  type BuffVariant,
+  type CombatEffectType,
+  type DamageStat,
+  type DamageType,
   type EquipmentSlot,
   type ItemCategory,
   type ItemEffectStat,
@@ -15,6 +23,10 @@ import {
   type SkillTaskEffectType,
 } from "./itemTypes";
 import { MAX_SKILL_MODIFIER_MULTIPLIER } from "./skillBonuses";
+
+function isCombatEffectType(value: unknown): value is CombatEffectType {
+  return COMBAT_EFFECT_TYPES.some((effectType) => effectType === value);
+}
 
 const itemCategoryValidator = v.union(
   v.literal("crafting"),
@@ -128,6 +140,13 @@ export interface ItemDefinitionInput {
   effectDurationMs?: number;
   effectScope?: SkillBonusScope;
   augmentSlots?: number;
+  baseDamage?: number;
+  attackSpeed?: number;
+  damageStat?: DamageStat;
+  damageType?: DamageType;
+  baseDefense?: number;
+  speedPenalty?: number;
+  buffVariant?: BuffVariant;
 }
 
 function requiredText(value: string, field: string, maxLength: number) {
@@ -248,6 +267,109 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
     throw new Error("Only skill boost items can define an effect scope");
   }
 
+  if (input.effectType !== undefined && isCombatEffectType(input.effectType)) {
+    if (input.category !== "crafting") {
+      throw new Error("Combat consumables must be crafting items");
+    }
+    if (
+      input.effectAmount === undefined ||
+      !Number.isFinite(input.effectAmount) ||
+      input.effectAmount <= 0 ||
+      input.effectDurationMs === undefined
+    ) {
+      throw new Error(
+        "Combat consumables require a positive effect amount and duration"
+      );
+    }
+    if (input.effectScope !== undefined) {
+      throw new Error("Combat consumables cannot define an effect scope");
+    }
+    if (
+      input.effectType === "combat-stat-boost" &&
+      (input.effectStat === undefined ||
+        !ITEM_EFFECT_STAT_VALUES.includes(input.effectStat))
+    ) {
+      throw new Error("Combat stat boosts require a valid effect stat");
+    }
+  }
+
+  const isMainHand = allowedEquipmentSlots.includes("mainHand");
+  if (isMainHand) {
+    if (
+      input.baseDamage === undefined ||
+      !Number.isFinite(input.baseDamage) ||
+      input.baseDamage <= 0
+    ) {
+      throw new Error("Main-hand weapons require a positive base damage");
+    }
+    if (
+      input.attackSpeed === undefined ||
+      !Number.isFinite(input.attackSpeed) ||
+      input.attackSpeed <= 0
+    ) {
+      throw new Error("Main-hand weapons require a positive attack speed");
+    }
+    if (
+      input.damageStat === undefined ||
+      !DAMAGE_STAT_VALUES.includes(input.damageStat)
+    ) {
+      throw new Error("Main-hand weapons require a damage stat");
+    }
+    if (
+      input.damageType !== undefined &&
+      !DAMAGE_TYPE_VALUES.includes(input.damageType)
+    ) {
+      throw new Error("Weapon damage type must be physical or magical");
+    }
+    if (input.baseDefense !== undefined || input.speedPenalty !== undefined) {
+      throw new Error("Weapons cannot define armor fields");
+    }
+  } else if (
+    input.baseDamage !== undefined ||
+    input.attackSpeed !== undefined ||
+    input.damageStat !== undefined ||
+    input.damageType !== undefined
+  ) {
+    throw new Error("Only main-hand weapons can define weapon combat fields");
+  }
+
+  const ARMOR_SLOTS: EquipmentSlot[] = ["head", "chest", "legs", "feet"];
+  const isArmor = allowedEquipmentSlots.some((slot) =>
+    ARMOR_SLOTS.includes(slot)
+  );
+  if (input.baseDefense !== undefined) {
+    if (
+      !Number.isFinite(input.baseDefense) ||
+      input.baseDefense < 0 ||
+      !isArmor
+    ) {
+      throw new Error(
+        "Base defense must be a non-negative number on head, chest, legs, or feet gear"
+      );
+    }
+  }
+  if (input.speedPenalty !== undefined) {
+    if (
+      !Number.isFinite(input.speedPenalty) ||
+      input.speedPenalty < 0 ||
+      !isArmor
+    ) {
+      throw new Error(
+        "Speed penalty must be a non-negative number on head, chest, legs, or feet gear"
+      );
+    }
+  }
+
+  if (
+    input.buffVariant !== undefined &&
+    !BUFF_VARIANT_VALUES.includes(input.buffVariant)
+  ) {
+    throw new Error("Buff variant must be base or advanced");
+  }
+  if (input.buffVariant !== undefined && input.effectType === undefined) {
+    throw new Error("Buff variant requires an effect type");
+  }
+
   return {
     itemId,
     name,
@@ -280,6 +402,83 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
     ...(input.augmentSlots === undefined
       ? {}
       : { augmentSlots: input.augmentSlots }),
+    ...(input.baseDamage === undefined
+      ? {}
+      : { baseDamage: input.baseDamage }),
+    ...(input.attackSpeed === undefined
+      ? {}
+      : { attackSpeed: input.attackSpeed }),
+    ...(input.damageStat === undefined
+      ? {}
+      : { damageStat: input.damageStat }),
+    ...(input.damageType === undefined
+      ? isMainHand
+        ? { damageType: "physical" as const }
+        : {}
+      : { damageType: input.damageType }),
+    ...(input.baseDefense === undefined
+      ? {}
+      : { baseDefense: input.baseDefense }),
+    ...(input.speedPenalty === undefined
+      ? {}
+      : { speedPenalty: input.speedPenalty }),
+    ...(input.buffVariant === undefined
+      ? {}
+      : { buffVariant: input.buffVariant }),
+  };
+}
+
+export const COMBAT_BALANCE_DEFAULTS = [
+  { key: "combatStatAttackCoeff", value: 1.2, description: "Attack gained per point of a weapon's scaling stat" },
+  { key: "combatDexSpeedCoeff", value: 0.1, description: "Attacks per second gained per dex above 10" },
+  { key: "combatMinAttackSpeed", value: 0.5, description: "Minimum attacks per second" },
+  { key: "combatPhysDefConCoeff", value: 0.8, description: "Physical defense gained per con" },
+  { key: "combatMagDefIntCoeff", value: 0.8, description: "Magical defense gained per int" },
+  { key: "monsterMagicCoeff", value: 1.2, description: "Magical attack gained per point of monster int" },
+  { key: "monsterMagDefIntCoeff", value: 0.8, description: "Monster magical defense gained per monster int" },
+  { key: "lukCritChancePerPoint", value: 0.001, description: "Crit chance gained per luk (0.001 = 0.1%)" },
+  { key: "critDamageMultiplier", value: 1.5, description: "Damage multiplier on crit" },
+  { key: "minPlayerHp", value: 30, description: "Minimum player health regardless of con" },
+  { key: "combatRegenCapPerSecond", value: 10, description: "Maximum heal-over-time HP per second" },
+  { key: "combatStatBonusCap", value: 100, description: "Maximum combined timed stat bonus per stat" },
+  { key: "combatXpMultiplierCap", value: 10, description: "Maximum combined combat XP multiplier" },
+] as const;
+
+async function getCombatBalanceNumber(
+  ctx: DatabaseCtx,
+  key: string,
+  fallback: number
+) {
+  const row = await ctx.db
+    .query("gameBalance")
+    .withIndex("by_key", (q) => q.eq("key", key))
+    .first();
+  const value = row?.value;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+export async function readCombatBalance(ctx: DatabaseCtx) {
+  const entries = await Promise.all(
+    COMBAT_BALANCE_DEFAULTS.map((entry) =>
+      getCombatBalanceNumber(ctx, entry.key, entry.value)
+    )
+  );
+  return {
+    statAttackCoeff: entries[0],
+    dexSpeedCoeff: entries[1],
+    minAttackSpeed: entries[2],
+    physDefConCoeff: entries[3],
+    magDefIntCoeff: entries[4],
+    monsterMagicCoeff: entries[5],
+    monsterMagDefIntCoeff: entries[6],
+    lukCritChancePerPoint: entries[7],
+    critDamageMultiplier: entries[8],
+    minPlayerHp: entries[9],
+    regenCapPerSecond: entries[10],
+    statBonusCap: entries[11],
+    xpMultiplierCap: entries[12],
   };
 }
 
@@ -323,15 +522,17 @@ export const useSkillBoost = mutation({
     const now = Date.now();
     await consumeItems(ctx, playerId, [{ itemId: item._id, quantity: 1 }]);
 
-    const existing = await ctx.db
-      .query("playerSkillBoosts")
-      .withIndex("by_playerId_and_effectType_and_effectScope", (q) =>
-        q
-          .eq("playerId", playerId)
-          .eq("effectType", effectType)
-          .eq("effectScope", effectScope)
-      )
-      .first();
+    const existing = (
+      await ctx.db
+        .query("playerSkillBoosts")
+        .withIndex("by_playerId_and_effectType_and_effectScope", (q) =>
+          q
+            .eq("playerId", playerId)
+            .eq("effectType", effectType)
+            .eq("effectScope", effectScope)
+        )
+        .collect()
+    ).find((row) => row.sourceItemId === item._id);
     const effectiveAmount =
       existing && existing.expiresAt > now
         ? existing.effectAmount
@@ -367,6 +568,206 @@ export const useSkillBoost = mutation({
     return { effectType, effectScope, effectAmount: effectiveAmount, expiresAt };
   },
 });
+
+export const useCombatBoost = mutation({
+  args: {
+    playerId: v.id("players"),
+    playerItemId: v.id("playerItems"),
+  },
+  handler: async (ctx, { playerId, playerItemId }) => {
+    const ownedItem = await ctx.db.get(playerItemId);
+    if (!ownedItem || ownedItem.playerId !== playerId) {
+      throw new Error("Owned item not found");
+    }
+    const item = await ctx.db.get(ownedItem.itemId);
+    if (
+      !item ||
+      item.category !== "crafting" ||
+      item.effectType === undefined ||
+      !isCombatEffectType(item.effectType)
+    ) {
+      throw new Error("That item is not a combat consumable");
+    }
+    const effectAmount = item.effectAmount;
+    const durationMs = item.effectDurationMs;
+    if (
+      typeof effectAmount !== "number" ||
+      !Number.isFinite(effectAmount) ||
+      effectAmount <= 0 ||
+      typeof durationMs !== "number" ||
+      !Number.isSafeInteger(durationMs) ||
+      durationMs < 1
+    ) {
+      throw new Error("Combat consumable has invalid effect settings");
+    }
+    if (
+      item.effectType === "combat-stat-boost" &&
+      item.effectStat === undefined
+    ) {
+      throw new Error("Combat stat boosts require an effect stat");
+    }
+    const effectType: CombatEffectType = item.effectType;
+
+    const now = Date.now();
+    await consumeItems(ctx, playerId, [{ itemId: item._id, quantity: 1 }]);
+
+    const existing = (
+      await ctx.db
+        .query("playerCombatBoosts")
+        .withIndex("by_playerId_and_effectType", (q) =>
+          q.eq("playerId", playerId).eq("effectType", effectType)
+        )
+        .collect()
+    ).find((row) => row.sourceItemId === item._id);
+    const expiresAt =
+      existing && existing.expiresAt > now
+        ? existing.expiresAt + durationMs
+        : now + durationMs;
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        effectAmount,
+        startedAt: existing.expiresAt > now ? existing.startedAt : now,
+        expiresAt,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("playerCombatBoosts", {
+        playerId,
+        effectType,
+        ...(item.effectStat === undefined
+          ? {}
+          : { effectStat: item.effectStat }),
+        ...(item.buffVariant === undefined
+          ? {}
+          : { variant: item.buffVariant }),
+        effectAmount,
+        sourceItemId: item._id,
+        startedAt: now,
+        expiresAt,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    return { effectType, expiresAt };
+  },
+});
+
+export type EquippedWeaponStats = {
+  baseDamage: number;
+  attackSpeed: number;
+  damageStat: DamageStat;
+  damageType: DamageType;
+} | null;
+
+export async function getEquippedWeapon(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">
+): Promise<EquippedWeaponStats> {
+  const wielded = await ctx.db
+    .query("playerItems")
+    .withIndex("by_playerId_and_equippedSlot", (q) =>
+      q.eq("playerId", playerId).eq("equippedSlot", "mainHand")
+    )
+    .first();
+  if (!wielded) return null;
+  const item = await ctx.db.get(wielded.itemId);
+  if (
+    !item ||
+    item.baseDamage === undefined ||
+    item.attackSpeed === undefined ||
+    item.damageStat === undefined
+  ) {
+    return null;
+  }
+  return {
+    baseDamage: item.baseDamage,
+    attackSpeed: item.attackSpeed,
+    damageStat: item.damageStat,
+    damageType: item.damageType ?? "physical",
+  };
+}
+
+export async function getEquippedArmorTotals(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">
+) {
+  const rows = await ctx.db
+    .query("playerItems")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+    .collect();
+  let defense = 0;
+  let speedPenalty = 0;
+  for (const row of rows.filter((entry) => entry.equippedSlot !== undefined)) {
+    const item = await ctx.db.get(row.itemId);
+    if (!item) continue;
+    if (typeof item.baseDefense === "number") defense += item.baseDefense;
+    if (typeof item.speedPenalty === "number") {
+      speedPenalty += item.speedPenalty;
+    }
+  }
+  return { defense, speedPenalty };
+}
+
+export function computeAttackSpeed(
+  weaponSpeed: number,
+  dex: number,
+  armorPenalty: number,
+  balance: { dexSpeedCoeff: number; minAttackSpeed: number }
+) {
+  return Math.max(
+    balance.minAttackSpeed,
+    weaponSpeed + Math.max(0, dex - 10) * balance.dexSpeedCoeff - armorPenalty
+  );
+}
+
+export type ActiveCombatBoosts = {
+  statBonus: Record<ItemEffectStat, number>;
+  regenPerSecond: number;
+  xpMultiplier: number;
+};
+
+export async function getActiveCombatBoosts(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">,
+  now: number
+): Promise<ActiveCombatBoosts> {
+  const balance = await readCombatBalance(ctx);
+  const rows = await ctx.db
+    .query("playerCombatBoosts")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+    .collect();
+  const statBonus: Record<ItemEffectStat, number> = {
+    str: 0,
+    dex: 0,
+    int: 0,
+    luk: 0,
+    con: 0,
+  };
+  let regenPerSecond = 0;
+  let xpMultiplier = 1;
+  for (const row of rows) {
+    if (row.expiresAt <= now) continue;
+    if (row.effectType === "combat-stat-boost" && row.effectStat) {
+      statBonus[row.effectStat] = Math.min(
+        balance.statBonusCap,
+        statBonus[row.effectStat] + row.effectAmount
+      );
+    } else if (row.effectType === "heal-over-time") {
+      regenPerSecond = Math.min(
+        balance.regenCapPerSecond,
+        regenPerSecond + row.effectAmount
+      );
+    } else if (row.effectType === "combat-xp-multiplier") {
+      xpMultiplier = Math.min(
+        balance.xpMultiplierCap,
+        xpMultiplier * row.effectAmount
+      );
+    }
+  }
+  return { statBonus, regenPerSecond, xpMultiplier };
+}
 
 async function getInventorySlotCapacity(ctx: DatabaseCtx) {
   const row = await ctx.db

@@ -1,7 +1,7 @@
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 
-export type RecipeStage = "refinement" | "product";
+export type RecipeStage = "refinement" | "product" | "consumable";
 
 type RecipeRows = {
   ingredients: Array<{ itemId: Id<"items">; quantity: number }>;
@@ -112,6 +112,12 @@ async function validateOutputMetadata(
     if (recipe.stage === "refinement" && !item.stackable) {
       throw new Error("Refinement outputs must be stackable crafting materials");
     }
+    if (recipe.stage === "consumable" && item.category !== "crafting") {
+      throw new Error("Consumable recipes can only produce crafting items");
+    }
+    if (recipe.stage === "consumable" && !item.stackable) {
+      throw new Error("Consumable outputs must be stackable");
+    }
     if (item.category === "crafting" && item.allowedEquipmentSlots.length > 0) {
       throw new Error("Crafting outputs cannot define equipment slots");
     }
@@ -215,7 +221,8 @@ async function validateRecipeCycles(ctx: MutationCtx) {
  */
 export async function validateRecipeChain(
   ctx: MutationCtx,
-  recipeId: string
+  recipeId: string,
+  options?: { skipCycleCheck?: boolean }
 ) {
   const recipe = await ctx.db
     .query("recipes")
@@ -260,7 +267,7 @@ export async function validateRecipeChain(
         "Refinement recipes must use a material gathered at the same tier"
       );
     }
-  } else {
+  } else if (recipe.stage === "product") {
     const refinementRecipes = await ctx.db
       .query("recipes")
       .withIndex("by_skillId_and_tier", (q) =>
@@ -294,9 +301,69 @@ export async function validateRecipeChain(
         );
       }
     }
+  } else {
+    // Consumable stage: scattered base/advanced pairs. Same-tier refined
+    // input is still required, but the consecutive-tier chain is replaced by
+    // a base-ingredient rule: advanced outputs must include a same-family
+    // base output; base outputs must not include same-family outputs.
+    const refinementRecipes = await ctx.db
+      .query("recipes")
+      .withIndex("by_skillId_and_tier", (q) =>
+        q.eq("skillId", recipe.skillId).eq("tier", recipe.tier)
+      )
+      .collect();
+    const refinementOutputs = new Set<Id<"items">>();
+    for (const refinement of refinementRecipes.filter(
+      (candidate) => candidate.stage === "refinement"
+    )) {
+      const rows = await rowsForRecipe(ctx, refinement.recipeId);
+      for (const output of rows.outputs) refinementOutputs.add(output.itemId);
+    }
+    if (!containsItem(refinementOutputs, ingredients)) {
+      throw new Error(
+        "Consumable recipes must use a refined material from the same tier"
+      );
+    }
+
+    if (recipe.requiresMonsterDrop) {
+      const ingredientItems = await Promise.all(
+        ingredients.map((ingredient) => ctx.db.get(ingredient.itemId))
+      );
+      const hasMonsterDrop = ingredientItems.some((item) => {
+        const family = item?.itemFamily;
+        return family !== undefined && MONSTER_DROP_FAMILIES.has(family);
+      });
+      if (!hasMonsterDrop) {
+        throw new Error(
+          "Hybrid consumable recipes must use a themed monster drop ingredient"
+        );
+      }
+    }
+
+    const outputItems = await Promise.all(
+      Array.from(outputIds, (itemId) => ctx.db.get(itemId))
+    );
+    const needsBase = outputItems.some(
+      (item) => item?.buffVariant === "advanced"
+    );
+    if (needsBase) {
+      const ingredientItems = await Promise.all(
+        ingredients.map((ingredient) => ctx.db.get(ingredient.itemId))
+      );
+      const hasSameFamilyBase = ingredientItems.some(
+        (item) =>
+          item?.itemFamily === recipe.outputFamily &&
+          item?.buffVariant === "base"
+      );
+      if (!hasSameFamilyBase) {
+        throw new Error(
+          "Advanced consumable recipes must use their same-family base item"
+        );
+      }
+    }
   }
 
-  if (recipe.tier > 1) {
+  if (recipe.tier > 1 && recipe.stage !== "consumable") {
     const previous = await findRecipe(
       ctx,
       recipe.skillId,
@@ -320,14 +387,17 @@ export async function validateRecipeChain(
     }
   }
 
-  await validateRecipeCycles(ctx);
+  if (!options?.skipCycleCheck) {
+    await validateRecipeCycles(ctx);
+  }
 }
 
 export async function validateAllRecipeChains(ctx: MutationCtx) {
   const recipes = await ctx.db.query("recipes").collect();
   for (const recipe of recipes) {
     if (recipe.stage !== undefined) {
-      await validateRecipeChain(ctx, recipe.recipeId);
+      await validateRecipeChain(ctx, recipe.recipeId, { skipCycleCheck: true });
     }
   }
+  await validateRecipeCycles(ctx);
 }

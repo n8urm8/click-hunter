@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gathering &amp; Crafting — 3 to 8 Tier Plan</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 32px; line-height: 1.5; max-width: 1100px; margin-inline: auto; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h2 { font-size: 20px; margin-top: 36px; border-bottom: 1px solid #8884; padding-bottom: 6px; }
+  p.sub { color: #666; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: 14px; }
+  th, td { border: 1px solid #9996; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: rgba(127,127,127,.15); }
+  tr.new td { background: rgba(46,160,67,.08); }
+  tr.needs-work td { background: rgba(191,151,0,.08); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .badge { display:inline-block; font-size:12px; padding:1px 8px; border-radius:999px; border:1px solid #9996; }
+  .badge.new { border-color:#2ea043; color:#2ea043; }
+  .badge.exists { color:#666; }
+  .badge.wired { border-color:#2ea043; color:#2ea043; }
+  .badge.work { border-color:#b99700; color:#b99700; }
+  @media (max-width:800px){ body{padding:16px;} }
+  .note { background: rgba(191,151,0,.1); border:1px solid rgba(191,151,0,.4); padding:12px 14px; border-radius:8px; font-size:14px; }
+</style>
+</head>
+<body>
+<h1>Gathering &amp; Crafting — 3 → 8 Tier Expansion Plan</h1>
+<p class="sub">Review draft. Current: 6 skills × 3 tiers. Proposed: 6 skills × 8 tiers. Starforged is the final tier (T8).</p>
+
+<div class="note">
+  <strong>Conventions:</strong> Gathering XP = <code>tier × 25</code>, duration = <code>tier × 30s</code>.
+  Recipe XP = <code>tier × 50</code>, duration = <code>tier × 45s</code>.
+  Equipment <code>effectAmount = tier × 2</code>, <code>rarity = tier × 10</code>.
+  All tunable via <code>skillTierDefinitions / gatheringActivities / recipes / items / gameBalance</code> + admin editor. No new hardcoded constants.
+</div>
+
+<h2>1. Current state snapshot</h2>
+<table>
+  <tr><th>Area</th><th>Current (T1–T3)</th><th>Source</th></tr>
+  <tr><td>Skills</td><td>harvesting, woodcutting, mining (gathering) + alchemy, woodworking, forging (crafting)</td><td><code>convex/forestCraftingSeed.ts:517</code></td></tr>
+  <tr><td>Tier gates</td><td>T1=1, T2=5, T3=10; names Grove / Moonlit Grove / Ancient Grove</td><td><code>convex/forestCraftingSeed.ts:659</code></td></tr>
+  <tr><td>Gathering activities</td><td>15 total: harvesting 9 (3/tier), woodcutting 3 (1/tier), mining 3 (1/tier)</td><td><code>convex/forestCraftingSeed.ts:688</code></td></tr>
+  <tr><td>Alchemy products today</td><td>15 items in 5 families: restorative, ward, predator, cunning, might. 12× <code>stat-bonus</code> consumables + 3× <code>restoration</code> — none have a use path (inventory only offers “Use boost” for skill-task effects)</td><td><code>convex/forestCraftingSeed.ts:218,311</code>, <code>app/components/inventory/InventoryPanel.tsx:874</code></td></tr>
+  <tr><td>Working consumables</td><td>Only <code>skill-speed-multiplier</code> + <code>skill-xp-multiplier</code> via <code>useSkillBoost → playerSkillBoosts</code></td><td><code>convex/items.ts:286</code>, <code>convex/itemTypes.ts:22</code></td></tr>
+  <tr><td>Chain rule</td><td>T(N) requires T(N−1) output in same family</td><td><code>convex/recipeValidation.ts:299</code></td></tr>
+  <tr><td>Boss / loot</td><td>3 boss tokens, 3 boss loot tables, 9 monster drops → 3 augmentation tiers</td><td><code>convex/forestCraftingSeed.ts:498,1008,1125</code></td></tr>
+</table>
+
+<h2>2. Tier gates — 1 to 90, no skill max level (revised)</h2>
+<table>
+  <tr><th>Tier</th><th>Status</th><th>Proposed name</th><th>Required level</th><th>Notes</th></tr>
+  <tr><td>1</td><td><span class="badge exists">exists</span></td><td>Grove + Skill</td><td>1</td><td>unchanged</td></tr>
+  <tr><td>2</td><td><span class="badge exists">exists</span></td><td>Moonlit Grove + Skill</td><td>5 → <strong>14</strong></td><td>reseed</td></tr>
+  <tr><td>3</td><td><span class="badge exists">exists</span></td><td>Ancient Grove + Skill</td><td>10 → <strong>26</strong></td><td>reseed</td></tr>
+  <tr class="new"><td>4</td><td><span class="badge new">new</span></td><td>Deepwood + Skill</td><td>39</td><td>even spread, step ≈13</td></tr>
+  <tr class="new"><td>5</td><td><span class="badge new">new</span></td><td>Emberfall + Skill</td><td>52</td><td></td></tr>
+  <tr class="new"><td>6</td><td><span class="badge new">new</span></td><td>Elderwild + Skill</td><td>65</td><td></td></tr>
+  <tr class="new"><td>7</td><td><span class="badge new">new</span></td><td>Nightmare Thicket + Skill</td><td>77</td><td></td></tr>
+  <tr class="new"><td>8</td><td><span class="badge new">new</span></td><td>Starforged + Skill</td><td>90</td><td>final tier; levels past 90 are uncapped headroom (see below)</td></tr>
+</table>
+<p>Linear spread, step 89/7 ≈ 12.7 rounded. Cost per tier at base rate (10 XP/s, <code>skillXpPerLevel</code> base 1000): T1 2.9h, T2 6.8h, T3 11.9h, T4 16.6h, T5 21.3h, T6 23.8h, T7 30.3h — total ≈114h active 1→90, less with XP/speed buffs. Quadratic XP curve means later tiers cost more by design.</p>
+<div class="note"><strong>No max level:</strong> <code>maxLevel</code> becomes optional/undefined = uncapped. Touchpoints: <code>convex/schema.ts:157</code> (optional), <code>convex/skillProgression.ts:38-72</code> (skip cap when undefined), <code>convex/skills.ts:704,1357</code> (pass through), seed stops writing 99 (<code>convex/forestCraftingSeed.ts:645,652</code>), admin create/update + <code>saveCraftingConfig</code> accept empty (<code>convex/admin.ts:1481,1530,2362</code>), AdminPanel form (<code>app/components/admin/AdminPanel.tsx:979</code>). Existing level-99 players keep their level, just never cap.</div>
+
+<h2>3. Gathering — new activities &amp; resources</h2>
+<table>
+  <tr><th>Skill</th><th>T4</th><th>T5</th><th>T6</th><th>T7</th><th>T8 Starforged</th><th>New total</th><th>XP / duration</th></tr>
+  <tr class="new"><td>harvesting</td><td>3</td><td>3</td><td>3</td><td>3</td><td>3</td><td>15 activities + 15 items</td><td>T4 100xp/120s → T8 200xp/240s</td></tr>
+  <tr class="new"><td>woodcutting</td><td>1</td><td>1</td><td>1</td><td>1</td><td>1</td><td>5 + 5</td><td>same</td></tr>
+  <tr class="new"><td>mining</td><td>1</td><td>1</td><td>1</td><td>1</td><td>1</td><td>5 + 5</td><td>same</td></tr>
+</table>
+<table>
+  <tr><th>Tier</th><th>Harvesting examples</th><th>Woodcutting</th><th>Mining</th></tr>
+  <tr><td>4 Deepwood</td><td>emberleaf, frostcap, thornbloom</td><td>emberwood log</td><td>emberstone shard</td></tr>
+  <tr><td>5 Emberfall</td><td>tidepetal, stormspore, glowroot</td><td>tidewood log</td><td>stormsilver ore</td></tr>
+  <tr><td>6 Elderwild</td><td>voidfern, sunscale lichen, hexbark blossom</td><td>voidwood log</td><td>voidquartz ore</td></tr>
+  <tr><td>7 Nightmare</td><td>nightshade crown, wraithvine, doomorchid</td><td>dreadwood log</td><td>nightsteel ore</td></tr>
+  <tr><td>8 Starforged</td><td>starforged seed, dawnpetal, eternalmoss</td><td>starforged log</td><td>starforged ore</td></tr>
+</table>
+
+<h2>4. Refinement recipes (unchanged structure)</h2>
+<table>
+  <tr><th>Skill</th><th>Family</th><th>Existing</th><th>New T4–T8</th><th>Ingredient pattern</th></tr>
+  <tr class="new"><td>alchemy</td><td>alchemy-essence</td><td>3</td><td>+5</td><td>3× T(N) herb + 1× T(N−1) essence</td></tr>
+  <tr class="new"><td>alchemy</td><td>alchemy-powder</td><td>3</td><td>+5</td><td>3× T(N) leaf/bloom + 1× T(N−1) powder</td></tr>
+  <tr class="new"><td>alchemy</td><td>alchemy-extract</td><td>3</td><td>+5</td><td>3× T(N) moss/spore/root + 1× T(N−1) extract</td></tr>
+  <tr class="new"><td>woodworking</td><td>woodworking-lumber</td><td>3</td><td>+5</td><td>4× T(N) log + 1× T(N−1) lumber</td></tr>
+  <tr class="new"><td>forging</td><td>forging-ingot</td><td>3</td><td>+5</td><td>4× T(N) ore + 1× T(N−1) ingot</td></tr>
+</table>
+<p>Total: <strong>25 new refinement recipes + 25 refined items</strong>. XP: 200 / 250 / 300 / 350 / 400.</p>
+
+<h2>5. Alchemy products — current → proposed (4 tracks)</h2>
+<table>
+  <tr><th>#</th><th>Proposed track</th><th>Family</th><th>Effect model</th><th>Status</th></tr>
+  <tr class="new"><td>1</td><td>Combat: stat boosts + heal-over-time (everything timed, no instant heals)</td><td><code>alchemy-might</code> (redefined as single 8-tier ladder, 1 item per tier — base/advanced pairs scattered, see §6b)</td><td>Timed <code>combat-stat-boost</code> (effectStat str/dex/con) + timed <code>heal-over-time</code> (effectAmount = HP/s regen during fights within buff window). Needs new <code>useCombatBoost</code> + combat reads buff; today <code>stat-bonus</code> only applies to equipped gear (<code>convex/items.ts:74</code>) and <code>restoration</code> has no consumer</td><td><span class="badge work">needs work</span></td></tr>
+  <tr class="new"><td>2</td><td>Skill XP boosts</td><td><code>alchemy-focus</code> (new)</td><td><code>skill-xp-multiplier</code>, scope <code>all</code>. Already wired via <code>useSkillBoost</code></td><td><span class="badge wired">seed only</span></td></tr>
+  <tr class="new"><td>3</td><td>Skill time reduction</td><td><code>alchemy-swiftness</code> (new)</td><td><code>skill-speed-multiplier</code>, scope <code>all</code>. Already wired</td><td><span class="badge wired">seed only</span></td></tr>
+  <tr class="new"><td>4</td><td>General EXP boosts</td><td><code>alchemy-wisdom</code> (new)</td><td>Combat/fight XP (and optionally gold). Today only global events support <code>xp-multiplier / gold-multiplier</code> (<code>convex/events.ts:127</code>); needs per-player consumable path + combat settlement reads it</td><td><span class="badge work">needs work</span></td></tr>
+</table>
+
+<h2>6. Alchemy mapping — what happens to the 5 old families</h2>
+<table>
+  <tr><th>Old family (T1–T3)</th><th>Current effect</th><th>Proposed fate</th></tr>
+  <tr><td><code>alchemy-restorative</code> (tonic/salve/elixir)</td><td><code>restoration</code>, no consumer</td><td>Retire, <strong>or</strong> fold into Track 1 as instant-heal variant if combat healing is wanted. Needs decision.</td></tr>
+  <tr><td><code>alchemy-ward</code> (philters, con)</td><td><code>stat-bonus</code> consumable, no consumer</td><td>Merge into Track 1 (<code>alchemy-might</code>). One combat family instead of four.</td></tr>
+  <tr><td><code>alchemy-predator</code> (draughts + monster drop)</td><td><code>stat-bonus</code> + hybrid recipe</td><td>Merge into Track 1; keep monster-drop hybrid requirement on Track 1 T2+ so monster loot stays relevant.</td></tr>
+  <tr><td><code>alchemy-cunning</code> (oils + monster drop)</td><td><code>stat-bonus</code> + hybrid</td><td>Merge into Track 1 (same as above).</td></tr>
+  <tr><td><code>alchemy-might</code> (elixirs + monster drop)</td><td><code>stat-bonus</code> str + hybrid</td><td>Keep name, redefine as <strong>the</strong> combat-boost family T1–T8.</td></tr>
+</table>
+<p>Reseed note: <code>resetForestCrafting</code> deletes all recipes/outputs, so replacing families is a reseed (no live migration), with chain revalidation per <code>convex/recipeValidation.ts:299</code>. The single-ladder shape below is what keeps that chain rule satisfied with only 1 item per tier.</p>
+
+<h2>6b. Combat track — base/advanced scatter across T1–T8 (new)</h2>
+<p>One family (<code>alchemy-might</code>), one item per tier. 4 effects × base + advanced = 8 items. Each advanced sits at a higher tier than its base. Bases use pure refined materials; advanced versions add a themed monster drop (T8 also takes a boss catalyst). All timed — HoT is regen-per-second during fights inside the buff window, never instant.</p>
+<table>
+  <tr><th>Tier</th><th>Example item</th><th>Pair</th><th>Effect</th><th>Amount</th><th>Buff window</th><th>Monster drop?</th></tr>
+  <tr class="new"><td>1</td><td>Verdant Tonic (keep name, redefined)</td><td>Heal · base</td><td><code>heal-over-time</code></td><td>1.5 HP/s</td><td>5 min</td><td>no</td></tr>
+  <tr class="new"><td>2</td><td>Ember Might Draught</td><td>Strength · base</td><td><code>combat-stat-boost</code> str</td><td>+3</td><td>5 min</td><td>no</td></tr>
+  <tr class="new"><td>3</td><td>Hunter's Swiftness Draught</td><td>Dexterity · base</td><td><code>combat-stat-boost</code> dex</td><td>+3</td><td>6 min</td><td>no</td></tr>
+  <tr class="new"><td>4</td><td>Starwater Salve (keep name, redefined)</td><td>Heal · <strong>advanced</strong></td><td><code>heal-over-time</code></td><td>3 HP/s</td><td>8 min</td><td>yes (themed)</td></tr>
+  <tr class="new"><td>5</td><td>Demonseed Might Draught</td><td>Strength · <strong>advanced</strong></td><td><code>combat-stat-boost</code> str</td><td>+7</td><td>10 min</td><td>yes (themed)</td></tr>
+  <tr class="new"><td>6</td><td>Stonehide Draught</td><td>Constitution · base</td><td><code>combat-stat-boost</code> con</td><td>+4</td><td>10 min</td><td>no</td></tr>
+  <tr class="new"><td>7</td><td>Nightmare Swiftness Draught</td><td>Dexterity · <strong>advanced</strong></td><td><code>combat-stat-boost</code> dex</td><td>+7</td><td>12 min</td><td>yes (themed)</td></tr>
+  <tr class="new"><td>8 Starforged</td><td>Starforged Heart Draught</td><td>Constitution · <strong>advanced</strong></td><td><code>combat-stat-boost</code> con</td><td>+8</td><td>15 min</td><td>yes + boss catalyst</td></tr>
+</table>
+<p>Chain stays valid: T(N) recipe consumes 2× refined T(N) + 1× previous-tier combat item (+ drop for advanced tiers), satisfying <code>convex/recipeValidation.ts:299-321</code>. Amounts/durations are proposals stored per-item as <code>effectAmount / effectDurationMs</code>, admin-tunable.</p>
+
+<h2>7. Proposed alchemy product scaling (T1–T8, per track)</h2>
+<table>
+  <tr><th>Tier</th><th>Track 1 combat (see §6b)</th><th>Track 2 skill-XP ×</th><th>Track 3 skill-speed ×</th><th>Track 4 combat-XP ×</th><th>Buff windows (proposal)</th></tr>
+  <tr><td>1</td><td>base heal 1.5 HP/s</td><td>×1.1</td><td>×1.1</td><td>×1.1</td><td>5 min</td></tr>
+  <tr><td>2</td><td>base str +3</td><td>×1.2</td><td>×1.15</td><td>×1.2</td><td>5 min</td></tr>
+  <tr><td>3</td><td>base dex +3</td><td>×1.35</td><td>×1.25</td><td>×1.35</td><td>6 min</td></tr>
+  <tr class="new"><td>4</td><td><strong>adv</strong> heal 3 HP/s</td><td>×1.5</td><td>×1.35</td><td>×1.5</td><td>8–10 min</td></tr>
+  <tr class="new"><td>5</td><td><strong>adv</strong> str +7</td><td>×1.7</td><td>×1.5</td><td>×1.7</td><td>10 min</td></tr>
+  <tr class="new"><td>6</td><td>base con +4</td><td>×1.9</td><td>×1.65</td><td>×1.9</td><td>10 min</td></tr>
+  <tr class="new"><td>7</td><td><strong>adv</strong> dex +7</td><td>×2.2</td><td>×1.8</td><td>×2.2</td><td>12 min</td></tr>
+  <tr class="new"><td>8 Starforged</td><td><strong>adv</strong> con +8</td><td>×2.5</td><td>×2.0</td><td>×2.5</td><td>12–15 min</td></tr>
+</table>
+<p>* Durations are proposals only — stored per-item as <code>effectDurationMs</code>, admin-tunable. Skill multipliers stack multiplicatively in <code>convex/skillBonuses.ts:238</code>, so speed stays below XP deliberately. Track 1/4 durations need the new combat-buff design to be final.</p>
+<p>Counts: <strong>18 alchemy product recipes</strong> (combat 8 + skill-XP 4 + skill-speed 4 + combat-XP 2 — replaces current 15; full matrix in §7b).</p>
+
+<h2>7b. Full matrix — per-skill pairs, multiple unlocks per tier (revised)</h2>
+<p>Revised per feedback: skill boosts are per skill (gathering / crafting), each as one base + advanced pair. General EXP is combat-only (single base/advanced pair). Tiers carry multiple unlocks — pairs are scattered so every advanced sits above its base. 18 consumables total: combat 8 + skill-XP 4 + skill-speed 4 + combat-XP 2.</p>
+<table>
+  <tr><th>Tier</th><th>Combat (<code>alchemy-might</code>)</th><th>Skill-XP (<code>alchemy-focus</code>)</th><th>Skill-speed (<code>alchemy-swiftness</code>)</th><th>Combat-XP (<code>alchemy-wisdom</code>)</th></tr>
+  <tr><td>1 (3 unlocks)</td><td>Verdant Tonic · heal base 1.5 HP/s</td><td>Gathering Focus base ×1.3 + Crafting Focus base ×1.3</td><td>—</td><td>—</td></tr>
+  <tr><td>2 (3)</td><td>Ember Might · str base +3</td><td>—</td><td>Gathering Alacrity base ×1.2 + Crafting Alacrity base ×1.2</td><td>—</td></tr>
+  <tr><td>3 (2)</td><td>Hunter's Swift · dex base +3</td><td>—</td><td>—</td><td>Wisdom base ×1.3</td></tr>
+  <tr class="new"><td>4 (1)</td><td>Starwater Salve · heal <strong>adv</strong> 3 HP/s</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr class="new"><td>5 (3)</td><td>Demonseed Might · str <strong>adv</strong> +7</td><td>Gathering Focus <strong>adv</strong> ×1.8 + Crafting Focus <strong>adv</strong> ×1.8</td><td>—</td><td>—</td></tr>
+  <tr class="new"><td>6 (3)</td><td>Stonehide · con base +4</td><td>—</td><td>Gathering Alacrity <strong>adv</strong> ×1.6 + Crafting Alacrity <strong>adv</strong> ×1.6</td><td>—</td></tr>
+  <tr class="new"><td>7 (2)</td><td>Nightmare Swift · dex <strong>adv</strong> +7</td><td>—</td><td>—</td><td>Wisdom <strong>adv</strong> ×2.0</td></tr>
+  <tr class="new"><td>8 Starforged (1)</td><td>Starforged Heart · con <strong>adv</strong> +8</td><td>—</td><td>—</td><td>—</td></tr>
+</table>
+<p>No <code>all</code>-scope crafted boosts — events/admin keep global multipliers; crafted XP buffs are gathering- or crafting-specific. Combined power per skill stays bounded: XP 1.3×1.8≈2.3, speed 1.2×1.6≈1.9, combat-XP 1.3×2.0=2.6.</p>
+
+<h2>7c. Buff stacking — keyed by item (revised)</h2>
+<table>
+  <tr><th>Action</th><th>Behavior (all tracks)</th></tr>
+  <tr><td>Reuse <strong>same item</strong></td><td>Extends that buff's timer, amount unchanged (matches current skill behavior — <code>convex/items.ts:335</code>)</td></tr>
+  <tr class="new"><td>Use <strong>base + advanced</strong> (different items, same effect + skill/stat)</td><td>Both live on independent timers and <strong>stack</strong>: XP/speed/combat-XP multiply, stats add, regen sums — all subject to caps</td></tr>
+  <tr><td>Different skills / stats</td><td>Independent keys, no interaction</td></tr>
+</table>
+<p>Key = <code>(effectType, scope-or-stat, variant)</code> where <code>variant: base | advanced</code> is a new optional item field, admin-editable. Concretely: <code>useSkillBoost</code> looks up <code>playerSkillBoosts</code> by effect + scope + source item instead of collapsing to one row per effect + scope (rows already carry <code>sourceItemId</code>); the timeline in <code>convex/skillBonuses.ts:238</code> already multiplies all active rows, so no formula change — only row identity plus caps. New combat buffs mirror this shape.</p>
+<p class="note" style="margin-top:12px"><strong>Chain-rule implication:</strong> scattered pairs leave tier gaps inside a family (e.g. <code>alchemy-focus</code> holds T1,T1,T5,T5), which fails the consecutive-tier rule (<code>convex/recipeValidation.ts:299</code>). Proposal: new <code>stage: "consumable"</code> whose rule is “advanced recipe must include its base item + current-tier refined material” instead of “previous-tier output” — keeps anti-skip, allows scattering, acyclicity still enforced. Refinement/gear families keep the strict rule.</p>
+
+<h2>7d. Forging — full set table, one set per tier (new)</h2>
+<p>7 pieces per tier (56 total): 3 mainHand weapons (pick your stat focus) + 4 armor. Slot/stat pattern is identical every tier; only the resource, names, and amounts scale. No legacy IDs — all tiers use clean <code>{material}-{type}</code> IDs (reseed replaces T1–T3).</p>
+<table>
+  <tr><th>Tier</th><th>Set (mined resource → ingot)</th><th>Pieces (item ID · slot · stat)</th><th>Stat</th><th>Rarity</th></tr>
+  <tr><td>1 (exists)</td><td>Moonstone<br/>moonstone shard → moonstone ingot</td><td>moonstone-sword · mainHand · str; moonstone-dagger · mainHand · dex; moonstone-mace · mainHand · con; moonstone-helm · head · con; moonstone-mail · chest · con; moonstone-greaves · legs · str; moonstone-boots · feet · dex</td><td>+2</td><td>10 Common</td></tr>
+  <tr><td>2 (exists, re-ID)</td><td>Ambersteel<br/>root amber → ambersteel ingot</td><td>ambersteel-sword · mainHand · str; ambersteel-dagger · mainHand · dex; ambersteel-mace · mainHand · con; ambersteel-helm · head · con; ambersteel-mail · chest · con; ambersteel-greaves · legs · str; ambersteel-boots · feet · dex</td><td>+4</td><td>20 Uncommon</td></tr>
+  <tr><td>3 (exists, re-ID)</td><td>Root-Iron<br/>root-iron ore → root-iron ingot</td><td>root-iron-sword · mainHand · str; root-iron-dagger · mainHand · dex; root-iron-mace · mainHand · con; root-iron-helm · head · con; root-iron-mail · chest · con; root-iron-greaves · legs · str; root-iron-boots · feet · dex</td><td>+6</td><td>30 Rare</td></tr>
+  <tr class="new"><td>4</td><td>Emberstone<br/>emberstone shard → emberstone ingot</td><td>emberstone-sword · mainHand · str; emberstone-dagger · mainHand · dex; emberstone-mace · mainHand · con; emberstone-helm · head · con; emberstone-mail · chest · con; emberstone-greaves · legs · str; emberstone-boots · feet · dex</td><td>+8</td><td>40 Epic</td></tr>
+  <tr class="new"><td>5</td><td>Stormsilver<br/>stormsilver ore → stormsilver ingot</td><td>stormsilver-sword · mainHand · str; stormsilver-dagger · mainHand · dex; stormsilver-mace · mainHand · con; stormsilver-helm · head · con; stormsilver-mail · chest · con; stormsilver-greaves · legs · str; stormsilver-boots · feet · dex</td><td>+10</td><td>50 Mythical</td></tr>
+  <tr class="new"><td>6</td><td>Voidquartz<br/>voidquartz ore → voidquartz ingot</td><td>voidquartz-sword · mainHand · str; voidquartz-dagger · mainHand · dex; voidquartz-mace · mainHand · con; voidquartz-helm · head · con; voidquartz-mail · chest · con; voidquartz-greaves · legs · str; voidquartz-boots · feet · dex</td><td>+12</td><td>60 Celestial (new)</td></tr>
+  <tr class="new"><td>7</td><td>Nightsteel<br/>nightsteel ore → nightsteel ingot</td><td>nightsteel-sword · mainHand · str; nightsteel-dagger · mainHand · dex; nightsteel-mace · mainHand · con; nightsteel-helm · head · con; nightsteel-mail · chest · con; nightsteel-greaves · legs · str; nightsteel-boots · feet · dex</td><td>+14</td><td>70 Eternal (new)</td></tr>
+  <tr class="new"><td>8 Starforged</td><td>Starforged<br/>starforged ore → starforged ingot</td><td>starforged-sword · mainHand · str; starforged-dagger · mainHand · dex; starforged-mace · mainHand · con; starforged-helm · head · con; starforged-mail · chest · con; starforged-greaves · legs · str; starforged-boots · feet · dex</td><td>+16</td><td>80 Starforged (new)</td></tr>
+</table>
+<div class="note">Chain per family (sword, dagger, mace, head, chest, legs, feet): T(N) = 2× ingot T(N) + 1× same-family piece T(N−1), XP = tier×50 — already valid under <code>convex/recipeValidation.ts:299</code>. New rarities 60 Celestial / 70 Eternal / 80 Starforged extend <code>DEFAULT_ITEM_RARITIES</code> (<code>convex/itemTypes.ts:28</code>); <code>populateItemRarities</code> inserts missing levels by level, so existing rows are untouched. 3 mainHand pieces per tier share one slot — the tier's choice is which stat to favor (str sword / dex dagger / con mace). See §7e for how weapons feed combat.</div>
+
+<h2>7e. How weapons work in combat (new)</h2>
+<p>Craft → inventory (non-stackable, qty 1) → equip to <code>mainHand</code> via <code>equipItem</code> (<code>convex/items.ts:752</code>). One weapon at a time; equipping swaps the old one back to inventory. Only <strong>equipped</strong> gear counts: <code>getEquippedStatBonuses</code> (<code>convex/items.ts:74</code>) sums each equipped piece's <code>effectAmount</code> plus its applied augments.</p>
+<table>
+  <tr><th>Step</th><th>What happens</th><th>Source</th></tr>
+  <tr><td>Effective stats</td><td><code>str/dex/int/con = base + equipment</code> (LUK excluded — no combat effect today)</td><td><code>convex/combat.ts:182</code></td></tr>
+  <tr><td>Attack</td><td><code>str×1.2 + dex×0.5</code></td><td><code>convex/combat.ts:190</code></td></tr>
+  <tr><td>Attack speed</td><td><code>max(0.5, (dex−10)×0.1 + 1)</code> attacks/s — also gates manual-attack cooldown</td><td><code>convex/combat.ts:198</code>, <code>convex/players.ts:234</code></td></tr>
+  <tr><td>Damage types (new)</td><td>Weapons declare <code>damageType: physical | magical</code> (sword/dagger/mace/bow physical, staff magical). Physical is unmitigated (as today — monsters have no armor yet); magical is reduced by <code>monsterMagDef = int×0.8</code> (mirrors player magDef). Player magic = <code>max(0, staffDamage − monsterMagDef)</code>, fight total floored at 1. Elemental types (fire/frost/…) widen this enum later; monsters gain a resistance map then — no rework needed on the weapon side</td><td><code>convex/combat.ts:202</code></td></tr>
+  <tr><td>Defense / Health</td><td>Split: <code>physDef = Σ armor + con×0.8</code>; <code>magDef = int×0.8</code>; <code>hp = con×10</code> (int gives no HP). Monster attack splits into <code>physical = str×1.2 + dex×0.5</code> and <code>magical = int×1.2</code> (uses existing monster int); each reduced by its own defense, total floored at 1</td><td><code>convex/combat.ts:189,194,202</code></td></tr>
+  <tr><td>Crit (new)</td><td><code>critChance = luk × 0.001</code> (0.1%/luk — very low), <code>critMult = 1.5×</code>; applied as expected value: <code>playerDPS × (1 + chance×(mult−1))</code>. Both balance keys. Stacks additively with the old rebirth crit reward</td><td><code>convex/combat.ts:205</code></td></tr>
+  <tr><td>Combat XP → stats (new)</td><td>Every fight's XP is divided directly between the equipped weapon's stats — <strong>70/30 favoring the weapon stat</strong>: str weapons (sword, mace) 70 str / 30 con · dex weapons (dagger, bow) 70 dex / 30 con · int weapon (staff) 70 int / 30 con · <strong>unarmed</strong> 35 str / 35 dex / 30 con — into per-stat XP pools (new <code>players.statXp</code> floats; luk pool exists but combat never feeds it). Each pool levels its stat with the <strong>same formula and base key as skills</strong> (<code>applySkillExperience</code>, <code>skillXpPerLevel</code> — one XP curve game-wide, uncapped). All stats start at <strong>1</strong> (was 5; <code>convex/players.ts:11</code>), so player level starts at 1 and boss T1 (level 20) is earned purely through grinding. <strong>Rebirth wipes all stats to base</strong> — earned and paid alike; permanent prestige power lives only in rebirth unlocks. Single hook: <code>settleCombatFight</code>. <strong>Balance flag:</strong> at 1s across the board the opening math is lethal (10 HP vs a rat dealing ~3.6/hit while you deal ~0.85 DPS unarmed) — new-game survivability needs a safeguard: starter weapon (e.g. Worn Sword, base dmg 4), an HP floor (e.g. <code>max(30, con×10)</code>), or weaker tier-0 pests. Recommend starter weapon + floor, both balance-keyed</td><td><code>convex/loot.ts:215</code>, <code>convex/combat.ts:253</code>, <code>convex/skillProgression.ts:34</code></td></tr>
+  <tr><td>DPS race</td><td>player DPS = attack × speed; monster DPS = <code>max(1, monsterAttack − def) × (1000 / monsterMsPerAttack)</code>; faster kill wins</td><td><code>convex/combat.ts:202,211</code></td></tr>
+  <tr><td>Auto-battle</td><td>Same <code>simulateRegularBattle</code> via task heartbeat (<code>convex/tasks.ts:929</code>) — gear applies identically online and in auto-battle</td><td></td></tr>
+</table>
+<p>Worked example (base 20/20/20/10 str/dex/con/int, no weapon: attack 34, speed 2.0, DPS 68, def 19, hp 220): T8 sword (+16 str) → DPS ≈106 (+56%); T8 dagger (+16 dex) → attack 42 × speed 3.6 ≈151 (+122%); T8 mace (+16 con) → DPS unchanged, hp 380 (+73%), def ≈32. Weapon identity is flavor — only its stat + amount feed the formulas, so each tier's real choice is damage (sword), damage×speed (dagger), or survivability (mace). Note the dex double-dip (attack <em>and</em> speed): daggers are the DPS optimum under current formulas — flag for balance review, not a plan change.</p>
+<p>Planned combat consumables (§6b/§7b) layer on top as timed buffs inside the same <code>effectiveStats</code> + regen math; augments stack additively on the equipped piece. No forgeable offHand exists — open slot if a future set wants shields/charms.</p>
+
+<h3>Weapon base damage &amp; attack speed (new)</h3>
+<p>Each weapon gets data-driven <code>baseDamage</code> + <code>attackSpeed</code> (attacks/s) on its item record. Damage triangle: <strong>mace high, sword mid, dagger low</strong>; speed inverts it (dagger fast, sword mid, mace slow) so baseline DPS is comparable and the choice is feel + stat scaling, not a solved optimum. Stat bonuses apply on top:</p>
+<table>
+  <tr><th>Weapon</th><th>Scales on</th><th>Base damage (per tier)</th><th>Attack speed</th><th>T1 DPS ≈</th><th>T8 DPS ≈</th></tr>
+  <tr><td>Dagger (low/fast)</td><td>dex</td><td>6 × tier</td><td>1.6</td><td>9.6</td><td>76.8</td></tr>
+  <tr><td>Bow (light/fast)</td><td>dex</td><td>8 × tier</td><td>1.3</td><td>10.4</td><td>83.2</td></tr>
+  <tr><td>Sword (mid/mid)</td><td>str</td><td>10 × tier</td><td>1.0</td><td>10</td><td>80</td></tr>
+  <tr><td>Staff (high/slow)</td><td>int</td><td>12 × tier</td><td>0.8</td><td>9.6</td><td>76.8</td></tr>
+  <tr><td>Mace (high/slowest)</td><td>str</td><td>16 × tier</td><td>0.65</td><td>10.4</td><td>83.2</td></tr>
+</table>
+<p>Each weapon declares <code>damageStat</code> (new item field: str | dex | int). Bows are dex weapons, staves int weapons — int now feeds attack for the first time (previously defense/HP only). Baselines stay within ≈10% of each other so the choice is build identity (which stat you stack) and feel (fast/light vs slow/heavy), not a solved optimum.</p>
+<p>New formulas (coefficients become <code>gameBalance</code> keys with the current values as fallbacks): <code>attack = weapon.baseDamage + scalingStat×1.2</code>, where scalingStat is the weapon's <code>damageStat</code>; <code>speed = max(0.5, weapon.attackSpeed + max(0, dex−10)×0.1 − Σ armor speedPenalty)</code>. Additive speed keeps weapon ordering stable at any dex; the 0.5 floor stops full heavy plate from rooting the player. Shared helper (e.g. in <code>convex/items.ts</code>) feeds both <code>simulateRegularBattle</code> (<code>convex/combat.ts:148</code>) and the manual-attack cooldown (<code>convex/players.ts:234</code>).</p>
+<div class="note">Touchpoints: <code>items</code> schema += optional <code>baseDamage / attackSpeed</code>; <code>normalizeItemDefinition</code> (<code>convex/items.ts:168</code>) requires both on mainHand-equippable items and forbids them elsewhere; admin item form + <code>saveCraftingConfig</code> expose them; seed fills the table above; armor pieces carry no base values. All tuning stays in domain records + balance keys per AGENTS.md.</div>
+
+<h3>Armor base defense (new)</h3>
+<p>Mirror of weapons: each armor piece carries data-driven <code>baseDefense</code> on its item record; stats apply on top. Chest protects most, boots least. New formula: <code>defense = Σ equipped baseDefense + con×0.8 + int×0.3</code> (coefficients to <code>gameBalance</code>, HP formula unchanged).</p>
+<table>
+  <tr><th>Piece (slot)</th><th>Base defense (per tier)</th><th>Speed penalty (flat)</th><th>Full-set total</th></tr>
+  <tr><td>Mail (chest)</td><td>6 × tier</td><td>−0.08</td><td rowspan="4">T1 ≈ 18 … T8 ≈ 144 defense<br/>−0.20/s speed (heavy tax)<br/>(+ con/int component on top)</td></tr>
+  <tr><td>Greaves (legs)</td><td>5 × tier</td><td>−0.06</td></tr>
+  <tr><td>Helm (head)</td><td>4 × tier</td><td>−0.04</td></tr>
+  <tr><td>Boots (feet)</td><td>3 × tier</td><td>−0.02</td></tr>
+</table>
+<p>Heavy forged plate is protection at the price of tempo: a full set costs 0.20 attacks/s (flat per piece, all tiers — T8 plate is no clumsier than T1, just tougher). New item field <code>speedPenalty</code>; wood armor carries none.</p>
+
+<h3>Woodworking — light arms &amp; armor (new)</h3>
+<p>Same item-field machinery as forging: bows/staves carry <code>baseDamage + attackSpeed + damageStat</code>; wood armor carries <code>baseDefense</code> and <strong>no</strong> speed penalty. Light armor defends less (≈60% of plate) but favors mobile/caster stats (dex/int/luk over con/str). 6 pieces per tier (48 total), one set per wood from §3:</p>
+<table>
+  <tr><th>Tier</th><th>Set (log → lumber)</th><th>Weapons</th><th>Armor (slot · stat)</th><th>Armor defense</th></tr>
+  <tr><td>1 (exists)</td><td>Moonwood</td><td>bow (dex, 8×t, 1.3) · staff (int, 12×t, 0.8)</td><td>hood head·luk, vest chest·con, leggings legs·dex, boots feet·dex</td><td>2/4/3/2 × tier (total 11)</td></tr>
+  <tr><td>2 (exists)</td><td>Living Bark</td><td>same pattern</td><td>same slots/stats</td><td>same (total 22)</td></tr>
+  <tr><td>3 (exists)</td><td>Thornvine</td><td>same pattern</td><td>same slots/stats</td><td>same (total 33)</td></tr>
+  <tr class="new"><td>4</td><td>Emberwood</td><td>same pattern</td><td>same slots/stats</td><td>same (total 44)</td></tr>
+  <tr class="new"><td>5</td><td>Tidewood</td><td>same pattern</td><td>same slots/stats</td><td>same (total 55)</td></tr>
+  <tr class="new"><td>6</td><td>Voidwood</td><td>same pattern</td><td>same slots/stats</td><td>same (total 66)</td></tr>
+  <tr class="new"><td>7</td><td>Dreadwood</td><td>same pattern</td><td>same slots/stats</td><td>same (total 77)</td></tr>
+  <tr class="new"><td>8 Starforged</td><td>Worldheart</td><td>same pattern</td><td>same slots/stats</td><td>same (total 88)</td></tr>
+</table>
+<div class="note">Wood stat bonuses stay as today (bow +dex, staff +int, hood +luk, vest +con, leggings/boots +dex, each +tier×2) — light gear double-dips mobility: dex/int raise both its weapon damage and the wearer's speed/defense. Trade-off per tier is now a real build choice: plate (≈18→144 defense, −0.20/s) vs light (≈11→88, full tempo). Validation: mainHand requires damage+speed+damageStat; armor slots may carry defense + optional penalty; no cross-contamination. Rarity 60/70/80 rows cover wood T6–T8 identically.</div>
+<div class="note">Touchpoints (same change set as weapons): <code>items</code> schema += optional <code>baseDefense</code>; validation requires it on head/chest/legs/feet-equippable gear and forbids it on mainHand (and vice versa for damage/speed); admin form + seed fill the table above. Same known tension as weapons: monster attack scales ×2/tier while armor scales linearly, so stats/augments/buffs/rebirths carry late-tier survival — tunable per piece. Full-set T1 (≈18 + stats) vs a rat (≈4 attack) lands at the <code>max(1, …)</code> floor (<code>convex/combat.ts:204</code>), i.e. early trash barely scratches a geared player, as expected.</div>
+
+<h3>Character creation — starter weapon + chest (new)</h3>
+<p>Creation today is name-only (<code>app/components/game/PlayerGate.tsx:29</code> → <code>getOrCreatePlayer</code>, <code>convex/players.ts:143</code>). It gains a weapon-choice step: 5 worn weapons, each bundled with a matching chest. Starter items are T0 records (no recipes, never in a chain — validation untouched), granted and auto-equipped at creation; existing players unaffected. Rebirth re-grants the player's chosen starter (or re-offers the choice — open, see §10).</p>
+<table>
+  <tr><th>Choice</th><th>Weapon (dmg · speed · scales)</th><th>Chest (def · stat)</th><th>Opening identity</th></tr>
+  <tr><td>Sword</td><td>Worn Sword · 4 · 1.0 · str</td><td>Worn Mail · 3 · +1 con</td><td>Balanced melee</td></tr>
+  <tr><td>Dagger</td><td>Worn Dagger · 3 · 1.6 · dex</td><td>Worn Vest · 2 · +1 dex</td><td>Fast striker</td></tr>
+  <tr><td>Mace</td><td>Worn Mace · 6 · 0.65 · str</td><td>Worn Mail · 3 · +1 con</td><td>Slow bruiser</td></tr>
+  <tr><td>Bow</td><td>Worn Bow · 4 · 1.3 · dex</td><td>Worn Vest · 2 · +1 dex</td><td>Ranger</td></tr>
+  <tr><td>Staff</td><td>Worn Staff · 5 · 0.8 · int (magical)</td><td>Worn Robe · 2 · +1 int</td><td>Caster (magic dmg from fight one)</td></tr>
+</table>
+<div class="note">HP floor: <code>hp = max(minPlayerHp, con×10)</code>, new balance key default 30. Check: worn sword (5.7 attack, 1.0/s) kills a rat (22 HP) in ~4s; rat deals ~3.6/hit at 0.5/s vs 30+ HP → ~17s to die. Tense first fight, survivable — as intended. Touchpoints: <code>getOrCreatePlayer</code> takes validated <code>starterId</code>, grants via <code>grantItemToInventory</code> + equips; <code>startingStats</code> balance → all 1s; <code>NameEntry</code> gains the 5-card picker.</div>
+
+<h2>8. Cross-cutting additions</h2>
+<table>
+  <tr><th>Area</th><th>Current</th><th>Needed for T4–T8</th></tr>
+  <tr class="new"><td>Boss tokens + loot tables</td><td>3 tokens, 3 tables</td><td>+5 tokens + 5 <code>loot-boss-tier-*</code> tables</td></tr>
+  <tr class="new"><td>Monster drops / augmentations</td><td>9 drops → 3 tiers</td><td>Reuse 9 drops with quantity = tier, or add new monsters</td></tr>
+  <tr class="new"><td>Augmentation XP</td><td>50 × tier</td><td>T4 200 … T8 400</td></tr>
+  <tr><td>Balance keys</td><td><code>skillTaskMsPerXp</code> etc. exist</td><td>New: regen ceiling, combined stat/XP/speed caps, consumable durations — all as <code>gameBalance</code> + admin coverage per AGENTS.md</td></tr>
+  <tr class="new"><td>Panel row cap</td><td><code>MAX_SKILL_PANEL_ROWS=200</code>, ~69 recipes now</td><td>Recheck after reseed (~40 refine + 48 wood + 56 forge + 18 alchemy ≈ 162); raise to 300 — <code>convex/skills.ts:33</code></td></tr>
+</table>
+
+<h2>9. Implementation order</h2>
+<table>
+  <tr><th>#</th><th>Step</th><th>Tables touched</th></tr>
+  <tr><td>1</td><td>Confirm §5–§6: 4 tracks, retire old 5 families, restoration fate</td><td>—</td></tr>
+  <tr><td>2</td><td>Build combat-buff design for tracks 1 + 4 (new mutation(s), buff table or extension, combat settlement reads, admin editor, balance keys)</td><td>new/evolved + <code>gameBalance</code></td></tr>
+  <tr><td>3</td><td>Seed T4–T8 tier definitions (6×5) with Starforged at T8</td><td><code>skillTierDefinitions</code></td></tr>
+  <tr><td>4</td><td>Add 25 gathering items + activities</td><td><code>items, gatheringActivities</code></td></tr>
+  <tr><td>5</td><td>Add 25 refined items + refinement recipes</td><td><code>items, recipes, recipeIngredients/Outputs</code></td></tr>
+  <tr><td>6</td><td>Reseed alchemy products as 18 consumables (might 8, focus 4, swiftness 4, wisdom 2 — all usable; combat tracks gated on step 2's buff system)</td><td><code>items, recipes (+)</code></td></tr>
+  <tr><td>7</td><td>Boss tokens T4–T8 + loot tables; keep hybrid monster-drop on Track 1</td><td><code>items, lootTables/Entries/Sources, augmentationDefinitions</code></td></tr>
+</table>
+
+<h2>10. Decisions needed</h2>
+<ul>
+  <li>Approve 4 tracks above, and restoration: retire or keep as instant-heal under Track 1?</li>
+  <li>Track 1 stats: single rotating stat per tier (str-heavy like today) or full stat spread per tier (5× items)? Single keeps 32 recipes; spread makes 100+.</li>
+  <li>Track 2/3 scope: <code>all</code> only, or also <code>gathering</code>/<code>crafting</code> variants?</li>
+  <li>Track 4 scope: combat XP only, or XP + gold? Timed buff vs instant grant?</li>
+  <li>Level gates: linear <code>1 / 14 / 26 / 39 / 52 / 65 / 77 / 90</code> as in §2?</li>
+</ul>
+</body>
+</html>

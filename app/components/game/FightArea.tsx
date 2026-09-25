@@ -548,6 +548,12 @@ export function FightArea({ player }: FightAreaProps) {
   const isTaskQueueFull =
     taskQueueData !== undefined &&
     taskQueueData.usedSlots >= taskQueueData.capacity;
+  const hasQueuedTasks =
+    taskQueueData !== undefined &&
+    (taskQueueData.active != null ||
+      (taskQueueData.queued?.length ?? 0) > 0);
+  const manualFightBlocked =
+    !autoBattleSettings.enabled && hasQueuedTasks;
 
   if (
     !currentFight &&
@@ -587,6 +593,10 @@ export function FightArea({ player }: FightAreaProps) {
       isStartingRef.current ||
       respawnTimerRef.current > 0
     ) {
+      return false;
+    }
+
+    if (!autoBattleSettings.enabled && hasQueuedTasks) {
       return false;
     }
 
@@ -706,7 +716,8 @@ export function FightArea({ player }: FightAreaProps) {
       playerLevel < tier * bossUnlockLevelPerTier ||
       currentFightRef.current ||
       isStartingRef.current ||
-      respawnTimerRef.current > 0
+      respawnTimerRef.current > 0 ||
+      hasQueuedTasks
     ) {
       return false;
     }
@@ -854,6 +865,7 @@ export function FightArea({ player }: FightAreaProps) {
             disabled={
               isStarting ||
               isRespawning ||
+              manualFightBlocked ||
               (!autoBattleSettings.enabled &&
                 (!monsters || monsters.length === 0)) ||
               (autoBattleSettings.enabled && isTaskQueueFull)
@@ -876,7 +888,8 @@ export function FightArea({ player }: FightAreaProps) {
               isRespawning ||
               bossQuery.isPending ||
               !boss ||
-              bossLevelLocked
+              bossLevelLocked ||
+              hasQueuedTasks
             }
             className="flex-1 bg-blood/80 text-lg text-gold-light hover:bg-blood border border-blood-light/40 disabled:bg-forest-dark/50 disabled:text-muted-foreground disabled:border-forest-light/10"
           >
@@ -893,6 +906,18 @@ export function FightArea({ player }: FightAreaProps) {
                   : "Boss not yet reached"}
           </Button>
         </div>
+        {autoBattleSettings.enabled && hasQueuedTasks && !isRespawning && (
+          <p className="text-center text-xs text-muted-foreground" role="status">
+            Finish or stop your queued tasks before challenging a boss.
+          </p>
+        )}
+        {manualFightBlocked && !isRespawning && (
+          <p className="text-center text-xs text-muted-foreground" role="status">
+            Finish or stop your queued tasks before entering the wilds or
+            challenging a boss. Battles can only be queued once you own Battle
+            Automation.
+          </p>
+        )}
       </div>
     </Card>
   );

@@ -2,6 +2,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
+import { COMBAT_BALANCE_DEFAULTS } from "./items";
 
 type SeedItem = {
   itemId: string;
@@ -30,14 +31,33 @@ type SeedItem = {
   effectStat?: "str" | "dex" | "int" | "luk" | "con";
   effectAmount?: number;
   effectDurationMs?: number;
+  effectScope?: "all" | "gathering" | "crafting";
   augmentSlots?: number;
+  baseDamage?: number;
+  attackSpeed?: number;
+  damageStat?: "str" | "dex" | "int";
+  damageType?: "physical" | "magical";
+  baseDefense?: number;
+  speedPenalty?: number;
+  buffVariant?: "base" | "advanced";
 };
 
-type Tier = 1 | 2 | 3;
+type Tier = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type EquipmentSlot = SeedItem["allowedEquipmentSlots"][number];
 type EffectStat = NonNullable<SeedItem["effectStat"]>;
 
-const TIERS: Tier[] = [1, 2, 3];
+const TIERS: Tier[] = [1, 2, 3, 4, 5, 6, 7, 8];
+const TIER_NAMES = [
+  "Grove",
+  "Moonlit Grove",
+  "Ancient Grove",
+  "Deepwood",
+  "Emberfall",
+  "Elderwild",
+  "Nightmare Thicket",
+  "Starforged",
+];
+const TIER_LEVELS = [1, 14, 26, 39, 52, 65, 77, 90];
 
 function craftingItem(
   itemId: string,
@@ -63,15 +83,48 @@ function craftingItem(
   };
 }
 
-function equipmentItem(
+type WeaponSpec = {
+  damage: number;
+  speed: number;
+  scaling: "str" | "dex" | "int";
+  magical?: boolean;
+};
+
+const WEAPON_SPECS: Record<string, WeaponSpec> = {
+  sword: { damage: 10, speed: 1.0, scaling: "str" },
+  dagger: { damage: 6, speed: 1.6, scaling: "dex" },
+  mace: { damage: 16, speed: 0.65, scaling: "str" },
+  bow: { damage: 8, speed: 1.3, scaling: "dex" },
+  staff: { damage: 12, speed: 0.8, scaling: "int", magical: true },
+};
+
+type ArmorSpec = { defense: number; penalty: number };
+
+const HEAVY_ARMOR: Record<string, ArmorSpec> = {
+  helm: { defense: 4, penalty: 0.04 },
+  mail: { defense: 6, penalty: 0.08 },
+  greaves: { defense: 5, penalty: 0.06 },
+  boots: { defense: 3, penalty: 0.02 },
+};
+
+const LIGHT_ARMOR: Record<string, number> = {
+  hood: 2,
+  vest: 4,
+  leggings: 3,
+  boots: 2,
+};
+
+function weaponItem(
   itemId: string,
   name: string,
   itemFamily: string,
   craftingSkillId: "woodworking" | "forging",
   craftingTier: Tier,
   slot: EquipmentSlot,
-  effectStat: EffectStat
+  effectStat: EffectStat,
+  kind: keyof typeof WEAPON_SPECS
 ): SeedItem {
+  const spec = WEAPON_SPECS[kind];
   return {
     itemId,
     name,
@@ -88,8 +141,74 @@ function equipmentItem(
     effectStat,
     effectAmount: craftingTier * 2,
     augmentSlots: 1,
+    baseDamage: spec.damage * craftingTier,
+    attackSpeed: spec.speed,
+    damageStat: spec.scaling,
+    damageType: spec.magical ? "magical" : "physical",
   };
 }
+
+function heavyArmorItem(
+  itemId: string,
+  name: string,
+  itemFamily: string,
+  craftingTier: Tier,
+  slot: EquipmentSlot,
+  effectStat: EffectStat,
+  kind: keyof typeof HEAVY_ARMOR
+): SeedItem {
+  const spec = HEAVY_ARMOR[kind];
+  return {
+    itemId,
+    name,
+    category: "equipment",
+    description: `${name} forged from tier ${craftingTier} mystical forest ores.`,
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: [slot],
+    rarityLevel: craftingTier * 10,
+    itemFamily,
+    craftingSkillId: "forging",
+    craftingTier,
+    effectType: "stat-bonus",
+    effectStat,
+    effectAmount: craftingTier * 2,
+    augmentSlots: 1,
+    baseDefense: spec.defense * craftingTier,
+    speedPenalty: spec.penalty,
+  };
+}
+
+function lightArmorItem(
+  itemId: string,
+  name: string,
+  itemFamily: string,
+  craftingTier: Tier,
+  slot: EquipmentSlot,
+  effectStat: EffectStat,
+  kind: keyof typeof LIGHT_ARMOR
+): SeedItem {
+  return {
+    itemId,
+    name,
+    category: "equipment",
+    description: `${name} shaped from tier ${craftingTier} mystical forest materials.`,
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: [slot],
+    rarityLevel: craftingTier * 10,
+    itemFamily,
+    craftingSkillId: "woodworking",
+    craftingTier,
+    effectType: "stat-bonus",
+    effectStat,
+    effectAmount: craftingTier * 2,
+    augmentSlots: 1,
+    baseDefense: LIGHT_ARMOR[kind] * craftingTier,
+  };
+}
+
+// ─── Gathering resources ────────────────────────────────────────────────────
 
 const HARVESTING_RESOURCES = [
   ["moonlit-herb", "Moonlit Herb", 1, "A silver-veined herb that opens beneath moonlight."],
@@ -101,297 +220,399 @@ const HARVESTING_RESOURCES = [
   ["whispering-flower", "Whispering Flower", 3, "Its petals murmur forgotten names when gathered."],
   ["astral-orchid", "Astral Orchid", 3, "A rare orchid whose markings resemble constellations."],
   ["elderroot", "Elderroot", 3, "An ancient medicinal root steeped in forest memory."],
+  ["emberleaf", "Emberleaf", 4, "A leaf warm to the touch, veined like cooling embers."],
+  ["frostcap", "Frostcap", 4, "A pale mushroom rimed with everlasting frost."],
+  ["thornbloom", "Thornbloom", 4, "A fierce blossom that only opens for careful hands."],
+  ["tidepetal", "Tidepetal", 5, "Petals that smell of rain no matter the season."],
+  ["stormspore", "Stormspore", 5, "A spore that crackles faintly before a storm."],
+  ["glowroot", "Glowroot", 5, "A root that pulses with soft amber light."],
+  ["voidfern", "Voidfern", 6, "A fern the color of the sky between stars."],
+  ["sunscale-lichen", "Sunscale Lichen", 6, "Golden lichen that grows only in true sunlight."],
+  ["hexbark-blossom", "Hexbark Blossom", 6, "A blossom warded by the tree that bore it."],
+  ["nightshade-crown", "Nightshade Crown", 7, "A dark flower fit for an unseen monarch."],
+  ["wraithvine", "Wraithvine", 7, "A vine that passes through shadows to drink."],
+  ["doomorchid", "Doomorchid", 7, "Beautiful the way a drawn blade is beautiful."],
+  ["starforged-seed", "Starforged Seed", 8, "A seed that fell from the reforged sky."],
+  ["dawnpetal", "Dawnpetal", 8, "The first color of morning, gathered whole."],
+  ["eternalmoss", "Eternalmoss", 8, "Moss that has never known a winter."],
+] as const;
+
+const WOOD_RESOURCES = [
+  ["moonwood-log", "Moonwood Log", 1, "Pale wood harvested from trees that drink in starlight."],
+  ["living-bark", "Living Bark", 2, "Warm bark that flexes like a slow, sleeping heartbeat."],
+  ["thornvine-bundle", "Thornvine Bundle", 3, "A coil of thornvine gathered before its thorns unfurl."],
+  ["emberwood-log", "Emberwood Log", 4, "Wood that smolders gently for years after cutting."],
+  ["tidewood-log", "Tidewood Log", 5, "Waterlogged timber light as balsa and hard as oak."],
+  ["voidwood-log", "Voidwood Log", 6, "Timber that drinks the light around it."],
+  ["dreadwood-log", "Dreadwood Log", 7, "Black wood that whispers when the wind moves it."],
+  ["worldheart-log", "Worldheart Log", 8, "A section of the forest's own beating heart."],
+] as const;
+
+const ORE_RESOURCES = [
+  ["moonstone-shard", "Moonstone Shard", 1, "A cool shard that reflects a sky no matter the hour."],
+  ["root-amber", "Root Amber", 2, "Golden resin found where ancient roots cross the stone."],
+  ["root-iron-ore", "Root-Iron Ore", 3, "Dense ore threaded with roots that refuse to break."],
+  ["emberstone-shard", "Emberstone Shard", 4, "Stone that holds the day's heat past midnight."],
+  ["stormsilver-ore", "Stormsilver Ore", 5, "Bright ore that hums during thunderstorms."],
+  ["voidquartz-ore", "Voidquartz Ore", 6, "A crystal with a darkness visible inside."],
+  ["nightsteel-ore", "Nightsteel Ore", 7, "Ore that only surfaces under a moonless sky."],
+  ["starforged-ore", "Starforged Ore", 8, "Metal reforged in the heart of a fallen star."],
 ] as const;
 
 const RESOURCE_ITEMS: SeedItem[] = [
   ...HARVESTING_RESOURCES.map(([itemId, name, tier, description]) =>
-    craftingItem(
-      itemId,
-      name,
-      description,
-      "harvesting-resource",
-      "harvesting",
-      tier
-    )
+    craftingItem(itemId, name, description, "harvesting-resource", "harvesting", tier as Tier)
   ),
-  craftingItem(
-    "moonwood-log",
-    "Moonwood Log",
-    "Pale wood harvested from trees that drink in starlight.",
-    "woodcutting-resource",
-    "woodcutting",
-    1
+  ...WOOD_RESOURCES.map(([itemId, name, tier, description]) =>
+    craftingItem(itemId, name, description, "woodcutting-resource", "woodcutting", tier as Tier)
   ),
-  craftingItem(
-    "living-bark",
-    "Living Bark",
-    "Warm bark that flexes like a slow, sleeping heartbeat.",
-    "woodcutting-resource",
-    "woodcutting",
-    2
-  ),
-  craftingItem(
-    "thornvine-bundle",
-    "Thornvine Bundle",
-    "A coil of thornvine gathered before its thorns unfurl.",
-    "woodcutting-resource",
-    "woodcutting",
-    3
-  ),
-  craftingItem(
-    "moonstone-shard",
-    "Moonstone Shard",
-    "A cool shard that reflects a sky no matter the hour.",
-    "mining-resource",
-    "mining",
-    1
-  ),
-  craftingItem(
-    "root-amber",
-    "Root Amber",
-    "Golden resin found where ancient roots cross the stone.",
-    "mining-resource",
-    "mining",
-    2
-  ),
-  craftingItem(
-    "root-iron-ore",
-    "Root-Iron Ore",
-    "Dense ore threaded with roots that refuse to break.",
-    "mining-resource",
-    "mining",
-    3
+  ...ORE_RESOURCES.map(([itemId, name, tier, description]) =>
+    craftingItem(itemId, name, description, "mining-resource", "mining", tier as Tier)
   ),
 ];
+
+// Refinement lines: [essence, powder, extract] harvesting resources per tier.
+const ESSENCE_LINE = [
+  ["moonlit-essence", "Moonlit Essence", "moonlit-herb"],
+  ["glimmering-essence", "Glimmering Essence", "glimmering-mushroom"],
+  ["whispering-essence", "Whispering Essence", "whispering-flower"],
+  ["ember-essence", "Ember Essence", "emberleaf"],
+  ["tide-essence", "Tide Essence", "tidepetal"],
+  ["void-essence", "Void Essence", "voidfern"],
+  ["nightmare-essence", "Nightmare Essence", "nightshade-crown"],
+  ["starforged-essence", "Starforged Essence", "starforged-seed"],
+] as const;
+const POWDER_LINE = [
+  ["silverdew-powder", "Silverdew Powder", "silverdew-leaf"],
+  ["sunveil-powder", "Sunveil Powder", "sunveil-bloom"],
+  ["astral-powder", "Astral Powder", "astral-orchid"],
+  ["ember-powder", "Ember Powder", "frostcap"],
+  ["tide-powder", "Tide Powder", "stormspore"],
+  ["void-powder", "Void Powder", "sunscale-lichen"],
+  ["nightmare-powder", "Nightmare Powder", "wraithvine"],
+  ["starforged-powder", "Starforged Powder", "dawnpetal"],
+] as const;
+const EXTRACT_LINE = [
+  ["starlight-extract", "Starlight Extract", "starlight-moss"],
+  ["dreamcap-extract", "Dreamcap Extract", "dreamcap-spore"],
+  ["elderroot-extract", "Elderroot Extract", "elderroot"],
+  ["ember-extract", "Ember Extract", "thornbloom"],
+  ["tide-extract", "Tide Extract", "glowroot"],
+  ["void-extract", "Void Extract", "hexbark-blossom"],
+  ["nightmare-extract", "Nightmare Extract", "doomorchid"],
+  ["starforged-extract", "Starforged Extract", "eternalmoss"],
+] as const;
+const LUMBER_LINE = [
+  ["moonwood-lumber", "Moonwood Lumber", "moonwood-log"],
+  ["living-bark-lumber", "Living Bark Lumber", "living-bark"],
+  ["thornvine-lumber", "Thornvine Lumber", "thornvine-bundle"],
+  ["emberwood-lumber", "Emberwood Lumber", "emberwood-log"],
+  ["tidewood-lumber", "Tidewood Lumber", "tidewood-log"],
+  ["voidwood-lumber", "Voidwood Lumber", "voidwood-log"],
+  ["dreadwood-lumber", "Dreadwood Lumber", "dreadwood-log"],
+  ["worldheart-lumber", "Worldheart Lumber", "worldheart-log"],
+] as const;
+const INGOT_LINE = [
+  ["moonstone-ingot", "Moonstone Ingot", "moonstone-shard"],
+  ["ambersteel-ingot", "Ambersteel Ingot", "root-amber"],
+  ["root-iron-ingot", "Root-Iron Ingot", "root-iron-ore"],
+  ["emberstone-ingot", "Emberstone Ingot", "emberstone-shard"],
+  ["stormsilver-ingot", "Stormsilver Ingot", "stormsilver-ore"],
+  ["voidquartz-ingot", "Voidquartz Ingot", "voidquartz-ore"],
+  ["nightsteel-ingot", "Nightsteel Ingot", "nightsteel-ore"],
+  ["starforged-ingot", "Starforged Ingot", "starforged-ore"],
+] as const;
 
 const REFINED_ITEMS: SeedItem[] = [
-  ...[
-    ["moonlit-essence", "Moonlit Essence", 1, "alchemy-essence"],
-    ["glimmering-essence", "Glimmering Essence", 2, "alchemy-essence"],
-    ["whispering-essence", "Whispering Essence", 3, "alchemy-essence"],
-    ["silverdew-powder", "Silverdew Powder", 1, "alchemy-powder"],
-    ["sunveil-powder", "Sunveil Powder", 2, "alchemy-powder"],
-    ["astral-powder", "Astral Powder", 3, "alchemy-powder"],
-    ["starlight-extract", "Starlight Extract", 1, "alchemy-extract"],
-    ["dreamcap-extract", "Dreamcap Extract", 2, "alchemy-extract"],
-    ["elderroot-extract", "Elderroot Extract", 3, "alchemy-extract"],
-  ].map(([itemId, name, tier, family]) =>
-    craftingItem(
-      itemId as string,
-      name as string,
-      `A tier ${tier} reagent refined before final alchemical brewing.`,
-      family as string,
-      "alchemy",
-      tier as Tier
-    )
+  ...ESSENCE_LINE.map(([itemId, name], index) =>
+    craftingItem(itemId, name, `A tier ${index + 1} reagent refined before final alchemical brewing.`, "alchemy-essence", "alchemy", (index + 1) as Tier)
   ),
-  ...[
-    ["moonwood-lumber", "Moonwood Lumber", 1],
-    ["living-bark-lumber", "Living Bark Lumber", 2],
-    ["thornvine-lumber", "Thornvine Lumber", 3],
-  ].map(([itemId, name, tier]) =>
-    craftingItem(
-      itemId as string,
-      name as string,
-      `Tier ${tier} lumber refined for woodworking.`,
-      "woodworking-lumber",
-      "woodworking",
-      tier as Tier
-    )
+  ...POWDER_LINE.map(([itemId, name], index) =>
+    craftingItem(itemId, name, `A tier ${index + 1} reagent refined before final alchemical brewing.`, "alchemy-powder", "alchemy", (index + 1) as Tier)
   ),
-  ...[
-    ["moonstone-ingot", "Moonstone Ingot", 1],
-    ["ambersteel-ingot", "Ambersteel Ingot", 2],
-    ["root-iron-ingot", "Root-Iron Ingot", 3],
-  ].map(([itemId, name, tier]) =>
-    craftingItem(
-      itemId as string,
-      name as string,
-      `A tier ${tier} ingot refined for forging.`,
-      "forging-ingot",
-      "forging",
-      tier as Tier
-    )
+  ...EXTRACT_LINE.map(([itemId, name], index) =>
+    craftingItem(itemId, name, `A tier ${index + 1} reagent refined before final alchemical brewing.`, "alchemy-extract", "alchemy", (index + 1) as Tier)
+  ),
+  ...LUMBER_LINE.map(([itemId, name], index) =>
+    craftingItem(itemId, name, `Tier ${index + 1} lumber refined for woodworking.`, "woodworking-lumber", "woodworking", (index + 1) as Tier)
+  ),
+  ...INGOT_LINE.map(([itemId, name], index) =>
+    craftingItem(itemId, name, `A tier ${index + 1} ingot refined for forging.`, "forging-ingot", "forging", (index + 1) as Tier)
   ),
 ];
 
-const ALCHEMY_EFFECTS: Record<
-  string,
-  Pick<SeedItem, "effectType" | "effectStat" | "effectAmount" | "effectDurationMs">
-> = {
-  "verdant-tonic": {
-    effectType: "restoration",
-    effectAmount: 25,
-    effectDurationMs: 10_000,
-  },
-  "starwater-salve": {
-    effectType: "restoration",
-    effectAmount: 55,
-    effectDurationMs: 15_000,
-  },
-  "dreambloom-elixir": {
-    effectType: "restoration",
-    effectAmount: 100,
-    effectDurationMs: 20_000,
-  },
-  "moonward-philter": {
-    effectType: "stat-bonus",
-    effectStat: "con",
-    effectAmount: 2,
-    effectDurationMs: 30_000,
-  },
-  "starward-philter": {
-    effectType: "stat-bonus",
-    effectStat: "con",
-    effectAmount: 4,
-    effectDurationMs: 45_000,
-  },
-  "dreamward-philter": {
-    effectType: "stat-bonus",
-    effectStat: "con",
-    effectAmount: 7,
-    effectDurationMs: 60_000,
-  },
-  "ratfang-draught": {
-    effectType: "stat-bonus",
-    effectStat: "dex",
-    effectAmount: 2,
-    effectDurationMs: 30_000,
-  },
-  "trollhide-draught": {
-    effectType: "stat-bonus",
-    effectStat: "con",
-    effectAmount: 4,
-    effectDurationMs: 45_000,
-  },
-  "demonseed-draught": {
-    effectType: "stat-bonus",
-    effectStat: "str",
-    effectAmount: 7,
-    effectDurationMs: 60_000,
-  },
-  "goblin-charm-oil": {
-    effectType: "stat-bonus",
-    effectStat: "luk",
-    effectAmount: 2,
-    effectDurationMs: 30_000,
-  },
-  "wyvern-scale-oil": {
-    effectType: "stat-bonus",
-    effectStat: "dex",
-    effectAmount: 4,
-    effectDurationMs: 45_000,
-  },
-  "nightmare-leaf-oil": {
-    effectType: "stat-bonus",
-    effectStat: "int",
-    effectAmount: 7,
-    effectDurationMs: 60_000,
-  },
-  "orc-heartwood-elixir": {
-    effectType: "stat-bonus",
-    effectStat: "str",
-    effectAmount: 2,
-    effectDurationMs: 30_000,
-  },
-  "dragon-ember-elixir": {
-    effectType: "stat-bonus",
-    effectStat: "str",
-    effectAmount: 4,
-    effectDurationMs: 45_000,
-  },
-  "archfiend-horn-elixir": {
-    effectType: "stat-bonus",
-    effectStat: "str",
-    effectAmount: 7,
-    effectDurationMs: 60_000,
-  },
-};
+// ─── Combat consumables (alchemy products) ──────────────────────────────────
 
-const ALCHEMY_PRODUCT_ITEMS: SeedItem[] = [
-  ["verdant-tonic", "Verdant Tonic", 1, "alchemy-restorative"],
-  ["starwater-salve", "Starwater Salve", 2, "alchemy-restorative"],
-  ["dreambloom-elixir", "Dreambloom Elixir", 3, "alchemy-restorative"],
-  ["moonward-philter", "Moonward Philter", 1, "alchemy-ward"],
-  ["starward-philter", "Starward Philter", 2, "alchemy-ward"],
-  ["dreamward-philter", "Dreamward Philter", 3, "alchemy-ward"],
-  ["ratfang-draught", "Ratfang Draught", 1, "alchemy-predator"],
-  ["trollhide-draught", "Trollhide Draught", 2, "alchemy-predator"],
-  ["demonseed-draught", "Demonseed Draught", 3, "alchemy-predator"],
-  ["goblin-charm-oil", "Goblin Charm Oil", 1, "alchemy-cunning"],
-  ["wyvern-scale-oil", "Wyvern Scale Oil", 2, "alchemy-cunning"],
-  ["nightmare-leaf-oil", "Nightmare Leaf Oil", 3, "alchemy-cunning"],
-  ["orc-heartwood-elixir", "Orc Heartwood Elixir", 1, "alchemy-might"],
-  ["dragon-ember-elixir", "Dragon Ember Elixir", 2, "alchemy-might"],
-  ["archfiend-horn-elixir", "Archfiend Horn Elixir", 3, "alchemy-might"],
-].map(([itemId, name, tier, family]) => ({
-  ...craftingItem(
-    itemId as string,
-    name as string,
-    `A tier ${tier} final alchemical product of the mystical forest.`,
-    family as string,
-    "alchemy",
-    tier as Tier,
-    25
-  ),
-  ...ALCHEMY_EFFECTS[itemId as string],
-}));
+type ConsumableEffect =
+  | { effectType: "heal-over-time"; effectAmount: number; effectDurationMs: number }
+  | { effectType: "combat-stat-boost"; effectStat: EffectStat; effectAmount: number; effectDurationMs: number }
+  | { effectType: "skill-xp-multiplier" | "skill-speed-multiplier"; effectAmount: number; effectDurationMs: number; effectScope: "gathering" | "crafting" }
+  | { effectType: "combat-xp-multiplier"; effectAmount: number; effectDurationMs: number };
 
-const WOOD_NAMES = ["Moonwood", "Living Bark", "Thornvine"] as const;
-const WOOD_IDS = ["moonwood", "living-bark", "thornvine"] as const;
-const WOODWORKING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
+const MIN = 60_000;
+
+const CONSUMABLE_ITEMS: Array<
+  SeedItem & { tier: Tier; family: string; variant: "base" | "advanced" }
+> = [
+  // Track 1 — combat (alchemy-might), one per tier.
+  { ...craftingItem("verdant-tonic", "Verdant Tonic", "A soothing tonic that knits wounds over time.", "alchemy-might", "alchemy", 1, 25), ...{ effectType: "heal-over-time", effectAmount: 1.5, effectDurationMs: 5 * MIN } as ConsumableEffect, tier: 1, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("ember-might-draught", "Ember Might Draught", "Kindles raw strength for a time.", "alchemy-might", "alchemy", 2, 25), ...{ effectType: "combat-stat-boost", effectStat: "str", effectAmount: 3, effectDurationMs: 5 * MIN } as ConsumableEffect, tier: 2, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("hunters-swift-draught", "Hunter's Swiftness Draught", "Sharpens reflexes for a time.", "alchemy-might", "alchemy", 3, 25), ...{ effectType: "combat-stat-boost", effectStat: "dex", effectAmount: 3, effectDurationMs: 6 * MIN } as ConsumableEffect, tier: 3, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("starwater-salve", "Starwater Salve", "A potent salve that closes wounds over time.", "alchemy-might", "alchemy", 4, 25), ...{ effectType: "heal-over-time", effectAmount: 3, effectDurationMs: 8 * MIN } as ConsumableEffect, tier: 4, family: "alchemy-might", variant: "advanced" },
+  { ...craftingItem("demonseed-might-draught", "Demonseed Might Draught", "Burns with a dangerous, mighty strength.", "alchemy-might", "alchemy", 5, 25), ...{ effectType: "combat-stat-boost", effectStat: "str", effectAmount: 7, effectDurationMs: 10 * MIN } as ConsumableEffect, tier: 5, family: "alchemy-might", variant: "advanced" },
+  { ...craftingItem("stonehide-draught", "Stonehide Draught", "Skin takes on the patience of stone.", "alchemy-might", "alchemy", 6, 25), ...{ effectType: "combat-stat-boost", effectStat: "con", effectAmount: 4, effectDurationMs: 10 * MIN } as ConsumableEffect, tier: 6, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("nightmare-swift-draught", "Nightmare Swiftness Draught", "Move like something out of a bad dream.", "alchemy-might", "alchemy", 7, 25), ...{ effectType: "combat-stat-boost", effectStat: "dex", effectAmount: 7, effectDurationMs: 12 * MIN } as ConsumableEffect, tier: 7, family: "alchemy-might", variant: "advanced" },
+  { ...craftingItem("starforged-heart-draught", "Starforged Heart Draught", "The heart of the forest, beating in a flask.", "alchemy-might", "alchemy", 8, 25), ...{ effectType: "combat-stat-boost", effectStat: "con", effectAmount: 8, effectDurationMs: 15 * MIN } as ConsumableEffect, tier: 8, family: "alchemy-might", variant: "advanced" },
+  // Track 2 — skill XP (alchemy-focus), per-skill pairs.
+  { ...craftingItem("gathering-focus-tonic", "Gathering Focus Tonic", "Sharpens gathering instincts, improving skill gains.", "alchemy-focus", "alchemy", 1, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 1, family: "alchemy-focus", variant: "base" },
+  { ...craftingItem("crafting-focus-tonic", "Crafting Focus Tonic", "Steadies the hand, improving crafting skill gains.", "alchemy-focus", "alchemy", 1, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 1, family: "alchemy-focus", variant: "base" },
+  { ...craftingItem("gathering-focus-elixir", "Gathering Focus Elixir", "Deep attunement to the wilds.", "alchemy-focus", "alchemy", 5, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.8, effectDurationMs: 45 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 5, family: "alchemy-focus", variant: "advanced" },
+  { ...craftingItem("crafting-focus-elixir", "Crafting Focus Elixir", "The workshop feels like an extension of the self.", "alchemy-focus", "alchemy", 5, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.8, effectDurationMs: 45 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 5, family: "alchemy-focus", variant: "advanced" },
+  // Track 3 — skill speed (alchemy-swiftness), per-skill pairs.
+  { ...craftingItem("gathering-alacrity-tonic", "Gathering Alacrity Tonic", "Quickens gathering work.", "alchemy-swiftness", "alchemy", 2, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.2, effectDurationMs: 30 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 2, family: "alchemy-swiftness", variant: "base" },
+  { ...craftingItem("crafting-alacrity-tonic", "Crafting Alacrity Tonic", "Quickens crafting work.", "alchemy-swiftness", "alchemy", 2, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.2, effectDurationMs: 30 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 2, family: "alchemy-swiftness", variant: "base" },
+  { ...craftingItem("gathering-alacrity-elixir", "Gathering Alacrity Elixir", "Blur through the undergrowth.", "alchemy-swiftness", "alchemy", 6, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.6, effectDurationMs: 45 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 6, family: "alchemy-swiftness", variant: "advanced" },
+  { ...craftingItem("crafting-alacrity-elixir", "Crafting Alacrity Elixir", "Hands move faster than thought.", "alchemy-swiftness", "alchemy", 6, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.6, effectDurationMs: 45 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 6, family: "alchemy-swiftness", variant: "advanced" },
+  // Track 4 — combat XP (alchemy-wisdom), single pair.
+  { ...craftingItem("wisdom-draught", "Wisdom Draught", "Learn from every battle.", "alchemy-wisdom", "alchemy", 3, 25), ...{ effectType: "combat-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN } as ConsumableEffect, tier: 3, family: "alchemy-wisdom", variant: "base" },
+  { ...craftingItem("wisdom-elixir", "Wisdom Elixir", "Every scar is a lesson.", "alchemy-wisdom", "alchemy", 7, 25), ...{ effectType: "combat-xp-multiplier", effectAmount: 2.0, effectDurationMs: 45 * MIN } as ConsumableEffect, tier: 7, family: "alchemy-wisdom", variant: "advanced" },
+];
+
+// ─── Forged gear (7 pieces × 8 tiers) ───────────────────────────────────────
+
+const FORGE_SETS = [
+  "Moonstone",
+  "Ambersteel",
+  "Root-Iron",
+  "Emberstone",
+  "Stormsilver",
+  "Voidquartz",
+  "Nightsteel",
+  "Starforged",
+] as const;
+const FORGE_IDS = [
+  "moonstone",
+  "ambersteel",
+  "root-iron",
+  "emberstone",
+  "stormsilver",
+  "voidquartz",
+  "nightsteel",
+  "starforged",
+] as const;
+
+const FORGING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
   const index = tier - 1;
-  const material = WOOD_NAMES[index];
-  const prefix = WOOD_IDS[index];
+  const material = FORGE_SETS[index];
+  const prefix = FORGE_IDS[index];
   return [
-    equipmentItem(`${prefix}-bow`, `${material} Bow`, "woodworking-bow", "woodworking", tier, "mainHand", "dex"),
-    equipmentItem(`${prefix}-staff`, `${material} Staff`, "woodworking-staff", "woodworking", tier, "mainHand", "int"),
-    equipmentItem(`${prefix}-hood`, `${material} Hood`, "woodworking-head", "woodworking", tier, "head", "luk"),
-    equipmentItem(`${prefix}-vest`, `${material} Vest`, "woodworking-chest", "woodworking", tier, "chest", "con"),
-    equipmentItem(`${prefix}-leggings`, `${material} Leggings`, "woodworking-legs", "woodworking", tier, "legs", "dex"),
-    equipmentItem(`${prefix}-boots`, `${material} Boots`, "woodworking-feet", "woodworking", tier, "feet", "dex"),
+    weaponItem(`${prefix}-sword`, `${material} Sword`, "forging-sword", "forging", tier, "mainHand", "str", "sword"),
+    weaponItem(`${prefix}-dagger`, `${material} Dagger`, "forging-dagger", "forging", tier, "mainHand", "dex", "dagger"),
+    weaponItem(`${prefix}-mace`, `${material} Mace`, "forging-mace", "forging", tier, "mainHand", "con", "mace"),
+    heavyArmorItem(`${prefix}-helm`, `${material} Helm`, "forging-head", tier, "head", "con", "helm"),
+    heavyArmorItem(`${prefix}-mail`, `${material} Mail`, "forging-chest", tier, "chest", "con", "mail"),
+    heavyArmorItem(`${prefix}-greaves`, `${material} Greaves`, "forging-legs", tier, "legs", "str", "greaves"),
+    heavyArmorItem(`${prefix}-boots`, `${material} Boots`, "forging-feet", tier, "feet", "dex", "boots"),
   ];
 });
 
-const FORGE_NAMES = ["Moonstone", "Amberroot", "Root-Iron"] as const;
-const FORGE_IDS = ["moonstone", "amber-root", "root-iron"] as const;
-const FORGING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
+// ─── Woodworked gear (6 pieces × 8 tiers) ───────────────────────────────────
+
+const WOOD_SETS = [
+  "Moonwood",
+  "Living Bark",
+  "Thornvine",
+  "Emberwood",
+  "Tidewood",
+  "Voidwood",
+  "Dreadwood",
+  "Worldheart",
+] as const;
+const WOOD_IDS = [
+  "moonwood",
+  "living-bark",
+  "thornvine",
+  "emberwood",
+  "tidewood",
+  "voidwood",
+  "dreadwood",
+  "worldheart",
+] as const;
+
+const WOODWORKING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
   const index = tier - 1;
-  const material = FORGE_NAMES[index];
-  const prefix = FORGE_IDS[index];
+  const material = WOOD_SETS[index];
+  const prefix = WOOD_IDS[index];
   return [
-    equipmentItem(
-      tier === 3 ? "root-iron-blade" : `${prefix}-sword`,
-      `${material} Sword`,
-      "forging-sword",
-      "forging",
-      tier,
-      "mainHand",
-      "str"
-    ),
-    equipmentItem(`${prefix}-dagger`, `${material} Dagger`, "forging-dagger", "forging", tier, "mainHand", "dex"),
-    equipmentItem(`${prefix}-mace`, `${material} Mace`, "forging-mace", "forging", tier, "mainHand", "con"),
-    equipmentItem(`${prefix}-helm`, `${material} Helm`, "forging-head", "forging", tier, "head", "con"),
-    equipmentItem(
-      tier === 1 ? "moonstone-mail" : `${prefix}-mail`,
-      `${material} Mail`,
-      "forging-chest",
-      "forging",
-      tier,
-      "chest",
-      "con"
-    ),
-    equipmentItem(`${prefix}-greaves`, `${material} Greaves`, "forging-legs", "forging", tier, "legs", "str"),
-    equipmentItem(`${prefix}-boots`, `${material} Boots`, "forging-feet", "forging", tier, "feet", "dex"),
+    weaponItem(`${prefix}-bow`, `${material} Bow`, "woodworking-bow", "woodworking", tier, "mainHand", "dex", "bow"),
+    weaponItem(`${prefix}-staff`, `${material} Staff`, "woodworking-staff", "woodworking", tier, "mainHand", "int", "staff"),
+    lightArmorItem(`${prefix}-hood`, `${material} Hood`, "woodworking-head", tier, "head", "luk", "hood"),
+    lightArmorItem(`${prefix}-vest`, `${material} Vest`, "woodworking-chest", tier, "chest", "con", "vest"),
+    lightArmorItem(`${prefix}-leggings`, `${material} Leggings`, "woodworking-legs", tier, "legs", "dex", "leggings"),
+    lightArmorItem(`${prefix}-boots`, `${material} Boots`, "woodworking-feet", tier, "feet", "dex", "boots"),
   ];
 });
 
 const OUTPUT_ITEMS: SeedItem[] = [
   ...REFINED_ITEMS,
-  ...ALCHEMY_PRODUCT_ITEMS,
+  ...CONSUMABLE_ITEMS.map(
+    ({ tier: _tier, family: _family, variant, ...item }) => ({
+      ...item,
+      buffVariant: variant,
+    })
+  ),
   ...WOODWORKING_ITEMS,
   ...FORGING_ITEMS,
 ];
+
+// ─── Starter kits (T0, no recipes) ──────────────────────────────────────────
+
+const STARTER_ITEMS: SeedItem[] = [
+  {
+    itemId: "worn-sword",
+    name: "Worn Sword",
+    category: "equipment",
+    description: "A reliable blade for a new hunter.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["mainHand"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "str",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDamage: 4,
+    attackSpeed: 1.0,
+    damageStat: "str",
+    damageType: "physical",
+  },
+  {
+    itemId: "worn-dagger",
+    name: "Worn Dagger",
+    category: "equipment",
+    description: "Quick and quiet.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["mainHand"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "dex",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDamage: 3,
+    attackSpeed: 1.6,
+    damageStat: "dex",
+    damageType: "physical",
+  },
+  {
+    itemId: "worn-mace",
+    name: "Worn Mace",
+    category: "equipment",
+    description: "Heavy, slow, and persuasive.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["mainHand"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "str",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDamage: 6,
+    attackSpeed: 0.65,
+    damageStat: "str",
+    damageType: "physical",
+  },
+  {
+    itemId: "worn-bow",
+    name: "Worn Bow",
+    category: "equipment",
+    description: "A ranger's first bow.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["mainHand"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "dex",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDamage: 4,
+    attackSpeed: 1.3,
+    damageStat: "dex",
+    damageType: "physical",
+  },
+  {
+    itemId: "worn-staff",
+    name: "Worn Staff",
+    category: "equipment",
+    description: "Hums faintly with old magic.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["mainHand"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "int",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDamage: 5,
+    attackSpeed: 0.8,
+    damageStat: "int",
+    damageType: "magical",
+  },
+  {
+    itemId: "worn-mail",
+    name: "Worn Mail",
+    category: "equipment",
+    description: "Dented but dependable.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["chest"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "con",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDefense: 3,
+    speedPenalty: 0.08,
+  },
+  {
+    itemId: "worn-vest",
+    name: "Worn Vest",
+    category: "equipment",
+    description: "Light leathers for quick movers.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["chest"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "dex",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDefense: 2,
+  },
+  {
+    itemId: "worn-robe",
+    name: "Worn Robe",
+    category: "equipment",
+    description: "Threadbare, but steeped in old spells.",
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["chest"],
+    rarityLevel: 10,
+    effectType: "stat-bonus",
+    effectStat: "int",
+    effectAmount: 1,
+    augmentSlots: 0,
+    baseDefense: 2,
+  },
+];
+
+export const STARTER_KITS: Record<string, { weapon: string; chest: string }> = {
+  sword: { weapon: "worn-sword", chest: "worn-mail" },
+  dagger: { weapon: "worn-dagger", chest: "worn-vest" },
+  mace: { weapon: "worn-mace", chest: "worn-mail" },
+  bow: { weapon: "worn-bow", chest: "worn-vest" },
+  staff: { weapon: "worn-staff", chest: "worn-robe" },
+};
 
 const MONSTER_DROP_ITEMS: SeedItem[] = [
   {
@@ -495,7 +716,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
   },
 ];
 
-const BOSS_TOKEN_ITEMS: SeedItem[] = [1, 2, 3].map((tier) => ({
+const BOSS_TOKEN_ITEMS: SeedItem[] = TIERS.map((tier) => ({
   itemId: `forest-boss-token-${tier}`,
   name: `Heart of the Grove ${tier}`,
   category: "crafting",
@@ -510,6 +731,7 @@ const BOSS_TOKEN_ITEMS: SeedItem[] = [1, 2, 3].map((tier) => ({
 const ALL_ITEMS = [
   ...RESOURCE_ITEMS,
   ...OUTPUT_ITEMS,
+  ...STARTER_ITEMS,
   ...MONSTER_DROP_ITEMS,
   ...BOSS_TOKEN_ITEMS,
 ];
@@ -571,6 +793,31 @@ const MONSTER_DROPS = [
   ["archfiend", "archfiend-horn"],
 ] as const;
 
+// Retired content: recipes are disabled (items stay for existing inventories).
+const RETIRED_RECIPE_IDS = [
+  "moonward-philter",
+  "starward-philter",
+  "dreamward-philter",
+  "ratfang-draught",
+  "trollhide-draught",
+  "demonseed-draught",
+  "goblin-charm-oil",
+  "wyvern-scale-oil",
+  "nightmare-leaf-oil",
+  "orc-heartwood-elixir",
+  "dragon-ember-elixir",
+  "archfiend-horn-elixir",
+  "dreambloom-elixir",
+  "amber-root-sword",
+  "amber-root-dagger",
+  "amber-root-mace",
+  "amber-root-helm",
+  "amber-root-mail",
+  "amber-root-greaves",
+  "amber-root-boots",
+  "root-iron-blade",
+];
+
 function itemIdFor(itemById: Map<string, Id<"items">>, itemId: string) {
   const id = itemById.get(itemId);
   if (!id) throw new Error(`Seed item ${itemId} was not created`);
@@ -621,7 +868,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       });
     }
   }
-  for (const entry of SKILL_TASK_BALANCE_DEFAULTS) {
+  for (const entry of [...SKILL_TASK_BALANCE_DEFAULTS, ...COMBAT_BALANCE_DEFAULTS]) {
     const existing = await ctx.db
       .query("gameBalance")
       .withIndex("by_key", (q) => q.eq("key", entry.key))
@@ -642,14 +889,13 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       await ctx.db.patch(existing._id, {
         ...skill,
         enabled: true,
-        maxLevel: 99,
+        maxLevel: undefined,
         updatedAt: now,
       });
     } else {
       await ctx.db.insert("skillDefinitions", {
         ...skill,
         enabled: true,
-        maxLevel: 99,
         createdAt: now,
         updatedAt: now,
       });
@@ -657,14 +903,14 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
   }
 
   for (const skill of SKILLS) {
-    for (const tier of [1, 2, 3]) {
-      const tierNames = ["Grove", "Moonlit Grove", "Ancient Grove"];
+    for (const tier of TIERS) {
+      const index = tier - 1;
       const tierRow = {
         skillId: skill.skillId,
         tier,
-        name: `${tierNames[tier - 1]} ${skill.name}`,
+        name: `${TIER_NAMES[index]} ${skill.name}`,
         description: `Tier ${tier} ${skill.name.toLowerCase()} activities.`,
-        requiredLevel: tier === 1 ? 1 : tier === 2 ? 5 : 10,
+        requiredLevel: TIER_LEVELS[index],
         enabled: true,
         updatedAt: now,
       };
@@ -695,12 +941,37 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     ["harvest-flowers", "harvesting", 3, "Gather Whispering Flowers", "whispering-flower", 1, 2],
     ["gather-astral-orchids", "harvesting", 3, "Gather Astral Orchids", "astral-orchid", 1, 2],
     ["gather-elderroot", "harvesting", 3, "Gather Elderroot", "elderroot", 1, 2],
+    ["harvest-emberleaf", "harvesting", 4, "Gather Emberleaf", "emberleaf", 1, 2],
+    ["harvest-frostcap", "harvesting", 4, "Gather Frostcap", "frostcap", 1, 2],
+    ["harvest-thornbloom", "harvesting", 4, "Gather Thornbloom", "thornbloom", 1, 2],
+    ["harvest-tidepetal", "harvesting", 5, "Gather Tidepetal", "tidepetal", 1, 2],
+    ["harvest-stormspore", "harvesting", 5, "Gather Stormspore", "stormspore", 1, 2],
+    ["harvest-glowroot", "harvesting", 5, "Gather Glowroot", "glowroot", 1, 2],
+    ["harvest-voidfern", "harvesting", 6, "Gather Voidfern", "voidfern", 1, 2],
+    ["harvest-sunscale", "harvesting", 6, "Gather Sunscale Lichen", "sunscale-lichen", 1, 2],
+    ["harvest-hexbark", "harvesting", 6, "Gather Hexbark Blossom", "hexbark-blossom", 1, 2],
+    ["harvest-nightshade", "harvesting", 7, "Gather Nightshade Crown", "nightshade-crown", 1, 2],
+    ["harvest-wraithvine", "harvesting", 7, "Gather Wraithvine", "wraithvine", 1, 2],
+    ["harvest-doomorchid", "harvesting", 7, "Gather Doomorchid", "doomorchid", 1, 2],
+    ["harvest-starforged-seed", "harvesting", 8, "Gather Starforged Seed", "starforged-seed", 1, 2],
+    ["harvest-dawnpetal", "harvesting", 8, "Gather Dawnpetal", "dawnpetal", 1, 2],
+    ["harvest-eternalmoss", "harvesting", 8, "Gather Eternalmoss", "eternalmoss", 1, 2],
     ["cut-moonwood", "woodcutting", 1, "Cut Moonwood", "moonwood-log", 1, 3],
     ["strip-bark", "woodcutting", 2, "Strip Living Bark", "living-bark", 1, 2],
     ["bind-thornvine", "woodcutting", 3, "Bind Thornvine", "thornvine-bundle", 1, 2],
+    ["cut-emberwood", "woodcutting", 4, "Cut Emberwood", "emberwood-log", 1, 2],
+    ["cut-tidewood", "woodcutting", 5, "Cut Tidewood", "tidewood-log", 1, 2],
+    ["cut-voidwood", "woodcutting", 6, "Cut Voidwood", "voidwood-log", 1, 2],
+    ["cut-dreadwood", "woodcutting", 7, "Cut Dreadwood", "dreadwood-log", 1, 2],
+    ["cut-worldheart", "woodcutting", 8, "Cut Worldheart", "worldheart-log", 1, 2],
     ["mine-moonstone", "mining", 1, "Mine Moonstone", "moonstone-shard", 1, 3],
     ["mine-amber", "mining", 2, "Mine Root Amber", "root-amber", 1, 2],
     ["mine-root-iron", "mining", 3, "Mine Root-Iron", "root-iron-ore", 1, 2],
+    ["mine-emberstone", "mining", 4, "Mine Emberstone", "emberstone-shard", 1, 2],
+    ["mine-stormsilver", "mining", 5, "Mine Stormsilver", "stormsilver-ore", 1, 2],
+    ["mine-voidquartz", "mining", 6, "Mine Voidquartz", "voidquartz-ore", 1, 2],
+    ["mine-nightsteel", "mining", 7, "Mine Nightsteel", "nightsteel-ore", 1, 2],
+    ["mine-starforged", "mining", 8, "Mine Starforged", "starforged-ore", 1, 2],
   ] as const;
   for (const [
     activityId,
@@ -740,209 +1011,239 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     tier: Tier;
     name: string;
     outputFamily: string;
-    stage: "refinement" | "product";
+    stage: "refinement" | "product" | "consumable";
     requiresMonsterDrop: boolean;
     ingredients: Array<{ itemId: string; quantity: number }>;
   };
-  type ChainStep = {
-    outputItemId: string;
-    name: string;
-    currentIngredientId: string;
-    monsterDropItemId?: string;
-  };
-  const makeRecipeChain = (
+
+  const refinementChain = (
     skillId: RecipeSeed["skillId"],
     outputFamily: string,
-    stage: RecipeSeed["stage"],
-    steps: [ChainStep, ChainStep, ChainStep],
+    entries: ReadonlyArray<readonly [string, string, string]>,
     currentQuantity: number
   ): RecipeSeed[] =>
-    steps.map((step, index) => ({
-      recipeId: step.outputItemId,
-      outputItemId: step.outputItemId,
-      skillId,
-      tier: (index + 1) as Tier,
-      name: `${stage === "refinement" ? "Refine" : skillId === "alchemy" ? "Brew" : skillId === "woodworking" ? "Shape" : "Forge"} ${step.name}`,
-      outputFamily,
-      stage,
-      requiresMonsterDrop: step.monsterDropItemId !== undefined,
-      ingredients: [
-        { itemId: step.currentIngredientId, quantity: currentQuantity },
-        ...(index === 0
-          ? []
-          : [{ itemId: steps[index - 1].outputItemId, quantity: 1 }]),
-        ...(step.monsterDropItemId === undefined
-          ? []
-          : [{ itemId: step.monsterDropItemId, quantity: 1 }]),
-      ],
-    }));
+    entries.map(([outputItemId, name, resourceId], tierIndex) => {
+      const tier = (tierIndex + 1) as Tier;
+      return {
+        recipeId: outputItemId,
+        outputItemId,
+        skillId,
+        tier,
+        name: `Refine ${name}`,
+        outputFamily,
+        stage: "refinement" as const,
+        requiresMonsterDrop: false,
+        ingredients: [
+          { itemId: resourceId, quantity: currentQuantity },
+          ...(tierIndex === 0
+            ? []
+            : [{ itemId: entries[tierIndex - 1][0], quantity: 1 }]),
+        ],
+      };
+    });
+
+  const gearChain = (
+    skillId: RecipeSeed["skillId"],
+    outputFamily: string,
+    verb: string,
+    materials: ReadonlyArray<readonly [string, string]>,
+    itemType: string,
+    fileSuffix: string,
+    refinedPerTier: string[]
+  ): RecipeSeed[] =>
+    materials.map(([prefix, material], tierIndex) => {
+      const outputItemId = `${prefix}-${fileSuffix}`;
+      return {
+        recipeId: outputItemId,
+        outputItemId,
+        skillId,
+        tier: (tierIndex + 1) as Tier,
+        name: `${verb} ${material} ${itemType}`,
+        outputFamily,
+        stage: "product" as const,
+        requiresMonsterDrop: false,
+        ingredients: [
+          { itemId: refinedPerTier[tierIndex], quantity: 2 },
+          ...(tierIndex === 0
+            ? []
+            : [
+                {
+                  itemId: `${materials[tierIndex - 1][0]}-${fileSuffix}`,
+                  quantity: 1,
+                },
+              ]),
+        ],
+      };
+    });
 
   const alchemyRefinementRecipes = [
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-essence",
-      "refinement",
-      [
-        { outputItemId: "moonlit-essence", name: "Moonlit Essence", currentIngredientId: "moonlit-herb" },
-        { outputItemId: "glimmering-essence", name: "Glimmering Essence", currentIngredientId: "glimmering-mushroom" },
-        { outputItemId: "whispering-essence", name: "Whispering Essence", currentIngredientId: "whispering-flower" },
-      ],
-      3
-    ),
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-powder",
-      "refinement",
-      [
-        { outputItemId: "silverdew-powder", name: "Silverdew Powder", currentIngredientId: "silverdew-leaf" },
-        { outputItemId: "sunveil-powder", name: "Sunveil Powder", currentIngredientId: "sunveil-bloom" },
-        { outputItemId: "astral-powder", name: "Astral Powder", currentIngredientId: "astral-orchid" },
-      ],
-      3
-    ),
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-extract",
-      "refinement",
-      [
-        { outputItemId: "starlight-extract", name: "Starlight Extract", currentIngredientId: "starlight-moss" },
-        { outputItemId: "dreamcap-extract", name: "Dreamcap Extract", currentIngredientId: "dreamcap-spore" },
-        { outputItemId: "elderroot-extract", name: "Elderroot Extract", currentIngredientId: "elderroot" },
-      ],
-      3
-    ),
+    ...refinementChain("alchemy", "alchemy-essence", ESSENCE_LINE, 3),
+    ...refinementChain("alchemy", "alchemy-powder", POWDER_LINE, 3),
+    ...refinementChain("alchemy", "alchemy-extract", EXTRACT_LINE, 3),
   ];
-
-  const alchemyProductRecipes = [
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-restorative",
-      "product",
-      [
-        { outputItemId: "verdant-tonic", name: "Verdant Tonic", currentIngredientId: "moonlit-essence" },
-        { outputItemId: "starwater-salve", name: "Starwater Salve", currentIngredientId: "glimmering-essence" },
-        { outputItemId: "dreambloom-elixir", name: "Dreambloom Elixir", currentIngredientId: "whispering-essence" },
-      ],
-      2
-    ),
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-ward",
-      "product",
-      [
-        { outputItemId: "moonward-philter", name: "Moonward Philter", currentIngredientId: "silverdew-powder" },
-        { outputItemId: "starward-philter", name: "Starward Philter", currentIngredientId: "sunveil-powder" },
-        { outputItemId: "dreamward-philter", name: "Dreamward Philter", currentIngredientId: "astral-powder" },
-      ],
-      2
-    ),
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-predator",
-      "product",
-      [
-        { outputItemId: "ratfang-draught", name: "Ratfang Draught", currentIngredientId: "moonlit-essence", monsterDropItemId: "moonlit-rat-fang" },
-        { outputItemId: "trollhide-draught", name: "Trollhide Draught", currentIngredientId: "glimmering-essence", monsterDropItemId: "troll-moss-hide" },
-        { outputItemId: "demonseed-draught", name: "Demonseed Draught", currentIngredientId: "whispering-essence", monsterDropItemId: "demon-ash-seed" },
-      ],
-      2
-    ),
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-cunning",
-      "product",
-      [
-        { outputItemId: "goblin-charm-oil", name: "Goblin Charm Oil", currentIngredientId: "silverdew-powder", monsterDropItemId: "goblin-thorn-charm" },
-        { outputItemId: "wyvern-scale-oil", name: "Wyvern Scale Oil", currentIngredientId: "sunveil-powder", monsterDropItemId: "wyvern-moon-scale" },
-        { outputItemId: "nightmare-leaf-oil", name: "Nightmare Leaf Oil", currentIngredientId: "astral-powder", monsterDropItemId: "nightmare-dreamleaf" },
-      ],
-      2
-    ),
-    ...makeRecipeChain(
-      "alchemy",
-      "alchemy-might",
-      "product",
-      [
-        { outputItemId: "orc-heartwood-elixir", name: "Orc Heartwood Elixir", currentIngredientId: "starlight-extract", monsterDropItemId: "orc-heartwood-shard" },
-        { outputItemId: "dragon-ember-elixir", name: "Dragon Ember Elixir", currentIngredientId: "dreamcap-extract", monsterDropItemId: "dragon-ember-scale" },
-        { outputItemId: "archfiend-horn-elixir", name: "Archfiend Horn Elixir", currentIngredientId: "elderroot-extract", monsterDropItemId: "archfiend-horn" },
-      ],
-      2
-    ),
-  ];
-
-  const woodworkingRefinementRecipes = makeRecipeChain(
+  const woodworkingRefinementRecipes = refinementChain(
     "woodworking",
     "woodworking-lumber",
-    "refinement",
-    [
-      { outputItemId: "moonwood-lumber", name: "Moonwood Lumber", currentIngredientId: "moonwood-log" },
-      { outputItemId: "living-bark-lumber", name: "Living Bark Lumber", currentIngredientId: "living-bark" },
-      { outputItemId: "thornvine-lumber", name: "Thornvine Lumber", currentIngredientId: "thornvine-bundle" },
-    ],
+    LUMBER_LINE,
     4
   );
-  const woodworkingProductRecipes = [
-    ["woodworking-bow", ["moonwood-bow", "living-bark-bow", "thornvine-bow"], "Bow"],
-    ["woodworking-staff", ["moonwood-staff", "living-bark-staff", "thornvine-staff"], "Staff"],
-    ["woodworking-head", ["moonwood-hood", "living-bark-hood", "thornvine-hood"], "Hood"],
-    ["woodworking-chest", ["moonwood-vest", "living-bark-vest", "thornvine-vest"], "Vest"],
-    ["woodworking-legs", ["moonwood-leggings", "living-bark-leggings", "thornvine-leggings"], "Leggings"],
-    ["woodworking-feet", ["moonwood-boots", "living-bark-boots", "thornvine-boots"], "Boots"],
-  ].flatMap(([family, outputIds, itemType]) =>
-    makeRecipeChain(
+  const forgingRefinementRecipes = refinementChain(
+    "forging",
+    "forging-ingot",
+    INGOT_LINE,
+    4
+  );
+
+  const refinedIds = (line: ReadonlyArray<readonly [string, string, string]>) =>
+    line.map((r) => r[0] as string);
+  const materialPairs = (names: ReadonlyArray<string>, ids: ReadonlyArray<string>) =>
+    ids.map((id, index) => [id, names[index]] as const);
+
+  const woodworkingProductRecipes = (
+    [
+      ["woodworking-bow", "Bow", "bow", "Shape"],
+      ["woodworking-staff", "Staff", "staff", "Shape"],
+      ["woodworking-head", "Hood", "hood", "Shape"],
+      ["woodworking-chest", "Vest", "vest", "Shape"],
+      ["woodworking-legs", "Leggings", "leggings", "Shape"],
+      ["woodworking-feet", "Boots", "boots", "Shape"],
+    ] as const
+  ).flatMap(([family, itemType, fileSuffix, verb]) =>
+    gearChain(
       "woodworking",
-      family as string,
-      "product",
-      TIERS.map((tier) => ({
-        outputItemId: (outputIds as string[])[tier - 1],
-        name: `${WOOD_NAMES[tier - 1]} ${itemType}`,
-        currentIngredientId: ["moonwood-lumber", "living-bark-lumber", "thornvine-lumber"][tier - 1],
-      })) as [ChainStep, ChainStep, ChainStep],
-      2
+      family,
+      verb,
+      materialPairs(WOOD_SETS, WOOD_IDS),
+      itemType,
+      fileSuffix,
+      refinedIds(LUMBER_LINE)
     )
   );
 
-  const forgingRefinementRecipes = makeRecipeChain(
-    "forging",
-    "forging-ingot",
-    "refinement",
+  const forgingProductRecipes = (
     [
-      { outputItemId: "moonstone-ingot", name: "Moonstone Ingot", currentIngredientId: "moonstone-shard" },
-      { outputItemId: "ambersteel-ingot", name: "Ambersteel Ingot", currentIngredientId: "root-amber" },
-      { outputItemId: "root-iron-ingot", name: "Root-Iron Ingot", currentIngredientId: "root-iron-ore" },
-    ],
-    4
-  );
-  const forgingProductRecipes = [
-    ["forging-sword", ["moonstone-sword", "amber-root-sword", "root-iron-blade"], "Sword"],
-    ["forging-dagger", ["moonstone-dagger", "amber-root-dagger", "root-iron-dagger"], "Dagger"],
-    ["forging-mace", ["moonstone-mace", "amber-root-mace", "root-iron-mace"], "Mace"],
-    ["forging-head", ["moonstone-helm", "amber-root-helm", "root-iron-helm"], "Helm"],
-    ["forging-chest", ["moonstone-mail", "amber-root-mail", "root-iron-mail"], "Mail"],
-    ["forging-legs", ["moonstone-greaves", "amber-root-greaves", "root-iron-greaves"], "Greaves"],
-    ["forging-feet", ["moonstone-boots", "amber-root-boots", "root-iron-boots"], "Boots"],
-  ].flatMap(([family, outputIds, itemType]) =>
-    makeRecipeChain(
+      ["forging-sword", "Sword", "sword"],
+      ["forging-dagger", "Dagger", "dagger"],
+      ["forging-mace", "Mace", "mace"],
+      ["forging-head", "Helm", "helm"],
+      ["forging-chest", "Mail", "mail"],
+      ["forging-legs", "Greaves", "greaves"],
+      ["forging-feet", "Boots", "boots"],
+    ] as const
+  ).flatMap(([family, itemType, fileSuffix]) =>
+    gearChain(
       "forging",
-      family as string,
-      "product",
-      TIERS.map((tier) => ({
-        outputItemId: (outputIds as string[])[tier - 1],
-        name: `${FORGE_NAMES[tier - 1]} ${itemType}`,
-        currentIngredientId: ["moonstone-ingot", "ambersteel-ingot", "root-iron-ingot"][tier - 1],
-      })) as [ChainStep, ChainStep, ChainStep],
-      2
+      family,
+      "Forge",
+      materialPairs(FORGE_SETS, FORGE_IDS),
+      itemType,
+      fileSuffix,
+      refinedIds(INGOT_LINE)
     )
   );
+
+  const essenceT = refinedIds(ESSENCE_LINE);
+  const powderT = refinedIds(POWDER_LINE);
+  const extractT = refinedIds(EXTRACT_LINE);
+
+  const consumable = (
+    outputItemId: string,
+    name: string,
+    tier: Tier,
+    outputFamily: string,
+    requiresMonsterDrop: boolean,
+    ingredients: Array<{ itemId: string; quantity: number }>
+  ): RecipeSeed => ({
+    recipeId: outputItemId,
+    outputItemId,
+    skillId: "alchemy",
+    tier,
+    name,
+    outputFamily,
+    stage: "consumable",
+    requiresMonsterDrop,
+    ingredients,
+  });
+
+  const consumableRecipes: RecipeSeed[] = [
+    consumable("verdant-tonic", "Brew Verdant Tonic", 1, "alchemy-might", false, [
+      { itemId: extractT[0], quantity: 2 },
+    ]),
+    consumable("ember-might-draught", "Brew Ember Might Draught", 2, "alchemy-might", false, [
+      { itemId: extractT[1], quantity: 2 },
+    ]),
+    consumable("hunters-swift-draught", "Brew Hunter's Swiftness Draught", 3, "alchemy-might", false, [
+      { itemId: extractT[2], quantity: 2 },
+    ]),
+    consumable("starwater-salve", "Brew Starwater Salve", 4, "alchemy-might", true, [
+      { itemId: extractT[3], quantity: 2 },
+      { itemId: "verdant-tonic", quantity: 1 },
+      { itemId: "troll-moss-hide", quantity: 1 },
+    ]),
+    consumable("demonseed-might-draught", "Brew Demonseed Might Draught", 5, "alchemy-might", true, [
+      { itemId: extractT[4], quantity: 2 },
+      { itemId: "ember-might-draught", quantity: 1 },
+      { itemId: "demon-ash-seed", quantity: 1 },
+    ]),
+    consumable("stonehide-draught", "Brew Stonehide Draught", 6, "alchemy-might", false, [
+      { itemId: extractT[5], quantity: 2 },
+    ]),
+    consumable("nightmare-swift-draught", "Brew Nightmare Swiftness Draught", 7, "alchemy-might", true, [
+      { itemId: extractT[6], quantity: 2 },
+      { itemId: "hunters-swift-draught", quantity: 1 },
+      { itemId: "nightmare-dreamleaf", quantity: 1 },
+    ]),
+    consumable("starforged-heart-draught", "Brew Starforged Heart Draught", 8, "alchemy-might", true, [
+      { itemId: extractT[7], quantity: 2 },
+      { itemId: "stonehide-draught", quantity: 1 },
+      { itemId: "archfiend-horn", quantity: 1 },
+      { itemId: "forest-boss-token-8", quantity: 1 },
+    ]),
+    consumable("gathering-focus-tonic", "Brew Gathering Focus Tonic", 1, "alchemy-focus", false, [
+      { itemId: powderT[0], quantity: 2 },
+    ]),
+    consumable("crafting-focus-tonic", "Brew Crafting Focus Tonic", 1, "alchemy-focus", false, [
+      { itemId: powderT[0], quantity: 2 },
+    ]),
+    consumable("gathering-focus-elixir", "Brew Gathering Focus Elixir", 5, "alchemy-focus", false, [
+      { itemId: powderT[4], quantity: 2 },
+      { itemId: "gathering-focus-tonic", quantity: 1 },
+    ]),
+    consumable("crafting-focus-elixir", "Brew Crafting Focus Elixir", 5, "alchemy-focus", false, [
+      { itemId: powderT[4], quantity: 2 },
+      { itemId: "crafting-focus-tonic", quantity: 1 },
+    ]),
+    consumable("gathering-alacrity-tonic", "Brew Gathering Alacrity Tonic", 2, "alchemy-swiftness", false, [
+      { itemId: essenceT[1], quantity: 2 },
+    ]),
+    consumable("crafting-alacrity-tonic", "Brew Crafting Alacrity Tonic", 2, "alchemy-swiftness", false, [
+      { itemId: essenceT[1], quantity: 2 },
+    ]),
+    consumable("gathering-alacrity-elixir", "Brew Gathering Alacrity Elixir", 6, "alchemy-swiftness", false, [
+      { itemId: essenceT[5], quantity: 2 },
+      { itemId: "gathering-alacrity-tonic", quantity: 1 },
+    ]),
+    consumable("crafting-alacrity-elixir", "Brew Crafting Alacrity Elixir", 6, "alchemy-swiftness", false, [
+      { itemId: essenceT[5], quantity: 2 },
+      { itemId: "crafting-alacrity-tonic", quantity: 1 },
+    ]),
+    consumable("wisdom-draught", "Brew Wisdom Draught", 3, "alchemy-wisdom", false, [
+      { itemId: extractT[2], quantity: 2 },
+    ]),
+    consumable("wisdom-elixir", "Brew Wisdom Elixir", 7, "alchemy-wisdom", true, [
+      { itemId: extractT[6], quantity: 2 },
+      { itemId: "wisdom-draught", quantity: 1 },
+      { itemId: "wyvern-moon-scale", quantity: 1 },
+    ]),
+  ];
 
   const recipes: RecipeSeed[] = [
     ...alchemyRefinementRecipes,
-    ...alchemyProductRecipes,
     ...woodworkingRefinementRecipes,
-    ...woodworkingProductRecipes,
     ...forgingRefinementRecipes,
+    ...woodworkingProductRecipes,
     ...forgingProductRecipes,
+    ...consumableRecipes,
   ];
   for (const seed of recipes) {
     const {
@@ -964,7 +1265,9 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       description:
         stage === "refinement"
           ? `Refine tier ${tier} gathered materials for later crafting.`
-          : `Craft ${name.toLowerCase()} from tier ${tier} refined materials.`,
+          : stage === "consumable"
+            ? `Brew ${name.toLowerCase().replace(/^(brew|refine|shape|forge) /, "")} from tier ${tier} refined materials.`
+            : `Craft ${name.toLowerCase()} from tier ${tier} refined materials.`,
       durationMs: tier * 45_000,
       experienceReward: tier * 50,
       outputFamily,
@@ -1003,6 +1306,16 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       itemId: itemIdFor(itemById, outputItemId),
       quantity: 1,
     });
+  }
+
+  for (const recipeId of RETIRED_RECIPE_IDS) {
+    const retired = await ctx.db
+      .query("recipes")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+      .first();
+    if (retired && retired.enabled) {
+      await ctx.db.patch(retired._id, { enabled: false, updatedAt: now });
+    }
   }
 
   const augmentments = MONSTER_DROPS.map(([monsterId, materialId], index) => {
@@ -1122,7 +1435,17 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     }
   }
 
-  for (const tier of [1, 2, 3]) {
+  const bossCatalysts = [
+    "moonlit-rat-fang",
+    "goblin-thorn-charm",
+    "orc-heartwood-shard",
+    "troll-moss-hide",
+    "wyvern-moon-scale",
+    "dragon-ember-scale",
+    "demon-ash-seed",
+    "nightmare-dreamleaf",
+  ];
+  for (const tier of TIERS) {
     const tableId = `loot-boss-tier-${tier}`;
     const tokenId = itemIdFor(itemById, `forest-boss-token-${tier}`);
     const existingTable = await ctx.db
@@ -1158,10 +1481,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       createdAt: now,
       updatedAt: now,
     });
-    const catalystId = itemIdFor(
-      itemById,
-      tier === 1 ? "moonlit-rat-fang" : tier === 2 ? "wyvern-moon-scale" : "archfiend-horn"
-    );
+    const catalystId = itemIdFor(itemById, bossCatalysts[tier - 1]);
     await ctx.db.insert("lootTableEntries", {
       lootTableId: tableId,
       itemId: catalystId,

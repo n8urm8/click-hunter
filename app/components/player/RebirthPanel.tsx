@@ -94,10 +94,10 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
 
       <div className="forest-panel p-3 text-xs text-muted-foreground">
         <p className="mb-2">
-          Rebirth resets your character to Tier 1, returns paid stat upgrades
-          to level 1, and applies a permanent multiplier to your base stats
-          for the next run. Hidden-spot bonuses and automation purchases remain
-          permanent.
+          Rebirth resets all stats to base, clears combat experience, and
+          returns you to Tier 1. You will pick a new starter weapon for the
+          next run. Permanent power carries forward only through rebirth
+          unlocks.
         </p>
         <p>Next threshold: Tier {nextThreshold}</p>
       </div>

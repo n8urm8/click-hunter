@@ -30,7 +30,7 @@ type ReservedIngredient = {
   quantity: number;
 };
 
-const MAX_SKILL_PANEL_ROWS = 200;
+const MAX_SKILL_PANEL_ROWS = 300;
 const MAX_SKILL_BATCH_SIZE = 10_000;
 const MAX_SKILL_ACTIONS_PER_RESOLUTION = 10_000;
 
@@ -549,7 +549,7 @@ type CraftingRecipeSnapshot = {
   tier: number;
   experienceReward: number;
   outputFamily?: string;
-  stage?: "refinement" | "product";
+  stage?: "refinement" | "product" | "consumable";
   requiresMonsterDrop?: boolean;
   outputs: Array<{
     itemId: Id<"items">;
@@ -620,7 +620,9 @@ function readCraftingRecipeSnapshot(
     ...(typeof value.outputFamily === "string"
       ? { outputFamily: value.outputFamily }
       : {}),
-    ...(value.stage === "refinement" || value.stage === "product"
+    ...(value.stage === "refinement" ||
+    value.stage === "product" ||
+    value.stage === "consumable"
       ? { stage: value.stage }
       : {}),
     ...(typeof value.requiresMonsterDrop === "boolean"

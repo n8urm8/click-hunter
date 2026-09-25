@@ -69,6 +69,9 @@ import {
   ITEM_CATEGORY_VALUES,
   SKILL_BONUS_SCOPE_VALUES,
   SKILL_TASK_EFFECT_TYPES,
+  type BuffVariant,
+  type DamageStat,
+  type DamageType,
   type EquipmentSlot,
   type ItemEffectStat,
   type ItemCategory,
@@ -987,7 +990,7 @@ function skillDefinitionForm(row?: Doc<"skillDefinitions">): SkillDefinitionForm
     pairedSkillId: row?.pairedSkillId ?? "",
     description: row?.description ?? "",
     enabled: row?.enabled ?? true,
-    maxLevel: String(row?.maxLevel ?? 99),
+    maxLevel: row?.maxLevel === undefined ? "" : String(row.maxLevel),
   };
 }
 
@@ -1020,7 +1023,10 @@ function SkillDefinitionEditor({
         pairedSkillId: form.pairedSkillId.trim() || null,
         description: form.description,
         enabled: form.enabled,
-        maxLevel: requiredInteger(form.maxLevel, "Maximum level", 1),
+        maxLevel:
+          form.maxLevel.trim() === ""
+            ? undefined
+            : requiredInteger(form.maxLevel, "Maximum level", 1),
       };
       if (row) {
         await update({ ...args, skillDefinitionId: row._id });
@@ -1068,7 +1074,7 @@ function SkillDefinitionEditor({
           ))}
         </select>
       </Field>
-      <Field label="Max level">
+      <Field label="Max level (blank = uncapped)">
         <TextInput type="number" min="1" step="1" value={form.maxLevel} onChange={(event) => setForm({ ...form, maxLevel: event.currentTarget.value })} />
       </Field>
       <Field label="Enabled">
@@ -1292,7 +1298,7 @@ interface RecipeForm {
   description: string;
   experienceReward: string;
   outputFamily: string;
-  stage: "" | "refinement" | "product";
+  stage: "" | "refinement" | "product" | "consumable";
   requiresMonsterDrop: boolean;
   enabled: boolean;
   ingredients: string;
@@ -1401,7 +1407,8 @@ function RecipeEditor({
               ...form,
               stage: event.currentTarget.value as RecipeForm["stage"],
               requiresMonsterDrop:
-                event.currentTarget.value === "product"
+                event.currentTarget.value === "product" ||
+                event.currentTarget.value === "consumable"
                   ? form.requiresMonsterDrop
                   : false,
             })
@@ -1411,6 +1418,7 @@ function RecipeEditor({
           <option value="">Legacy / unclassified</option>
           <option value="refinement">Refinement</option>
           <option value="product">Product</option>
+          <option value="consumable">Consumable</option>
         </select>
       </Field>
       <Field label="Requires monster drop">
@@ -2304,6 +2312,13 @@ interface ItemForm {
   effectDurationMs: string;
   effectScope: SkillBonusScope;
   augmentSlots: string;
+  baseDamage: string;
+  attackSpeed: string;
+  damageStat: DamageStat | "";
+  damageType: DamageType | "";
+  baseDefense: string;
+  speedPenalty: string;
+  buffVariant: BuffVariant | "";
 }
 
 function itemForm(
@@ -2332,6 +2347,17 @@ function itemForm(
     effectScope: row?.effectScope ?? "all",
     augmentSlots:
       row?.augmentSlots === undefined ? "" : String(row.augmentSlots),
+    baseDamage:
+      row?.baseDamage === undefined ? "" : String(row.baseDamage),
+    attackSpeed:
+      row?.attackSpeed === undefined ? "" : String(row.attackSpeed),
+    damageStat: row?.damageStat ?? "",
+    damageType: row?.damageType ?? "",
+    baseDefense:
+      row?.baseDefense === undefined ? "" : String(row.baseDefense),
+    speedPenalty:
+      row?.speedPenalty === undefined ? "" : String(row.speedPenalty),
+    buffVariant: row?.buffVariant ?? "",
   };
 }
 
@@ -2402,6 +2428,13 @@ function ItemEditor({
           : optionalNumber(form.effectDurationMs, "Effect duration", 1),
         effectScope: skillBoost ? form.effectScope : null,
         augmentSlots: optionalNumber(form.augmentSlots, "Augmentation slots", 0),
+        baseDamage: optionalNumber(form.baseDamage, "Base damage", 0),
+        attackSpeed: optionalNumber(form.attackSpeed, "Attack speed", 0),
+        damageStat: form.damageStat || null,
+        damageType: form.damageType || null,
+        baseDefense: optionalNumber(form.baseDefense, "Base defense", 0),
+        speedPenalty: optionalNumber(form.speedPenalty, "Speed penalty", 0),
+        buffVariant: form.buffVariant || null,
       };
 
       if (row) {
@@ -2658,6 +2691,99 @@ function ItemEditor({
             setForm({ ...form, augmentSlots: event.currentTarget.value })
           }
         />
+      </Field>
+      <Field label="Base damage (weapons)">
+        <TextInput
+          type="number"
+          min="0"
+          step="any"
+          value={form.baseDamage}
+          onChange={(event) =>
+            setForm({ ...form, baseDamage: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Attack speed (weapons)">
+        <TextInput
+          type="number"
+          min="0"
+          step="any"
+          value={form.attackSpeed}
+          onChange={(event) =>
+            setForm({ ...form, attackSpeed: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Damage stat">
+        <select
+          value={form.damageStat}
+          onChange={(event) =>
+            setForm({
+              ...form,
+              damageStat: event.currentTarget.value as DamageStat | "",
+            })
+          }
+          className={inputClass}
+        >
+          <option value="">None</option>
+          <option value="str">STR</option>
+          <option value="dex">DEX</option>
+          <option value="int">INT</option>
+        </select>
+      </Field>
+      <Field label="Damage type">
+        <select
+          value={form.damageType}
+          onChange={(event) =>
+            setForm({
+              ...form,
+              damageType: event.currentTarget.value as DamageType | "",
+            })
+          }
+          className={inputClass}
+        >
+          <option value="">None (physical for weapons)</option>
+          <option value="physical">Physical</option>
+          <option value="magical">Magical</option>
+        </select>
+      </Field>
+      <Field label="Base defense (armor)">
+        <TextInput
+          type="number"
+          min="0"
+          step="any"
+          value={form.baseDefense}
+          onChange={(event) =>
+            setForm({ ...form, baseDefense: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Speed penalty (armor)">
+        <TextInput
+          type="number"
+          min="0"
+          step="any"
+          value={form.speedPenalty}
+          onChange={(event) =>
+            setForm({ ...form, speedPenalty: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Buff variant">
+        <select
+          value={form.buffVariant}
+          onChange={(event) =>
+            setForm({
+              ...form,
+              buffVariant: event.currentTarget.value as BuffVariant | "",
+            })
+          }
+          className={inputClass}
+        >
+          <option value="">None</option>
+          <option value="base">Base</option>
+          <option value="advanced">Advanced</option>
+        </select>
       </Field>
       <Field label="Description">
         <textarea

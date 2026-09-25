@@ -5,29 +5,22 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ensureBossForTier } from "./bossData";
-import { getEquippedStatBonuses } from "./items";
+import {
+  getEquippedStatBonuses,
+  getEquippedWeapon,
+  getEquippedArmorTotals,
+  computeAttackSpeed,
+  readCombatBalance,
+  grantItemToInventory,
+} from "./items";
+import { STARTER_KITS } from "./forestCraftingSeed";
 
 // Default balance constants — must match gameBalance seeds in seed.ts
-const STARTING_STATS = { str: 5, dex: 5, int: 5, luk: 5, con: 5 };
+const STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1 };
 const REBIRTH_TIER_PROGRESSION = [5, 10, 15, 21, 28, 36, 45] as const;
-const MIN_ATTACK_SPEED = 0.5;
 const rateLimiter = new RateLimiter(components.rateLimiter, {});
 
-type PlayerStat = "str" | "dex" | "int" | "luk" | "con";
 type DatabaseCtx = QueryCtx | MutationCtx;
-
-function getPlayerStat(value: string | undefined): PlayerStat | null {
-  switch (value) {
-    case "str":
-    case "dex":
-    case "int":
-    case "luk":
-    case "con":
-      return value;
-    default:
-      return null;
-  }
-}
 
 function readStartingStats(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -79,10 +72,12 @@ async function withEquipmentStats(
   };
 }
 
-async function resetPaidStatUpgrades(
+async function resetAllStatUpgrades(
   ctx: MutationCtx,
   playerId: Id<"players">
 ) {
+  // Full wipe: every stat-boost upgrade row (paid and free hidden-spot
+  // rewards) is deleted. Rebirth returns all stats to base.
   const [upgradeDefinitions, playerUpgrades] = await Promise.all([
     ctx.db.query("upgrades").collect(),
     ctx.db
@@ -90,51 +85,76 @@ async function resetPaidStatUpgrades(
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
       .collect(),
   ]);
-  const statUpgradesById = new Map(
+  const statUpgradeIds = new Set(
     upgradeDefinitions
       .filter((upgrade) => upgrade.effectType === "stat-boost")
-      .map((upgrade) => [upgrade.upgradeId, upgrade] as const)
+      .map((upgrade) => upgrade.upgradeId)
   );
-  const permanentStatBonuses: Record<PlayerStat, number> = {
-    str: 0,
-    dex: 0,
-    int: 0,
-    luk: 0,
-    con: 0,
-  };
 
   for (const playerUpgrade of playerUpgrades) {
-    const statUpgrade = statUpgradesById.get(playerUpgrade.upgradeId);
-    if (!statUpgrade) continue;
-
-    // Keep free hidden-spot rewards, but reset all paid progress for the next run.
-    const recordedPaidCount =
-      playerUpgrade.purchaseCount ?? playerUpgrade.quantity;
-    const paidPurchaseCount =
-      Number.isSafeInteger(recordedPaidCount) && recordedPaidCount >= 0
-        ? Math.min(recordedPaidCount, playerUpgrade.quantity)
-        : playerUpgrade.quantity;
-    const freeQuantity = Math.max(
-      0,
-      playerUpgrade.quantity - paidPurchaseCount
-    );
-
-    if (freeQuantity === 0) {
+    if (statUpgradeIds.has(playerUpgrade.upgradeId)) {
       await ctx.db.delete(playerUpgrade._id);
-    } else {
-      const stat = getPlayerStat(statUpgrade.effectStat);
-      if (stat && typeof statUpgrade.effectAmount === "number") {
-        permanentStatBonuses[stat] += statUpgrade.effectAmount * freeQuantity;
-      }
+    }
+  }
+}
 
-      await ctx.db.patch(playerUpgrade._id, {
-        quantity: freeQuantity,
-        purchaseCount: 0,
+const starterWeaponValidator = v.union(
+  v.literal("sword"),
+  v.literal("dagger"),
+  v.literal("mace"),
+  v.literal("bow"),
+  v.literal("staff")
+);
+
+async function grantStarterKit(
+  ctx: MutationCtx,
+  playerId: Id<"players">,
+  starterKey: string,
+  autoEquip: boolean
+) {
+  const kit = STARTER_KITS[starterKey];
+  if (!kit) throw new Error("Unknown starter kit");
+  const now = Date.now();
+  for (const [stableId, slot] of [
+    [kit.weapon, "mainHand"],
+    [kit.chest, "chest"],
+  ] as const) {
+    const item = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", stableId))
+      .first();
+    if (!item) throw new Error(`Starter item ${stableId} is not seeded`);
+    let owned = await ctx.db
+      .query("playerItems")
+      .withIndex("by_playerId_and_itemId", (q) =>
+        q.eq("playerId", playerId).eq("itemId", item._id)
+      )
+      .first();
+    if (!owned) {
+      await grantItemToInventory(ctx, {
+        playerId,
+        itemId: item._id,
+        quantity: 1,
+        overflowSource: {
+          sourceType: "crafting",
+          sourceId: stableId,
+          settlementKey: `${playerId}:starter`,
+        },
+      });
+      owned = await ctx.db
+        .query("playerItems")
+        .withIndex("by_playerId_and_itemId", (q) =>
+          q.eq("playerId", playerId).eq("itemId", item._id)
+        )
+        .first();
+    }
+    if (owned && autoEquip) {
+      await ctx.db.patch(owned._id, {
+        equippedSlot: slot,
+        updatedAt: now,
       });
     }
   }
-
-  return permanentStatBonuses;
 }
 
 /**
@@ -144,8 +164,9 @@ export const getOrCreatePlayer = mutation({
   args: {
     anonymousId: v.string(),
     name: v.string(),
+    starterId: v.optional(starterWeaponValidator),
   },
-  handler: async (ctx, { anonymousId, name }) => {
+  handler: async (ctx, { anonymousId, name, starterId }) => {
     // Check if player already exists
     const existing = await ctx.db
       .query("players")
@@ -174,6 +195,9 @@ export const getOrCreatePlayer = mutation({
       int: startingStats.int,
       luk: startingStats.luk,
       con: startingStats.con,
+      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+      ...(starterId === undefined ? {} : { starterWeapon: starterId }),
+      ...(starterId === undefined ? { pendingStarterPick: true } : {}),
       gold: 0,
       totalExperience: 0,
       rebirthCount: 0,
@@ -186,6 +210,34 @@ export const getOrCreatePlayer = mutation({
       lastUpdated: now,
     });
 
+    if (starterId !== undefined) {
+      await grantStarterKit(ctx, playerId, starterId, true);
+    }
+
+    return await ctx.db.get(playerId);
+  },
+});
+
+/**
+ * Choose a starter kit after rebirth (re-pick each run).
+ */
+export const chooseStarter = mutation({
+  args: {
+    playerId: v.id("players"),
+    starterId: starterWeaponValidator,
+  },
+  handler: async (ctx, { playerId, starterId }) => {
+    const player = await ctx.db.get(playerId);
+    if (!player) throw new Error("Player not found");
+    if (!player.pendingStarterPick) {
+      throw new Error("No starter kit is pending");
+    }
+    await grantStarterKit(ctx, playerId, starterId, false);
+    await ctx.db.patch(playerId, {
+      starterWeapon: starterId,
+      pendingStarterPick: undefined,
+      lastUpdated: Date.now(),
+    });
     return await ctx.db.get(playerId);
   },
 });
@@ -231,9 +283,16 @@ export const attemptAttack = mutation({
     if (!player) throw new Error("Player not found");
 
     const bonuses = await getEquippedStatBonuses(ctx, playerId);
-    const attackSpeed = Math.max(
-      MIN_ATTACK_SPEED,
-      (player.dex + bonuses.dex - 10) * 0.1 + 1.0
+    const [weapon, armor, balance] = await Promise.all([
+      getEquippedWeapon(ctx, playerId),
+      getEquippedArmorTotals(ctx, playerId),
+      readCombatBalance(ctx),
+    ]);
+    const attackSpeed = computeAttackSpeed(
+      weapon?.attackSpeed ?? 1,
+      player.dex + bonuses.dex,
+      armor.speedPenalty,
+      balance
     );
     const cooldownMs = Math.ceil(1000 / attackSpeed);
     const status = await rateLimiter.limit(ctx, "manualAttack", {
@@ -394,10 +453,7 @@ export const rebirth = mutation({
       throw new Error("Not eligible for rebirth yet");
     }
 
-    // Get multiplier for next run: (rebirthCount + 1) * 0.1 + 1
-    // Rebirth 0→1: 1.1x, Rebirth 1→2: 1.2x, etc.
     const nextRebirthCount = player.rebirthCount + 1;
-    const multiplier = 1 + nextRebirthCount * 0.1;
 
     const rebirthThresholds = readRebirthThresholds(
       await getBalanceValue(ctx, "rebirthThresholds")
@@ -413,22 +469,18 @@ export const rebirth = mutation({
     );
     const nextThreshold = rebirthThresholds[thresholdIndex];
 
-    // Only stat-boost rows reset here; automation purchases and their toggles persist.
-    const permanentStatBonuses = await resetPaidStatUpgrades(ctx, playerId);
-
-    // Hidden-spot bonuses are permanent flat bonuses applied after rebirth scaling.
-    const newStr = Math.floor(startingStats.str * multiplier) + permanentStatBonuses.str;
-    const newDex = Math.floor(startingStats.dex * multiplier) + permanentStatBonuses.dex;
-    const newInt = Math.floor(startingStats.int * multiplier) + permanentStatBonuses.int;
-    const newLuk = Math.floor(startingStats.luk * multiplier) + permanentStatBonuses.luk;
-    const newCon = Math.floor(startingStats.con * multiplier) + permanentStatBonuses.con;
+    // Full wipe: all stats return to base (earned and paid alike).
+    // Permanent prestige power lives only in rebirth unlocks.
+    await resetAllStatUpgrades(ctx, playerId);
 
     await ctx.db.patch(playerId, {
-      str: newStr,
-      dex: newDex,
-      int: newInt,
-      luk: newLuk,
-      con: newCon,
+      str: startingStats.str,
+      dex: startingStats.dex,
+      int: startingStats.int,
+      luk: startingStats.luk,
+      con: startingStats.con,
+      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+      pendingStarterPick: true,
       gold: 0,
       totalExperience: 0,
       rebirthCount: nextRebirthCount,
@@ -443,7 +495,6 @@ export const rebirth = mutation({
     return {
       rebirthCount: nextRebirthCount,
       newThreshold: nextThreshold,
-      multiplier,
     };
   },
 });

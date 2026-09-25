@@ -34,3 +34,7 @@ export function useClaimAllPendingRewards() {
 export function useSkillBoost() {
   return useMutation(api.items.useSkillBoost);
 }
+
+export function useCombatBoost() {
+  return useMutation(api.items.useCombatBoost);
+}

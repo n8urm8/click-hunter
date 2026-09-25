@@ -761,8 +761,13 @@ async function resolveTimedQueue(
       ) {
         const payload = { ...currentTask.payload };
         delete payload.progressSegments;
+        // Persist consumed time: without progressMs the task's progress
+        // resets to its enqueue value on every resolve, so duration-based
+        // gathering tasks never finish and their countdown appears to refill.
         await ctx.db.patch(currentTask._id, {
           payload,
+          progressMs: currentTask.progressMs,
+          durationMs: currentTask.durationMs,
           lastResolvedAt: now,
           offlineCapped: wasOfflineCapped,
           updatedAt: now,

@@ -2,7 +2,12 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculatePlayerLevel } from "./bossData";
 import {
+  computeAttackSpeed,
+  getActiveCombatBoosts,
+  getEquippedArmorTotals,
   getEquippedStatBonuses,
+  getEquippedWeapon,
+  readCombatBalance,
   type EquipmentStatBonuses,
 } from "./items";
 import { getActiveEventMultipliers, settleCombatFight } from "./loot";
@@ -176,42 +181,93 @@ export async function simulateRegularBattle(
     readMinimumAttackMs(minimumAttackMsValue)
   );
   const rewards = readAutoBattleRewards(rewardsValue);
-  const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
+  const now = Date.now();
+  const eventMultipliers = await getActiveEventMultipliers(ctx, now);
+  const balance = await readCombatBalance(ctx);
   const resolvedEquipmentBonuses =
     equipmentBonuses ?? (await getEquippedStatBonuses(ctx, player._id));
+  const [weapon, armor, combatBoosts] = await Promise.all([
+    getEquippedWeapon(ctx, player._id),
+    getEquippedArmorTotals(ctx, player._id),
+    getActiveCombatBoosts(ctx, player._id, now),
+  ]);
   const effectiveStats = {
-    str: player.str + resolvedEquipmentBonuses.str,
-    dex: player.dex + resolvedEquipmentBonuses.dex,
-    int: player.int + resolvedEquipmentBonuses.int,
-    con: player.con + resolvedEquipmentBonuses.con,
+    str: player.str + resolvedEquipmentBonuses.str + combatBoosts.statBonus.str,
+    dex: player.dex + resolvedEquipmentBonuses.dex + combatBoosts.statBonus.dex,
+    int: player.int + resolvedEquipmentBonuses.int + combatBoosts.statBonus.int,
+    con: player.con + resolvedEquipmentBonuses.con + combatBoosts.statBonus.con,
   };
 
-  const playerHealth = Math.max(1, effectiveStats.con * 10 + effectiveStats.int * 2);
+  const weaponDamage = weapon?.baseDamage ?? 2;
+  const scalingStat =
+    weapon?.damageStat === "dex"
+      ? effectiveStats.dex
+      : weapon?.damageStat === "int"
+        ? effectiveStats.int
+        : effectiveStats.str;
+  const rawAttack =
+    weaponDamage + scalingStat * balance.statAttackCoeff;
+  const isMagical = (weapon?.damageType ?? "physical") === "magical";
+  const monsterMagDef = Math.max(
+    0,
+    monster.int * balance.monsterMagDefIntCoeff
+  );
   const playerAttack = Math.max(
     1,
-    effectiveStats.str * 1.2 + effectiveStats.dex * 0.5
+    isMagical ? Math.max(0, rawAttack - monsterMagDef) : rawAttack
   );
-  const playerDefense = Math.max(
+  const playerHealth = Math.max(1, Math.max(balance.minPlayerHp, effectiveStats.con * 10));
+  const playerPhysDefense = Math.max(
     0,
-    effectiveStats.con * 0.8 + effectiveStats.int * 0.3
+    armor.defense + effectiveStats.con * balance.physDefConCoeff
   );
-  const playerAttackSpeed = Math.max(
-    0.5,
-    (effectiveStats.dex - 10) * 0.1 + 1
+  const playerMagDefense = Math.max(
+    0,
+    effectiveStats.int * balance.magDefIntCoeff
+  );
+  const playerAttackSpeed = computeAttackSpeed(
+    weapon?.attackSpeed ?? 1,
+    effectiveStats.dex,
+    armor.speedPenalty,
+    balance
+  );
+  const critChance = Math.min(
+    1,
+    Math.max(0, (player.luk + resolvedEquipmentBonuses.luk) * balance.lukCritChancePerPoint)
   );
   const monsterHealth = Math.max(1, monster.con * 10 + monster.int * 2);
-  const monsterAttack = Math.max(1, monster.str * 1.2 + monster.dex * 0.5);
-  const monsterDamage = Math.max(1, monsterAttack - playerDefense);
-  const playerDamagePerSecond = playerAttack * playerAttackSpeed;
-  const monsterDamagePerSecond =
-    monsterDamage * (1000 / monster.baseMsPerAttack);
+  const monsterPhysical = Math.max(1, monster.str * 1.2 + monster.dex * 0.5);
+  const monsterMagical = Math.max(
+    0,
+    monster.int * balance.monsterMagicCoeff
+  );
+  const monsterDamagePerHit =
+    Math.max(0, monsterPhysical - playerPhysDefense) +
+    Math.max(0, monsterMagical - playerMagDefense);
+  const playerDamagePerSecond =
+    playerAttack *
+    playerAttackSpeed *
+    (1 + critChance * (balance.critDamageMultiplier - 1));
+  const monsterDamagePerSecond = Math.max(
+    0,
+    monsterDamagePerHit * (1000 / monster.baseMsPerAttack) -
+      combatBoosts.regenPerSecond
+  );
   const timeToDefeatMonster =
     (monsterHealth / playerDamagePerSecond) * 1000;
-  const timeToDefeatPlayer = playerHealth / monsterDamagePerSecond * 1000;
+  const timeToDefeatPlayer =
+    monsterDamagePerSecond > 0
+      ? (playerHealth / monsterDamagePerSecond) * 1000
+      : Number.MAX_SAFE_INTEGER;
   const won = timeToDefeatMonster <= timeToDefeatPlayer;
   const durationMs = Math.max(
     1_000,
-    Math.ceil(won ? timeToDefeatMonster : timeToDefeatPlayer)
+    Math.ceil(
+      Math.min(
+        won ? timeToDefeatMonster : timeToDefeatPlayer,
+        Number.MAX_SAFE_INTEGER - 1
+      )
+    )
   );
 
   return {
@@ -239,7 +295,8 @@ export async function simulateRegularBattle(
           Math.floor(
             (tier * rewards.experiencePerTier +
               Math.random() * (rewards.experienceVariance + 1)) *
-              eventMultipliers.experienceMultiplier
+              eventMultipliers.experienceMultiplier *
+              combatBoosts.xpMultiplier
           )
         )
       : 0,

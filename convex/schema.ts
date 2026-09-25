@@ -15,6 +15,19 @@ const equipmentSlotValidator = v.union(
 const itemEffectStatValidator = v.union(
   ...ITEM_EFFECT_STAT_VALUES.map((value) => v.literal(value))
 );
+const damageStatValidator = v.union(
+  v.literal("str"),
+  v.literal("dex"),
+  v.literal("int")
+);
+const damageTypeValidator = v.union(
+  v.literal("physical"),
+  v.literal("magical")
+);
+const buffVariantValidator = v.union(
+  v.literal("base"),
+  v.literal("advanced")
+);
 const skillBonusScopeValidator = v.union(
   v.literal("all"),
   v.literal("gathering"),
@@ -65,6 +78,20 @@ export default defineSchema({
     // Upgrades
     autoAttackEnabled: v.boolean(),
     autoStartFightEnabled: v.boolean(),
+    // Combat stat experience pools (floats); leveled with the skill XP curve.
+    statXp: v.optional(
+      v.object({
+        str: v.number(),
+        dex: v.number(),
+        int: v.number(),
+        luk: v.number(),
+        con: v.number(),
+      })
+    ),
+    // Chosen starter weapon ID (reselectable at each rebirth).
+    starterWeapon: v.optional(v.string()),
+    // True when the player must pick a starter kit (creation/rebirth flow).
+    pendingStarterPick: v.optional(v.boolean()),
     // Metadata
     createdAt: v.number(),
     lastUpdated: v.number(),
@@ -106,6 +133,16 @@ export default defineSchema({
     effectStat: v.optional(itemEffectStatValidator),
     effectAmount: v.optional(v.number()),
     effectScope: v.optional(skillBonusScopeValidator),
+    // Weapon combat fields (mainHand equipment only).
+    baseDamage: v.optional(v.number()),
+    attackSpeed: v.optional(v.number()),
+    damageStat: v.optional(damageStatValidator),
+    damageType: v.optional(damageTypeValidator),
+    // Armor combat fields (head/chest/legs/feet equipment only).
+    baseDefense: v.optional(v.number()),
+    speedPenalty: v.optional(v.number()),
+    // Consumable buff variant (base/advanced pairing).
+    buffVariant: v.optional(buffVariantValidator),
     // Metadata for future temporary effects; item consumption is intentionally
     // handled separately from this content model.
     effectDurationMs: v.optional(v.number()),
@@ -147,6 +184,21 @@ export default defineSchema({
       "effectScope",
     ]),
 
+  playerCombatBoosts: defineTable({
+    playerId: v.id("players"),
+    effectType: v.string(),
+    effectStat: v.optional(itemEffectStatValidator),
+    variant: v.optional(buffVariantValidator),
+    effectAmount: v.number(),
+    sourceItemId: v.id("items"),
+    startedAt: v.number(),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_and_effectType", ["playerId", "effectType"]),
+
   skillDefinitions: defineTable({
     skillId: v.string(),
     name: v.string(),
@@ -154,7 +206,8 @@ export default defineSchema({
     pairedSkillId: v.optional(v.string()),
     description: v.string(),
     enabled: v.boolean(),
-    maxLevel: v.number(),
+    // Undefined means uncapped (open-ended leveling).
+    maxLevel: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -218,7 +271,13 @@ export default defineSchema({
     durationMs: v.optional(v.number()),
     experienceReward: v.number(),
     outputFamily: v.optional(v.string()),
-    stage: v.optional(v.union(v.literal("refinement"), v.literal("product"))),
+    stage: v.optional(
+      v.union(
+        v.literal("refinement"),
+        v.literal("product"),
+        v.literal("consumable")
+      )
+    ),
     requiresMonsterDrop: v.optional(v.boolean()),
     enabled: v.boolean(),
     createdAt: v.number(),

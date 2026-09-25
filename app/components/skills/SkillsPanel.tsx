@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { usePlayerInventory } from "~/hooks/useInventory";
-import { useEnqueueSkillAction } from "~/hooks/useTasks";
+import { useEnqueueSkillAction, useTaskQueue } from "~/hooks/useTasks";
 import { useSkillPanel } from "~/hooks/useSkills";
 import {
   Tabs,
@@ -81,9 +81,10 @@ function ItemLabel({
   );
 }
 
-function recipeStageLabel(stage: "refinement" | "product" | undefined) {
+function recipeStageLabel(stage: "refinement" | "product" | "consumable" | undefined) {
   if (stage === "refinement") return "Refinement";
   if (stage === "product") return "Finished item";
+  if (stage === "consumable") return "Consumable";
   return "Recipe";
 }
 
@@ -189,6 +190,11 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   const panel = useSkillPanel(playerId);
   const inventory = usePlayerInventory(playerId);
   const enqueueSkillAction = useEnqueueSkillAction();
+  const taskQueue = useTaskQueue(playerId);
+  const hasQueuedTasks =
+    taskQueue.data !== undefined &&
+    (taskQueue.data.active != null ||
+      (taskQueue.data.queued?.length ?? 0) > 0);
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -284,7 +290,7 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   const runAction = async (
     requestKey: string,
     enqueue: () => Promise<unknown>,
-    fallback = "Unable to start skill action."
+    fallback = "Unable to queue skill action."
   ) => {
     setActiveAction(requestKey);
     setError(null);
@@ -333,6 +339,8 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
       gatheringQuantity >= 1 &&
       gatheringQuantity <= data.maxSkillBatchSize;
     const gatheringRequestKey = `${actionKey}:${gatheringQuantity}`;
+    const actionVerb = hasQueuedTasks ? "Queue" : "Start";
+    const actionProgressVerb = hasQueuedTasks ? "Queueing..." : "Starting...";
     const durationOptions = [
       { label: "+1 hr", description: "one hour", value: "one-hour" as const },
       { label: "+2 hr", description: "two hours", value: "two-hours" as const },
@@ -390,7 +398,7 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
                 !validGatheringQuantity ||
                 activeAction !== null
               }
-              aria-label={`Start ${gatheringQuantity} ${activity.name} actions`}
+              aria-label={`${actionVerb} ${gatheringQuantity} ${activity.name} actions`}
               onClick={() =>
                 void runAction(
                   gatheringRequestKey,
@@ -405,7 +413,7 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
                 )
               }
             >
-              {activeAction === gatheringRequestKey ? "Starting..." : "Start"}
+              {activeAction === gatheringRequestKey ? actionProgressVerb : actionVerb}
             </Button>
           </div>
           <div className="flex flex-wrap gap-1 sm:justify-end">

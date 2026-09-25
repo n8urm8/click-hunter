@@ -2,19 +2,21 @@ import { useState } from "react";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { Fireflies } from "~/components/ui/fireflies";
+import { StarterPicker, type StarterId } from "./StarterPicker";
 
 interface NameEntryProps {
-  onSubmit: (name: string) => Promise<void>;
+  onSubmit: (name: string, starterId: StarterId) => Promise<void>;
   isLoading: boolean;
 }
 
 export function NameEntry({ onSubmit, isLoading }: NameEntryProps) {
   const [name, setName] = useState("");
+  const [starterId, setStarterId] = useState<StarterId>("sword");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (name.trim()) {
-      await onSubmit(name.trim());
+      await onSubmit(name.trim(), starterId);
     }
   };
 
@@ -46,6 +48,8 @@ export function NameEntry({ onSubmit, isLoading }: NameEntryProps) {
                 className="w-full px-4 py-3 bg-forest-dark/50 dark:bg-forest-dark/80 border border-forest-light/40 rounded-lg text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-gold/50 focus:border-gold/40"
               />
             </div>
+
+            <StarterPicker value={starterId} onChange={setStarterId} disabled={isLoading} />
 
             <Button
               type="submit"

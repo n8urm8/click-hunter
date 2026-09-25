@@ -143,6 +143,13 @@ export function useRebirth() {
 }
 
 /**
+ * Hook for choosing a starter kit after rebirth.
+ */
+export function useChooseStarter() {
+  return useConvexMutation(api.players.chooseStarter);
+}
+
+/**
  * Hook for setting auto attack
  */
 export function useSetAutoAttack() {

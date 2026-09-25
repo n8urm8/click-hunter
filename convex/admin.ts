@@ -53,7 +53,21 @@ const recipeItemInputValidator = v.object({
 });
 const recipeStageValidator = v.union(
   v.literal("refinement"),
-  v.literal("product")
+  v.literal("product"),
+  v.literal("consumable")
+);
+const damageStatValidator = v.union(
+  v.literal("str"),
+  v.literal("dex"),
+  v.literal("int")
+);
+const damageTypeValidator = v.union(
+  v.literal("physical"),
+  v.literal("magical")
+);
+const buffVariantValidator = v.union(
+  v.literal("base"),
+  v.literal("advanced")
 );
 
 function isSkillTaskEffectType(value: string) {
@@ -917,6 +931,13 @@ export const createItem = mutation({
     effectDurationMs: v.optional(v.union(v.number(), v.null())),
     effectScope: v.optional(v.union(skillBonusScopeValidator, v.null())),
     augmentSlots: v.optional(v.union(v.number(), v.null())),
+    baseDamage: v.optional(v.union(v.number(), v.null())),
+    attackSpeed: v.optional(v.union(v.number(), v.null())),
+    damageStat: v.optional(v.union(damageStatValidator, v.null())),
+    damageType: v.optional(v.union(damageTypeValidator, v.null())),
+    baseDefense: v.optional(v.union(v.number(), v.null())),
+    speedPenalty: v.optional(v.union(v.number(), v.null())),
+    buffVariant: v.optional(v.union(buffVariantValidator, v.null())),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx, args.playerId);
@@ -960,6 +981,34 @@ export const createItem = mutation({
       "Augmentation slots",
       0
     );
+    const baseDamage =
+      args.baseDamage === undefined || args.baseDamage === null
+        ? undefined
+        : numberAtLeast(args.baseDamage, "Base damage", 0);
+    const attackSpeed =
+      args.attackSpeed === undefined || args.attackSpeed === null
+        ? undefined
+        : numberAtLeast(args.attackSpeed, "Attack speed", 0);
+    const damageStat =
+      args.damageStat === undefined || args.damageStat === null
+        ? undefined
+        : args.damageStat;
+    const damageType =
+      args.damageType === undefined || args.damageType === null
+        ? undefined
+        : args.damageType;
+    const baseDefense =
+      args.baseDefense === undefined || args.baseDefense === null
+        ? undefined
+        : numberAtLeast(args.baseDefense, "Base defense", 0);
+    const speedPenalty =
+      args.speedPenalty === undefined || args.speedPenalty === null
+        ? undefined
+        : numberAtLeast(args.speedPenalty, "Speed penalty", 0);
+    const buffVariant =
+      args.buffVariant === undefined || args.buffVariant === null
+        ? undefined
+        : args.buffVariant;
     const definition = normalizeItemDefinition({
       itemId: args.itemId,
       name: args.name,
@@ -982,6 +1031,13 @@ export const createItem = mutation({
         ? {}
         : { effectScope: normalizedEffectScope }),
       ...(augmentSlots === undefined ? {} : { augmentSlots }),
+      ...(baseDamage === undefined ? {} : { baseDamage }),
+      ...(attackSpeed === undefined ? {} : { attackSpeed }),
+      ...(damageStat === undefined ? {} : { damageStat }),
+      ...(damageType === undefined ? {} : { damageType }),
+      ...(baseDefense === undefined ? {} : { baseDefense }),
+      ...(speedPenalty === undefined ? {} : { speedPenalty }),
+      ...(buffVariant === undefined ? {} : { buffVariant }),
     });
     const existing = await ctx.db
       .query("items")
@@ -1021,6 +1077,13 @@ export const updateItem = mutation({
     effectDurationMs: v.optional(v.union(v.number(), v.null())),
     effectScope: v.optional(v.union(skillBonusScopeValidator, v.null())),
     augmentSlots: v.optional(v.union(v.number(), v.null())),
+    baseDamage: v.optional(v.union(v.number(), v.null())),
+    attackSpeed: v.optional(v.union(v.number(), v.null())),
+    damageStat: v.optional(v.union(damageStatValidator, v.null())),
+    damageType: v.optional(v.union(damageTypeValidator, v.null())),
+    baseDefense: v.optional(v.union(v.number(), v.null())),
+    speedPenalty: v.optional(v.union(v.number(), v.null())),
+    buffVariant: v.optional(v.union(buffVariantValidator, v.null())),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx, args.playerId);
@@ -1078,6 +1141,37 @@ export const updateItem = mutation({
         ? existing.augmentSlots
         : optionalItemInteger(args.augmentSlots, "Augmentation slots", 0);
 
+    const baseDamage =
+      args.baseDamage === undefined
+        ? existing.baseDamage
+        : args.baseDamage === null
+          ? undefined
+          : numberAtLeast(args.baseDamage, "Base damage", 0);
+    const attackSpeed =
+      args.attackSpeed === undefined
+        ? existing.attackSpeed
+        : args.attackSpeed === null
+          ? undefined
+          : numberAtLeast(args.attackSpeed, "Attack speed", 0);
+    const damageStat =
+      args.damageStat === undefined ? existing.damageStat : args.damageStat;
+    const damageType =
+      args.damageType === undefined ? existing.damageType : args.damageType;
+    const baseDefense =
+      args.baseDefense === undefined
+        ? existing.baseDefense
+        : args.baseDefense === null
+          ? undefined
+          : numberAtLeast(args.baseDefense, "Base defense", 0);
+    const speedPenalty =
+      args.speedPenalty === undefined
+        ? existing.speedPenalty
+        : args.speedPenalty === null
+          ? undefined
+          : numberAtLeast(args.speedPenalty, "Speed penalty", 0);
+    const buffVariant =
+      args.buffVariant === undefined ? existing.buffVariant : args.buffVariant;
+
     const definition = normalizeItemDefinition({
       itemId: existing.itemId,
       name: args.name,
@@ -1105,6 +1199,19 @@ export const updateItem = mutation({
         ? {}
         : { effectScope: normalizedEffectScope }),
       ...(augmentSlots === undefined ? {} : { augmentSlots }),
+      ...(baseDamage === undefined ? {} : { baseDamage }),
+      ...(attackSpeed === undefined ? {} : { attackSpeed }),
+      ...(damageStat === undefined || damageStat === null
+        ? {}
+        : { damageStat }),
+      ...(damageType === undefined || damageType === null
+        ? {}
+        : { damageType }),
+      ...(baseDefense === undefined ? {} : { baseDefense }),
+      ...(speedPenalty === undefined ? {} : { speedPenalty }),
+      ...(buffVariant === undefined || buffVariant === null
+        ? {}
+        : { buffVariant }),
     });
 
     await ctx.db.replace(existing._id, {
@@ -1478,7 +1585,7 @@ export const createSkillDefinition = mutation({
     pairedSkillId: v.union(v.string(), v.null()),
     description: v.string(),
     enabled: v.boolean(),
-    maxLevel: v.number(),
+    maxLevel: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx, args.playerId);
@@ -1510,7 +1617,9 @@ export const createSkillDefinition = mutation({
       ...(pairedSkillId === undefined ? {} : { pairedSkillId }),
       description: requiredText(args.description, "Description", 1000),
       enabled: args.enabled,
-      maxLevel: integerAtLeast(args.maxLevel, "Maximum level", 1),
+      ...(args.maxLevel === undefined
+        ? {}
+        : { maxLevel: integerAtLeast(args.maxLevel, "Maximum level", 1) }),
       createdAt: now,
       updatedAt: now,
     });
@@ -1527,7 +1636,7 @@ export const updateSkillDefinition = mutation({
     pairedSkillId: v.union(v.string(), v.null()),
     description: v.string(),
     enabled: v.boolean(),
-    maxLevel: v.number(),
+    maxLevel: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     await requireAdmin(ctx, args.playerId);
@@ -1554,7 +1663,9 @@ export const updateSkillDefinition = mutation({
       ...(pairedSkillId === undefined ? {} : { pairedSkillId }),
       description: requiredText(args.description, "Description", 1000),
       enabled: args.enabled,
-      maxLevel: integerAtLeast(args.maxLevel, "Maximum level", 1),
+      ...(args.maxLevel === undefined
+        ? {}
+        : { maxLevel: integerAtLeast(args.maxLevel, "Maximum level", 1) }),
       createdAt: existing.createdAt,
       updatedAt: Date.now(),
     });
@@ -2359,7 +2470,16 @@ export const saveCraftingConfig = mutation({
         ...(pairedSkillId === undefined ? {} : { pairedSkillId }),
         description: stringValue(value, "description", "Description", 1000),
         enabled: booleanValue(value, "enabled", "Enabled"),
-        maxLevel: integerValue(value, "maxLevel", "Maximum level", 1),
+        ...(value.maxLevel === undefined || value.maxLevel === null
+          ? {}
+          : {
+              maxLevel: integerValue(
+                value,
+                "maxLevel",
+                "Maximum level",
+                1
+              ),
+            }),
         createdAt: existing.createdAt,
         updatedAt: now,
       });
@@ -2481,10 +2601,14 @@ export const saveCraftingConfig = mutation({
       const stage =
         stageText === undefined
           ? existing.stage
-          : stageText === "refinement" || stageText === "product"
+          : stageText === "refinement" ||
+              stageText === "product" ||
+              stageText === "consumable"
             ? stageText
             : (() => {
-                throw new Error("Stage must be refinement or product");
+                throw new Error(
+                  "Stage must be refinement, product, or consumable"
+                );
               })();
       const requiresMonsterDrop =
         value.requiresMonsterDrop === undefined

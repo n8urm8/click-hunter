@@ -4,7 +4,67 @@ import {
   calculatePlayerLevel,
   getBossUnlockLevelPerTier,
 } from "./bossData";
-import { grantItemToInventory } from "./items";
+import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
+import {
+  getSkillXpRequiredForLevel,
+  readSkillXpBase,
+} from "./skillProgression";
+
+type TrainableStat = "str" | "dex" | "int" | "con";
+
+/**
+ * Split a fight's XP across the wielded weapon's stats (70/30 weapon/con,
+ * 35/35/30 unarmed) into per-stat XP pools leveled with the skill XP curve.
+ */
+async function awardCombatStatXp(
+  ctx: MutationCtx,
+  playerId: PlayerId,
+  experienceEarned: number
+) {
+  if (!Number.isFinite(experienceEarned) || experienceEarned <= 0) return;
+  const [weapon, player, xpBaseValue] = await Promise.all([
+    getEquippedWeapon(ctx, playerId),
+    ctx.db.get(playerId),
+    getBalanceValue(ctx, "skillXpPerLevel"),
+  ]);
+  if (!player) throw new Error("Player not found");
+  const xpBase = readSkillXpBase(xpBaseValue);
+  const splits: Record<TrainableStat, number> =
+    weapon?.damageStat === "dex"
+      ? { str: 0, dex: 0.7, int: 0, con: 0.3 }
+      : weapon?.damageStat === "int"
+        ? { str: 0, dex: 0, int: 0.7, con: 0.3 }
+        : weapon?.damageStat === "str"
+          ? { str: 0.7, dex: 0, int: 0, con: 0.3 }
+          : { str: 0.35, dex: 0.35, int: 0, con: 0.3 };
+  const pools = {
+    str: 0,
+    dex: 0,
+    int: 0,
+    luk: 0,
+    con: 0,
+    ...(player.statXp ?? {}),
+  };
+  const patch: Record<string, unknown> = { statXp: pools };
+  for (const stat of ["str", "dex", "int", "con"] as const) {
+    const share = splits[stat];
+    if (share <= 0) continue;
+    let level = player[stat];
+    let pool = pools[stat] + experienceEarned * share;
+    let required = getSkillXpRequiredForLevel(level, xpBase);
+    while (pool >= required) {
+      pool -= required;
+      level += 1;
+      required += level * xpBase;
+      if (!Number.isSafeInteger(required)) {
+        throw new Error("Stat XP requirement exceeds the supported limit");
+      }
+    }
+    patch[stat] = level;
+    pools[stat] = pool;
+  }
+  await ctx.db.patch(playerId, { ...patch, lastUpdated: Date.now() });
+}
 
 type PlayerId = Id<"players">;
 type CombatSourceType = "monster" | "boss";
@@ -286,6 +346,11 @@ export async function settleCombatFight(
       .first();
     if (!monster) throw new Error("Monster not found");
     const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
+    const combatBoosts = await getActiveCombatBoosts(
+      ctx,
+      args.playerId,
+      Date.now()
+    );
     if (
       args.rewardOverride &&
       (!Number.isSafeInteger(args.rewardOverride.goldEarned) ||
@@ -311,7 +376,8 @@ export async function settleCombatFight(
           Math.floor(
             monster.experienceReward *
               args.tier *
-              eventMultipliers.experienceMultiplier
+              eventMultipliers.experienceMultiplier *
+              combatBoosts.xpMultiplier
           )
         )
       : 0;
@@ -321,6 +387,7 @@ export async function settleCombatFight(
         totalExperience: player.totalExperience + experienceEarned,
         lastUpdated: Date.now(),
       });
+      await awardCombatStatXp(ctx, args.playerId, experienceEarned);
     }
     const loot = await resolveLoot(ctx, args);
     await ctx.db.insert("fightHistory", {
@@ -373,13 +440,22 @@ export async function settleCombatFight(
     args.tier *
     boss.rewardMultiplier;
   const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
+  const combatBoosts = await getActiveCombatBoosts(
+    ctx,
+    args.playerId,
+    Date.now()
+  );
   const goldEarned = args.won
     ? Math.max(0, Math.floor(baseGold * eventMultipliers.goldMultiplier))
     : 0;
   const experienceEarned = args.won
     ? Math.max(
         0,
-        Math.floor(baseExperience * eventMultipliers.experienceMultiplier)
+        Math.floor(
+          baseExperience *
+            eventMultipliers.experienceMultiplier *
+            combatBoosts.xpMultiplier
+        )
       )
     : 0;
 
@@ -389,6 +465,7 @@ export async function settleCombatFight(
       totalExperience: player.totalExperience + experienceEarned,
       lastUpdated: Date.now(),
     });
+    await awardCombatStatXp(ctx, args.playerId, experienceEarned);
   }
 
   const loot = await resolveLoot(ctx, args);

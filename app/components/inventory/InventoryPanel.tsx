@@ -10,6 +10,7 @@ import {
 import {
   useClaimAllPendingRewards,
   useClaimPendingReward,
+  useCombatBoost,
   useEquipItem,
   usePlayerInventory,
   useSkillBoost,
@@ -19,8 +20,10 @@ import { useSkillPanel } from "~/hooks/useSkills";
 import { useEnqueueSkillAction } from "~/hooks/useTasks";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
 import {
+  COMBAT_EFFECT_TYPES,
   EQUIPMENT_SLOT_VALUES,
   SKILL_TASK_EFFECT_TYPES,
+  type CombatEffectType,
   type EquipmentSlot,
   type SkillBonusScope,
   type SkillTaskEffectType,
@@ -73,6 +76,12 @@ function isSkillTaskEffectType(
   value: string | undefined
 ): value is SkillTaskEffectType {
   return SKILL_TASK_EFFECT_TYPES.some((effectType) => effectType === value);
+}
+
+function isCombatEffectType(
+  value: string | undefined
+): value is CombatEffectType {
+  return COMBAT_EFFECT_TYPES.some((effectType) => effectType === value);
 }
 
 function skillScopeLabel(scope: SkillBonusScope | undefined) {
@@ -288,6 +297,24 @@ function ItemDetails({
                   ` · ${Math.round(ownedItem.item.effectDurationMs / 1000)}s`}
               </p>
             )}
+          {(ownedItem.item.baseDamage !== undefined ||
+            ownedItem.item.attackSpeed !== undefined ||
+            ownedItem.item.baseDefense !== undefined) && (
+            <p className="mt-2 text-xs font-semibold text-gold">
+              {ownedItem.item.baseDamage !== undefined &&
+                `Damage ${ownedItem.item.baseDamage}`}
+              {ownedItem.item.attackSpeed !== undefined &&
+                ` · ${ownedItem.item.attackSpeed}/s`}
+              {ownedItem.item.damageStat !== undefined &&
+                ` · scales ${statLabel(ownedItem.item.damageStat) ?? ownedItem.item.damageStat}`}
+              {ownedItem.item.damageType === "magical" && " · magical"}
+              {ownedItem.item.baseDefense !== undefined &&
+                `Defense ${ownedItem.item.baseDefense}`}
+              {ownedItem.item.speedPenalty !== undefined &&
+                ownedItem.item.speedPenalty > 0 &&
+                ` · −${ownedItem.item.speedPenalty}/s`}
+            </p>
+          )}
           {ownedItem.item.effectType &&
             ownedItem.item.effectType !== "stat-bonus" && (
               <p className="mt-2 text-xs font-semibold text-forest-glow">
@@ -670,6 +697,7 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
   const equipItem = useEquipItem();
   const unequipItem = useUnequipItem();
   const activateSkillBoost = useSkillBoost();
+  const activateCombatBoost = useCombatBoost();
   const [draggingItemId, setDraggingItemId] = useState<Id<"playerItems"> | null>(
     null
   );
@@ -681,6 +709,8 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [usingSkillBoostId, setUsingSkillBoostId] =
+    useState<Id<"playerItems"> | null>(null);
+  const [usingCombatBoostId, setUsingCombatBoostId] =
     useState<Id<"playerItems"> | null>(null);
   const [skillBoostStatus, setSkillBoostStatus] = useState<string | null>(null);
 
@@ -824,6 +854,33 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
     }
   };
 
+  const handleUseCombatBoost = async (ownedItem: OwnedItem) => {
+    if (!isCombatEffectType(ownedItem.item.effectType)) {
+      setActionError("That item is not a combat consumable.");
+      return;
+    }
+    if (usingCombatBoostId !== null || isUpdating) return;
+
+    setActionError(null);
+    setSkillBoostStatus(null);
+    setUsingCombatBoostId(ownedItem._id);
+    try {
+      const result = await activateCombatBoost({
+        playerId,
+        playerItemId: ownedItem._id,
+      });
+      setSkillBoostStatus(
+        `Combat effect ${result.effectType} active for ${formatDuration(
+          result.expiresAt - Date.now()
+        )}.`
+      );
+    } catch (boostError) {
+      setActionError(errorMessage(boostError, "Unable to use consumable."));
+    } finally {
+      setUsingCombatBoostId(null);
+    }
+  };
+
   const selectedCraftingItem =
     craftingItems.find((item) => item._id === selectedCraftingItemId) ?? null;
   const selectedEquipmentItem =
@@ -871,23 +928,31 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
               error={actionError}
               actions={
                 selectedCraftingItem &&
-                isSkillTaskEffectType(selectedCraftingItem.item.effectType) ? (
+                (isSkillTaskEffectType(selectedCraftingItem.item.effectType) ||
+                  isCombatEffectType(selectedCraftingItem.item.effectType)) ? (
                   <Button
                     type="button"
                     size="xs"
                     variant="outline"
                     disabled={
                       usingSkillBoostId !== null ||
+                      usingCombatBoostId !== null ||
                       isUpdating ||
-                      selectedCraftingItem._id === usingSkillBoostId
+                      selectedCraftingItem._id === usingSkillBoostId ||
+                      selectedCraftingItem._id === usingCombatBoostId
                     }
                     onClick={() =>
-                      void handleUseSkillBoost(selectedCraftingItem)
+                      isCombatEffectType(selectedCraftingItem.item.effectType)
+                        ? void handleUseCombatBoost(selectedCraftingItem)
+                        : void handleUseSkillBoost(selectedCraftingItem)
                     }
                   >
-                    {selectedCraftingItem._id === usingSkillBoostId
+                    {selectedCraftingItem._id === usingSkillBoostId ||
+                    selectedCraftingItem._id === usingCombatBoostId
                       ? "Activating..."
-                      : "Use boost"}
+                      : isCombatEffectType(selectedCraftingItem.item.effectType)
+                        ? "Use consumable"
+                        : "Use boost"}
                   </Button>
                 ) : undefined
               }
