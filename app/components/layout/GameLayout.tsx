@@ -6,7 +6,7 @@ import { FightArea } from "../game/FightArea";
 import { ChatBox } from "../game/ChatBox";
 import { LeaderboardPanel } from "../leaderboard/LeaderboardPanel";
 import { RebirthPanel } from "../player/RebirthPanel";
-import { ShopPanel } from "../shop/ShopPanel";
+import { ShopScreen } from "../shop/ShopScreen";
 import { GameFrame } from "./GameFrame";
 import { InventoryPanel } from "../inventory/InventoryPanel";
 import { SkillsPanel } from "../skills/SkillsPanel";
@@ -27,7 +27,7 @@ export function GameLayout({ player }: GameLayoutProps) {
       case "skills":
         return <SkillsPanel playerId={player._id} />;
       case "shop":
-        return <ShopPanel player={player} />;
+        return <ShopScreen player={player} />;
       case "inventory":
         return <InventoryPanel playerId={player._id} />;
       case "rebirth":

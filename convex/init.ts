@@ -13,6 +13,11 @@ import {
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
+import {
+  DEFAULT_BAZAAR_MAX_OPEN_ORDERS,
+  DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS,
+  DEFAULT_BAZAAR_TAX_PERCENT,
+} from "./bazaar";
 
 async function seedMonsters(ctx: MutationCtx) {
   const existing = await ctx.db.query("monsters").first();
@@ -47,8 +52,8 @@ async function seedUpgrades(ctx: MutationCtx) {
     { upgradeId: "int_boost_1",      name: "Magical Aptitude I",  category: "stat-boost", cost: 100, description: "+5 INT", effectType: "stat-boost", effectStat: "int", effectAmount: 5, minTier: 1 },
     { upgradeId: "luk_boost_1",      name: "Fortune's Favor I",   category: "stat-boost", cost: 100, description: "+5 LUK", effectType: "stat-boost", effectStat: "luk", effectAmount: 5, minTier: 1 },
     { upgradeId: "con_boost_1",      name: "Toughening I",        category: "stat-boost", cost: 100, description: "+5 CON", effectType: "stat-boost", effectStat: "con", effectAmount: 5, minTier: 1 },
-    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks at your attack speed", effectType: "enable-auto-attack",      minTier: 2, minLevel: 10 },
-    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start the next fight",        effectType: "enable-auto-start-fight", minTier: 2, minLevel: 15 },
+    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks at your attack speed", effectType: "enable-auto-attack",      minTier: 2, minLevel: 20 },
+    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start the next fight",        effectType: "enable-auto-start-fight", minTier: 2, minLevel: 25 },
   ];
   for (const u of upgrades) {
     await ctx.db.insert("upgrades", { ...u, createdAt: Date.now() });
@@ -88,6 +93,9 @@ async function seedGameBalance(ctx: MutationCtx) {
     { key: "inventorySlotCapacity", value: 50,                     description: "Maximum number of unequipped inventory stacks or item instances" },
     { key: "statUpgradeCostMultiplier", value: 2, description: "Cost multiplier applied to each paid stat-upgrade level" },
     { key: "statUpgradeLevelRequirements", value: [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377], description: "Character levels required for paid stat-upgrade levels" },
+    { key: "bazaarTaxPercent", value: DEFAULT_BAZAAR_TAX_PERCENT, description: "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)" },
+    { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
+    { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
   ];
   for (const e of entries) {
     await ctx.db.insert("gameBalance", { ...e, lastUpdated: Date.now() });

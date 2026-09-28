@@ -1,9 +1,7 @@
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import {
-  calculatePlayerLevel,
-  getBossUnlockLevelPerTier,
-} from "./bossData";
+import { getBossUnlockLevelPerTier } from "./bossData";
+import { calculateCharacterLevel } from "./characterLevel";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
 import {
   getSkillXpRequiredForLevel,
@@ -420,7 +418,7 @@ export async function settleCombatFight(
   {
     const requiredLevel =
       args.tier * (await getBossUnlockLevelPerTier(ctx));
-    if (calculatePlayerLevel(player) < requiredLevel) {
+    if ((await calculateCharacterLevel(ctx, player)) < requiredLevel) {
       throw new Error(`Boss requires character level ${requiredLevel}`);
     }
   }

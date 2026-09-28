@@ -41,16 +41,18 @@ export function calculateDerivedStats(
 }
 
 /**
- * Calculate player level (average of all stats)
+ * Combat portion of the character level: the sum of the 5 combat stat levels.
+ * The full character level (including skill levels) is computed server-side
+ * and returned as `characterLevel` on player queries.
  */
-export function calculatePlayerLevel(
+export function calculateCombatLevel(
   str: number,
   dex: number,
   int: number,
   luk: number,
   con: number
 ): number {
-  return Math.floor((str + dex + int + luk + con) / 5);
+  return str + dex + int + luk + con;
 }
 
 /**

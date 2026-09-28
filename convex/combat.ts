@@ -1,6 +1,6 @@
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { calculatePlayerLevel } from "./bossData";
+import { calculateCharacterLevel } from "./characterLevel";
 import {
   computeAttackSpeed,
   getActiveCombatBoosts,
@@ -339,6 +339,6 @@ export async function settleRegularFight(
   const player = await ctx.db.get(args.playerId);
   return {
     ...settlement,
-    playerLevel: player ? calculatePlayerLevel(player) : 0,
+    playerLevel: player ? await calculateCharacterLevel(ctx, player) : 0,
   };
 }

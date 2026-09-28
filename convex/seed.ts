@@ -12,7 +12,6 @@ import { v } from "convex/values";
 import { requireAdmin } from "./adminAuth";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
 import {
-  calculatePlayerLevel,
   DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
   ensureBossForTier,
   getBossUnlockLevelPerTier,
@@ -20,6 +19,15 @@ import {
   getTierScaleMultiplier,
   scaleBossStat,
 } from "./bossData";
+import { calculateCharacterLevel } from "./characterLevel";
+import {
+  CATALOG_FETCH_LIMIT,
+  DEFAULT_BAZAAR_MAX_OPEN_ORDERS,
+  DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS,
+  DEFAULT_BAZAAR_TAX_PERCENT,
+  readBazaarConfig,
+} from "./bazaar";
+import type { Doc, Id } from "./_generated/dataModel";
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
 import { validateAllRecipeChains } from "./recipeValidation";
@@ -63,8 +71,8 @@ async function populateUpgrades(ctx: MutationCtx) {
     { upgradeId: "int_boost_1",      name: "Magical Aptitude I",  category: "stat-boost", cost: 100, description: "+5 INT", effectType: "stat-boost", effectStat: "int", effectAmount: 5, minTier: 1 },
     { upgradeId: "luk_boost_1",      name: "Fortune's Favor I",   category: "stat-boost", cost: 100, description: "+5 LUK", effectType: "stat-boost", effectStat: "luk", effectAmount: 5, minTier: 1 },
     { upgradeId: "con_boost_1",      name: "Toughening I",        category: "stat-boost", cost: 100, description: "+5 CON", effectType: "stat-boost", effectStat: "con", effectAmount: 5, minTier: 1 },
-    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks at your attack speed", effectType: "enable-auto-attack",      minTier: 2, minLevel: 10 },
-    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start the next fight",        effectType: "enable-auto-start-fight", minTier: 2, minLevel: 15 },
+    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks at your attack speed", effectType: "enable-auto-attack",      minTier: 2, minLevel: 20 },
+    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start the next fight",        effectType: "enable-auto-start-fight", minTier: 2, minLevel: 25 },
   ];
   for (const upgrade of upgrades) {
     const existing = await ctx.db.query("upgrades").withIndex("by_upgradeId", (q) => q.eq("upgradeId", upgrade.upgradeId)).first();
@@ -113,6 +121,9 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "autoBattleCreditCapMs", value: 5 * 60 * 1000, description: "Maximum online auto-battle time banked between heartbeats (milliseconds)" },
     { key: "respawnTimeMs", value: 5 * 1000, description: "Recovery time after a defeated battle before the next encounter (milliseconds)" },
     { key: "autoBattleRewards", value: { goldPerTier: 100, goldVariance: 50, experiencePerTier: 50, experienceVariance: 25 }, description: "Server-side regular auto-battle reward formula" },
+    { key: "bazaarTaxPercent", value: DEFAULT_BAZAAR_TAX_PERCENT, description: "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)" },
+    { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
+    { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
     ...SKILL_TASK_BALANCE_DEFAULTS,
   ];
   for (const entry of entries) {
@@ -240,7 +251,7 @@ export const getScaledBoss = query({
     }
 
     const unlockLevel = args.tier * (await getBossUnlockLevelPerTier(ctx));
-    if (calculatePlayerLevel(player) < unlockLevel) {
+    if ((await calculateCharacterLevel(ctx, player)) < unlockLevel) {
       return null;
     }
 
@@ -582,6 +593,228 @@ export const resetForestCrafting = mutation({
     return {
       success: true,
       message: "Forest crafting content reset and reseeded",
+    };
+  },
+});
+
+// ─── Bazaar order book seeding ───────────────────────────────────────────────
+
+const BAZAAR_SEED_TRADER_PREFIX = "bazaar-trader-";
+const BAZAAR_SEED_TRADER_ADJECTIVES = [
+  "Swift", "Iron", "Golden", "Mystic", "Shadow", "Crimson", "Azure", "Emerald",
+  "Frost", "Blaze", "Storm", "Dusk", "Dawn", "Cobalt", "Amber", "Silver",
+  "Rusty", "Velvet", "Thorn", "Gilded",
+];
+const BAZAAR_SEED_TRADER_ROLES = [
+  "Trader", "Merchant", "Peddler", "Broker", "Hawker", "Dealer", "Wanderer",
+  "Factor",
+];
+// Seeded orders are backdated up to 6h so "newest" sorting looks organic;
+// expiry still lands a full config period after creation.
+const BAZAAR_SEED_TIME_JITTER_MS = 6 * 60 * 60 * 1000;
+const BAZAAR_SEED_FALLBACK_REBIRTH_THRESHOLD = 5;
+// Stackable seed orders hold at most 30 units regardless of stack size.
+const BAZAAR_SEED_MAX_STACK_QUANTITY = 30;
+
+/** Deterministic PRNG so re-seeding always produces the same order book. */
+function createSeededRandom(seed: number) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Unique display name for a seeded trader (covers up to 160 traders). */
+function seedTraderName(index: number) {
+  const adjective =
+    BAZAAR_SEED_TRADER_ADJECTIVES[index % BAZAAR_SEED_TRADER_ADJECTIVES.length];
+  const role =
+    BAZAAR_SEED_TRADER_ROLES[
+      Math.floor(index / BAZAAR_SEED_TRADER_ADJECTIVES.length) %
+        BAZAAR_SEED_TRADER_ROLES.length
+    ];
+  const base = `${adjective} ${role}`;
+  const uniqueCount =
+    BAZAAR_SEED_TRADER_ADJECTIVES.length * BAZAAR_SEED_TRADER_ROLES.length;
+  return index < uniqueCount ? base : `${base} ${index + 1}`;
+}
+
+/**
+ * Rough plausible gold value for an item, calibrated against the game's
+ * economy (upgrade costs run 100–750g, monster drops 10–200g, players hold
+ * ~2k–290k gold). Rarity runs 10..80 in steps of 10 (Common → beyond
+ * Mythical), so it is squashed into a step number first. Seed prices are test
+ * data, not balance — the tax/expiry/cap they trade under come from
+ * gameBalance via readBazaarConfig.
+ */
+function seedBasePrice(item: Doc<"items">): number {
+  const rarityStep = Math.max(1, Math.floor((item.rarityLevel ?? 10) / 10));
+  if (!item.stackable) {
+    // Common gear ~500g, Epic ~3–5k, endgame ~8–11k.
+    const stat = (item.baseDamage ?? 0) + (item.baseDefense ?? 0);
+    return rarityStep * rarityStep * 100 + stat * 40 + 60;
+  }
+  // Common mats ~30g, Epic ~180g, top-tier ~550g.
+  return rarityStep * rarityStep * 6 + (item.craftingTier ?? 1) * 20 + 5;
+}
+
+/**
+ * Seed the Bazaar with buy and sell orders covering every catalog item.
+ *
+ * Orders are owned by generated trader players (anonymousId prefix
+ * "bazaar-trader-") because self-trading is blocked and the open-order cap
+ * applies per player — each trader holds at most config.maxOpenOrders orders.
+ * Buy prices sit below sell prices for the same item so the seeded book has a
+ * normal spread instead of crossed pairs. Sell orders escrow items directly
+ * (equivalent to a trader that never held them in inventory); buy orders
+ * escrow their full trade total in escrowedGold.
+ *
+ * Re-running deletes previously seeded traders and all their orders first,
+ * then rebuilds the book deterministically. Non-seed players and their orders
+ * are never touched.
+ *
+ * Usage: npx convex run seed:seedBazaarOrders '{"playerId":"..."}'
+ */
+export const seedBazaarOrders = mutation({
+  args: { playerId: v.id("players") },
+  handler: async (ctx, { playerId }) => {
+    await requireAdmin(ctx, playerId);
+    const now = Date.now();
+    const config = await readBazaarConfig(ctx);
+    const random = createSeededRandom(0x9e3779b9);
+
+    // Reset previous seed traders (and every order they own) so re-runs don't
+    // stack duplicates. Only rows with the seed prefix are touched.
+    let resetTraders = 0;
+    for (const player of await ctx.db.query("players").collect()) {
+      if (!player.anonymousId.startsWith(BAZAAR_SEED_TRADER_PREFIX)) continue;
+      const orders = await ctx.db
+        .query("marketOrders")
+        .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
+        .collect();
+      for (const order of orders) {
+        await ctx.db.delete(order._id);
+      }
+      await ctx.db.delete(player._id);
+      resetTraders += 1;
+    }
+
+    const items = await ctx.db.query("items").take(CATALOG_FETCH_LIMIT);
+    if (items.length === 0) {
+      return {
+        success: false,
+        message: "No items found — run seed:populateAll first",
+        resetTraders,
+        traders: 0,
+        sellOrders: 0,
+        buyOrders: 0,
+        itemsCovered: 0,
+      };
+    }
+
+    type OrderSpec = {
+      side: "buy" | "sell";
+      itemId: Id<"items">;
+      quantity: number;
+      unitPrice: number;
+    };
+    const specs: OrderSpec[] = [];
+    for (const item of items) {
+      const basePrice = seedBasePrice(item);
+      const quantity = item.stackable
+        ? 1 +
+          Math.floor(
+            random() *
+              Math.max(1, Math.min(item.maxStackSize, BAZAAR_SEED_MAX_STACK_QUANTITY))
+          )
+        : 1; // Equipment always trades one unit at a time.
+      const bid = Math.max(1, Math.floor(basePrice * (0.75 + 0.2 * random())));
+      const ask = Math.max(
+        bid + 1,
+        Math.ceil(basePrice * (1.05 + 0.35 * random()))
+      );
+      specs.push({ side: "buy", itemId: item._id, quantity, unitPrice: bid });
+      specs.push({ side: "sell", itemId: item._id, quantity, unitPrice: ask });
+    }
+
+    // Mirror getOrCreatePlayer's rebirth threshold with a validated fallback.
+    const thresholdsRow = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "rebirthThresholds"))
+      .first();
+    const thresholds = thresholdsRow?.value;
+    const rebirthTierThreshold =
+      Array.isArray(thresholds) &&
+      typeof thresholds[0] === "number" &&
+      Number.isSafeInteger(thresholds[0]) &&
+      thresholds[0] >= 1
+        ? thresholds[0]
+        : BAZAAR_SEED_FALLBACK_REBIRTH_THRESHOLD;
+
+    let traders = 0;
+    let sellOrders = 0;
+    let buyOrders = 0;
+    for (let start = 0; start < specs.length; start += config.maxOpenOrders) {
+      const slice = specs.slice(start, start + config.maxOpenOrders);
+      const traderId = await ctx.db.insert("players", {
+        anonymousId: `${BAZAAR_SEED_TRADER_PREFIX}${traders}`,
+        name: seedTraderName(traders),
+        str: 10,
+        dex: 10,
+        int: 10,
+        luk: 10,
+        con: 10,
+        statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+        gold: 100 + Math.floor(random() * 400),
+        totalExperience: 0,
+        rebirthCount: 0,
+        rebirthTierThreshold,
+        currentTier: 1,
+        maxTierReached: 1,
+        autoAttackEnabled: false,
+        autoStartFightEnabled: false,
+        createdAt: now,
+        lastUpdated: now,
+      });
+      traders += 1;
+
+      for (const spec of slice) {
+        const createdAt = now - Math.floor(random() * BAZAAR_SEED_TIME_JITTER_MS);
+        await ctx.db.insert("marketOrders", {
+          playerId: traderId,
+          side: spec.side,
+          itemId: spec.itemId,
+          quantity: spec.quantity,
+          originalQuantity: spec.quantity,
+          unitPrice: spec.unitPrice,
+          status: "open",
+          ...(spec.side === "buy"
+            ? { escrowedGold: spec.quantity * spec.unitPrice }
+            : {}),
+          createdAt,
+          updatedAt: createdAt,
+          expiresAt: createdAt + config.expiryMs,
+        });
+        if (spec.side === "buy") {
+          buyOrders += 1;
+        } else {
+          sellOrders += 1;
+        }
+      }
+    }
+
+    return {
+      success: true,
+      message: `Seeded ${specs.length} Bazaar orders across ${traders} traders (${resetTraders} previous seed traders reset)`,
+      resetTraders,
+      traders,
+      sellOrders,
+      buyOrders,
+      itemsCovered: items.length,
     };
   },
 });

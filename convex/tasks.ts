@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { calculatePlayerLevel } from "./bossData";
+import { calculateCharacterLevel } from "./characterLevel";
 import {
   settleRegularFight,
   simulateRegularBattle,
@@ -339,7 +339,7 @@ async function assertTaskPrerequisites(
     ) {
       throw new Error("Task definition has an invalid level prerequisite");
     }
-    if (calculatePlayerLevel(player) < minLevel) {
+    if ((await calculateCharacterLevel(ctx, player)) < minLevel) {
       throw new Error(`Task requires player level ${minLevel}`);
     }
   }

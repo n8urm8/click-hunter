@@ -4,8 +4,8 @@ import { useMutation as useConvexMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { convexQueryCacheOptions } from "../lib/queryCache";
 import {
+  calculateCombatLevel,
   calculateDerivedStats,
-  calculatePlayerLevel,
 } from "../lib/statCalculations";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 
@@ -58,13 +58,19 @@ export function usePlayer(anonymousId: string | null) {
       effectiveStats.luk,
       effectiveStats.con
     );
-    const level = calculatePlayerLevel(
-      player.str,
-      player.dex,
-      player.int,
-      player.luk,
-      player.con
-    );
+    // Server-computed character level (combat stats + all skill levels).
+    // The fallback covers stale cached payloads from before characterLevel
+    // existed, when only the combat portion could be derived client-side.
+    const level =
+      typeof player.characterLevel === "number"
+        ? player.characterLevel
+        : calculateCombatLevel(
+            player.str,
+            player.dex,
+            player.int,
+            player.luk,
+            player.con
+          );
 
     data = {
       ...player,

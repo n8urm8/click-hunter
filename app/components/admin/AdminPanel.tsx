@@ -58,8 +58,8 @@ import {
   useUpdateUpgrade,
 } from "~/hooks/useAdmin";
 import {
+  calculateCombatLevel,
   calculateDerivedStats,
-  calculatePlayerLevel,
 } from "~/lib/statCalculations";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
 import {
@@ -459,14 +459,29 @@ function CharacterEditorCard({ playerId }: { playerId: Id<"players"> }) {
         statValues.con
       )
     : null;
+  // Character level = combat stats + skill levels. The selected player's
+  // server-computed characterLevel includes their skill levels, which stat
+  // edits do not affect, so isolate that portion and add it to the edited
+  // stats below.
+  const skillLevelContribution =
+    selectedPlayer && typeof selectedPlayer.characterLevel === "number"
+      ? selectedPlayer.characterLevel -
+        calculateCombatLevel(
+          selectedPlayer.str,
+          selectedPlayer.dex,
+          selectedPlayer.int,
+          selectedPlayer.luk,
+          selectedPlayer.con
+        )
+      : 0;
   const derivedLevel = hasValidStats
-    ? calculatePlayerLevel(
+    ? calculateCombatLevel(
         statValues.str,
         statValues.dex,
         statValues.int,
         statValues.luk,
         statValues.con
-      )
+      ) + skillLevelContribution
     : null;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {

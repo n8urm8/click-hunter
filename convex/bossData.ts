@@ -81,18 +81,6 @@ function readBossUnlockLevelPerTier(value: unknown) {
     : DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER;
 }
 
-export function calculatePlayerLevel(player: {
-  str: number;
-  dex: number;
-  int: number;
-  luk: number;
-  con: number;
-}) {
-  return Math.floor(
-    (player.str + player.dex + player.int + player.luk + player.con) / 5
-  );
-}
-
 export async function getBossUnlockLevelPerTier(ctx: DatabaseCtx) {
   const levelRow = await ctx.db
     .query("gameBalance")

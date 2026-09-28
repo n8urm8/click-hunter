@@ -11,7 +11,9 @@
 import type * as achievements from "../achievements.js";
 import type * as admin from "../admin.js";
 import type * as adminAuth from "../adminAuth.js";
+import type * as bazaar from "../bazaar.js";
 import type * as bossData from "../bossData.js";
+import type * as characterLevel from "../characterLevel.js";
 import type * as chat from "../chat.js";
 import type * as chatSeedData from "../chatSeedData.js";
 import type * as combat from "../combat.js";
@@ -42,7 +44,9 @@ declare const fullApi: ApiFromModules<{
   achievements: typeof achievements;
   admin: typeof admin;
   adminAuth: typeof adminAuth;
+  bazaar: typeof bazaar;
   bossData: typeof bossData;
+  characterLevel: typeof characterLevel;
   chat: typeof chat;
   chatSeedData: typeof chatSeedData;
   combat: typeof combat;

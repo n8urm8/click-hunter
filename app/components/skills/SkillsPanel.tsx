@@ -381,12 +381,15 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
                 step="1"
                 value={rawGatheringQuantity}
                 aria-label={`${activity.name} action quantity, maximum ${data.maxSkillBatchSize}`}
-                onChange={(event) =>
+                onChange={(event) => {
+                  // Capture before the deferred updater — currentTarget is
+                  // null once the event finishes dispatching.
+                  const value = event.currentTarget.value;
                   setQuantityByGatheringActivity((current) => ({
                     ...current,
-                    [activity.activityId]: event.currentTarget.value,
-                  }))
-                }
+                    [activity.activityId]: value,
+                  }));
+                }}
                 className="min-h-9 w-20 border border-forest-light/30 bg-forest-deep px-2 text-xs font-normal normal-case tracking-normal text-foreground outline-none focus:border-gold focus:ring-1 focus:ring-gold/40"
               />
             </label>
@@ -590,12 +593,13 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
               step="1"
               value={rawCraftQuantity}
               aria-label={`${recipe.name} craft quantity`}
-              onChange={(event) =>
+              onChange={(event) => {
+                const value = event.currentTarget.value;
                 setQuantityByRecipe((current) => ({
                   ...current,
-                  [recipe.recipeId]: event.currentTarget.value,
-                }))
-              }
+                  [recipe.recipeId]: value,
+                }));
+              }}
               className="min-h-8 w-24 border border-forest-light/30 bg-forest-deep px-2 text-xs font-normal normal-case tracking-normal text-foreground outline-none focus:border-gold focus:ring-1 focus:ring-gold/40"
             />
           </label>
@@ -779,12 +783,13 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
                 id={`augmentation-equipment-${augmentation.augmentationId}`}
                 value={selectedEquipment?.ownedItem._id ?? ""}
                 disabled={inventory.isPending || compatibleEquipment.length === 0}
-                onChange={(event) =>
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
                   setSelectedEquipmentByAugmentation((current) => ({
                     ...current,
-                    [augmentation.augmentationId]: event.currentTarget.value,
-                  }))
-                }
+                    [augmentation.augmentationId]: value,
+                  }));
+                }}
                 className="min-h-9 border border-forest-light/30 bg-forest-deep px-2 py-2 text-xs font-normal normal-case tracking-normal text-foreground outline-none focus:border-gold focus:ring-1 focus:ring-gold/40 disabled:opacity-60"
               >
                 <option value="">

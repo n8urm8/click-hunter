@@ -1,5 +1,4 @@
 import React from "react";
-import { Card } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { usePurchaseUpgrade, useShopUpgrades } from "~/hooks/usePlayer";
 
@@ -35,104 +34,102 @@ export function ShopPanel({ player }: ShopPanelProps) {
   });
 
   return (
-    <Card className="forest-card p-4">
-      <div className="space-y-2">
-        {shopUpgrades.isPending ? (
-          <div className="min-h-[300px] space-y-2">
-            <p className="text-muted-foreground text-sm">Loading wares...</p>
-            {[...Array(3)].map((_, index) => (
-              <div
-                key={index}
-                className="forest-panel min-h-24 animate-pulse p-3"
-                aria-hidden="true"
-              />
-            ))}
-          </div>
-        ) : shopUpgrades.isError && !shopUpgrades.data ? (
-          <p className="text-blood-light text-sm" role="alert">
-            Unable to load shop inventory.
-          </p>
-        ) : availableUpgrades.length === 0 ? (
-          <p className="text-muted-foreground text-sm">No wares available yet.</p>
-        ) : (
-          availableUpgrades.map((upgrade) => {
-            const isStatUpgrade = upgrade.effectType === "stat-boost";
-            const canAfford = player.gold >= upgrade.purchaseCost;
-            const requiredLevel = upgrade.requiredLevel;
-            const levelLocked =
-              requiredLevel !== null && player.level < requiredLevel;
-            const isOneTimeUpgrade = upgrade.category === "auto";
-            const isOwned = isOneTimeUpgrade && upgrade.ownedQuantity > 0;
-            const canPurchase = canAfford && !levelLocked && !isOwned;
-            return (
-              <div
-                key={upgrade.upgradeId}
-                className="forest-panel p-3 space-y-2"
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h4 className="font-semibold text-gold glow-gold">
-                      {upgrade.name}
-                    </h4>
+    <div className="space-y-2">
+      {shopUpgrades.isPending ? (
+        <div className="min-h-[300px] space-y-2">
+          <p className="text-muted-foreground text-sm">Loading wares...</p>
+          {[...Array(3)].map((_, index) => (
+            <div
+              key={index}
+              className="forest-panel min-h-24 animate-pulse p-3"
+              aria-hidden="true"
+            />
+          ))}
+        </div>
+      ) : shopUpgrades.isError && !shopUpgrades.data ? (
+        <p className="text-blood-light text-sm" role="alert">
+          Unable to load shop inventory.
+        </p>
+      ) : availableUpgrades.length === 0 ? (
+        <p className="text-muted-foreground text-sm">No wares available yet.</p>
+      ) : (
+        availableUpgrades.map((upgrade) => {
+          const isStatUpgrade = upgrade.effectType === "stat-boost";
+          const canAfford = player.gold >= upgrade.purchaseCost;
+          const requiredLevel = upgrade.requiredLevel;
+          const levelLocked =
+            requiredLevel !== null && player.level < requiredLevel;
+          const isOneTimeUpgrade = upgrade.category === "auto";
+          const isOwned = isOneTimeUpgrade && upgrade.ownedQuantity > 0;
+          const canPurchase = canAfford && !levelLocked && !isOwned;
+          return (
+            <div
+              key={upgrade.upgradeId}
+              className="forest-panel p-3 space-y-2"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <h4 className="font-semibold text-gold glow-gold">
+                    {upgrade.name}
+                  </h4>
+                  <p className="text-xs text-muted-foreground">
+                    {upgrade.description}
+                  </p>
+                  {isStatUpgrade && (
                     <p className="text-xs text-muted-foreground">
-                      {upgrade.description}
+                      Next purchase: level {upgrade.purchaseLevel} · Owned:{" "}
+                      {upgrade.ownedQuantity}
                     </p>
-                    {isStatUpgrade && (
-                      <p className="text-xs text-muted-foreground">
-                        Next purchase: level {upgrade.purchaseLevel} · Owned:{" "}
-                        {upgrade.ownedQuantity}
-                      </p>
-                    )}
-                    {requiredLevel !== null && (
-                      <p
-                        className={`text-xs ${
-                          levelLocked
-                            ? "text-blood-light"
-                            : "text-forest-glow/70"
-                        }`}
-                      >
-                        Requires character level {requiredLevel}
-                      </p>
-                    )}
-                    {isOwned && (
-                      <p className="text-xs text-forest-glow">
-                        {upgrade.upgradeId === "auto_start_fight"
-                          ? "Owned — configure queued battles in Tasks. The level requirement only gates purchase."
-                          : "Owned — toggle it in Enter the Wilds."}
-                      </p>
-                    )}
-                  </div>
-                  <div className="text-right">
-                    <div className="text-sm font-bold text-gold-light glow-gold">
-                      ✧ {upgrade.purchaseCost}g
-                    </div>
+                  )}
+                  {requiredLevel !== null && (
+                    <p
+                      className={`text-xs ${
+                        levelLocked
+                          ? "text-blood-light"
+                          : "text-forest-glow/70"
+                      }`}
+                    >
+                      Requires character level {requiredLevel}
+                    </p>
+                  )}
+                  {isOwned && (
+                    <p className="text-xs text-forest-glow">
+                      {upgrade.upgradeId === "auto_start_fight"
+                        ? "Owned — configure queued battles in Tasks. The level requirement only gates purchase."
+                        : "Owned — toggle it in Enter the Wilds."}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right">
+                  <div className="text-sm font-bold text-gold-light glow-gold">
+                    ✧ {upgrade.purchaseCost}g
                   </div>
                 </div>
-                <Button
-                  size="sm"
-                  onClick={() => handlePurchase(upgrade.upgradeId)}
-                  disabled={!canPurchase || isPurchasing === upgrade.upgradeId}
-                  className={`w-full text-xs ${canPurchase ? 'bg-forest-mid hover:bg-forest-light text-gold-light border border-gold/20' : 'bg-forest-dark/30 text-muted-foreground border border-forest-light/10'}`}
-                  variant={canPurchase ? "default" : "outline"}
-                >
-                  {isPurchasing === upgrade.upgradeId
-                    ? "..."
-                    : isOwned
-                      ? "Owned"
-                      : levelLocked
-                        ? "Locked"
-                        : "Buy"}
-                </Button>
               </div>
-            );
-          })
-        )}
-        {purchaseError && (
-          <p className="text-xs text-blood-light" role="alert">
-            {purchaseError}
-          </p>
-        )}
-      </div>
-    </Card>
+              <Button
+                size="sm"
+                onClick={() => handlePurchase(upgrade.upgradeId)}
+                disabled={!canPurchase || isPurchasing === upgrade.upgradeId}
+                className={`w-full text-xs ${canPurchase ? 'bg-forest-mid hover:bg-forest-light text-gold-light border border-gold/20' : 'bg-forest-dark/30 text-muted-foreground border border-forest-light/10'}`}
+                variant={canPurchase ? "default" : "outline"}
+              >
+                {isPurchasing === upgrade.upgradeId
+                  ? "..."
+                  : isOwned
+                    ? "Owned"
+                    : levelLocked
+                      ? "Locked"
+                      : "Buy"}
+              </Button>
+            </div>
+          );
+        })
+      )}
+      {purchaseError && (
+        <p className="text-xs text-blood-light" role="alert">
+          {purchaseError}
+        </p>
+      )}
+    </div>
   );
 }

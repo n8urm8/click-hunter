@@ -5,6 +5,7 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ensureBossForTier } from "./bossData";
+import { calculateCharacterLevel } from "./characterLevel";
 import {
   getEquippedStatBonuses,
   getEquippedWeapon,
@@ -254,7 +255,11 @@ export const getPlayerByAnonymousId = query({
       .query("players")
       .withIndex("by_anonymousId", (q) => q.eq("anonymousId", anonymousId))
       .first();
-    return player ? await withEquipmentStats(ctx, player) : null;
+    if (!player) return null;
+    return {
+      ...(await withEquipmentStats(ctx, player)),
+      characterLevel: await calculateCharacterLevel(ctx, player),
+    };
   },
 });
 
@@ -267,7 +272,11 @@ export const getPlayerById = query({
   },
   handler: async (ctx, { playerId }) => {
     const player = await ctx.db.get(playerId);
-    return player ? await withEquipmentStats(ctx, player) : null;
+    if (!player) return null;
+    return {
+      ...(await withEquipmentStats(ctx, player)),
+      characterLevel: await calculateCharacterLevel(ctx, player),
+    };
   },
 });
 

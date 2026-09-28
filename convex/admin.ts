@@ -2,6 +2,7 @@ import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./adminAuth";
+import { createCharacterLevelLookup } from "./characterLevel";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
   EQUIPMENT_SLOT_VALUES,
@@ -527,6 +528,7 @@ export const getPlayers = query({
     await requireAdmin(ctx, playerId);
 
     const players = await ctx.db.query("players").collect();
+    const characterLevelFor = await createCharacterLevelLookup(ctx);
     return players
       .sort(
         (left, right) =>
@@ -541,6 +543,7 @@ export const getPlayers = query({
         int: player.int,
         luk: player.luk,
         con: player.con,
+        characterLevel: characterLevelFor(player),
         gold: player.gold,
         totalExperience: player.totalExperience,
         currentTier: player.currentTier,

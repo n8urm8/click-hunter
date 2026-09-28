@@ -769,7 +769,7 @@ export async function getActiveCombatBoosts(
   return { statBonus, regenPerSecond, xpMultiplier };
 }
 
-async function getInventorySlotCapacity(ctx: DatabaseCtx) {
+export async function getInventorySlotCapacity(ctx: DatabaseCtx) {
   const row = await ctx.db
     .query("gameBalance")
     .withIndex("by_key", (q) => q.eq("key", "inventorySlotCapacity"))
@@ -1000,6 +1000,40 @@ export async function grantItemToInventory(
     pending: remaining,
     usedSlots,
   };
+}
+
+/**
+ * Pre-flight check for grantItemToInventory: whether the full quantity can be
+ * granted without hitting capacity. Mirrors grantItemToInventory's allocation
+ * order (merge into existing stacks first, then new stacks up to capacity) —
+ * keep the two in sync.
+ *
+ * Used by the Bazaar to decide whether a fill can be delivered before any
+ * writes happen, so a full inventory never leaves a mutation half-applied.
+ */
+export async function canGrantItemToInventory(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">,
+  itemId: Id<"items">,
+  quantity: number
+): Promise<boolean> {
+  const item = await ctx.db.get(itemId);
+  if (!item) return false;
+
+  const capacity = await getInventorySlotCapacity(ctx);
+  const rows = await getOwnedItemRows(ctx, playerId, capacity);
+  const unequipped = rows.filter((row) => row.equippedSlot === undefined);
+  const freeSlots = Math.max(0, capacity - unequipped.length);
+
+  if (item.stackable) {
+    let stackRoom = 0;
+    for (const row of unequipped) {
+      if (row.itemId !== itemId) continue;
+      stackRoom += Math.max(0, item.maxStackSize - row.quantity);
+    }
+    return stackRoom + freeSlots * item.maxStackSize >= quantity;
+  }
+  return freeSlots >= quantity;
 }
 
 export async function consumeItems(

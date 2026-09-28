@@ -740,4 +740,63 @@ export default defineSchema({
   })
     .index("by_playerId", ["playerId"])
     .index("by_playerId_channelId", ["playerId", "channelId"]),
+
+  // Bazaar order book. Sell orders escrow the listed items (removed from the
+  // seller's inventory while the order is open); buy orders escrow gold
+  // (escrowedGold). A 5% tax (bazaarTaxPercent, balance-configured) is
+  // deducted from the seller's proceeds on every fill and burned.
+  marketOrders: defineTable({
+    playerId: v.id("players"),
+    side: v.union(v.literal("sell"), v.literal("buy")),
+    itemId: v.id("items"),
+    // Remaining quantity. Always 1 for non-stackable (equipment) sells.
+    quantity: v.number(),
+    originalQuantity: v.number(),
+    // Gold per unit the maker accepts; fills execute at the maker's price.
+    unitPrice: v.number(),
+    status: v.union(
+      v.literal("open"),
+      v.literal("filled"),
+      v.literal("cancelled"),
+      v.literal("expired")
+    ),
+    // Buy orders only: gold actually held in escrow. Decreases by the trade
+    // total on each fill; fills at better prices leave more than
+    // unitPrice * quantity, which is what a cancel refunds.
+    escrowedGold: v.optional(v.number()),
+    // Sell orders only: augment snapshot for the escrowed equipment item.
+    // Re-applied to the row created for the buyer (or the seller on refund).
+    escrowedAugments: v.optional(
+      v.array(
+        v.object({
+          augmentationId: v.string(),
+          name: v.string(),
+          effectType: v.string(),
+          effectStat: v.optional(itemEffectStatValidator),
+          effectAmount: v.number(),
+          appliedAt: v.number(),
+        })
+      )
+    ),
+    // Settlement history across all fills: gold the owner received (sell
+    // side, net of tax) or spent (buy side, gross). Absent until first fill;
+    // accumulates even if the order is later cancelled or expires.
+    settledGold: v.optional(v.number()),
+    // Tax deducted from the owner's proceeds. Sell-side rows only — buyers
+    // pay gross and the tax is taken out of the seller's credit.
+    taxPaid: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    expiresAt: v.number(),
+    closedAt: v.optional(v.number()),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_and_status", ["playerId", "status"])
+    .index("by_side_and_status_and_unitPrice", ["side", "status", "unitPrice"])
+    .index("by_side_and_status_and_itemId_and_unitPrice", [
+      "side",
+      "status",
+      "itemId",
+      "unitPrice",
+    ]),
 });

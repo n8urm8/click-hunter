@@ -25,6 +25,11 @@ import {
   DEFAULT_ITEM_RARITIES,
 } from "./itemTypes";
 import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
+import {
+  DEFAULT_BAZAAR_MAX_OPEN_ORDERS,
+  DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS,
+  DEFAULT_BAZAAR_TAX_PERCENT,
+} from "./bazaar";
 
 /**
  * Migration: add item rarity definitions and assign existing items to Common.
@@ -451,5 +456,53 @@ export const backfillBosses = internalMutation({
     }
 
     return { created, updated, highestTier };
+  },
+});
+
+/**
+ * Migration: add the Bazaar (marketplace) balance configuration.
+ *
+ * Run: npx convex run migrations:backfillBazaarBalance
+ */
+export const backfillBazaarBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const entries = [
+      {
+        key: "bazaarTaxPercent",
+        value: DEFAULT_BAZAAR_TAX_PERCENT,
+        description:
+          "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)",
+      },
+      {
+        key: "bazaarOrderExpiryDays",
+        value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS,
+        description:
+          "Days before an open Bazaar order expires and its escrow can be reclaimed",
+      },
+      {
+        key: "bazaarMaxOpenOrders",
+        value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS,
+        description:
+          "Maximum number of active Bazaar orders a player may have open at once",
+      },
+    ];
+    let created = 0;
+
+    for (const entry of entries) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (existing) continue;
+
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+      created += 1;
+    }
+
+    return { created };
   },
 });

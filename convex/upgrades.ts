@@ -2,9 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import {
-  calculatePlayerLevel,
-} from "./bossData";
+import { calculateCharacterLevel } from "./characterLevel";
 import { settleRegularFight } from "./combat";
 import { settleCombatFight } from "./loot";
 
@@ -255,7 +253,7 @@ export const purchaseUpgrade = mutation({
     if (upgrade.minTier && reachedTier < upgrade.minTier) {
       throw new Error("Not at required tier");
     }
-    const playerLevel = calculatePlayerLevel(player);
+    const playerLevel = await calculateCharacterLevel(ctx, player);
 
     const existingUpgrades = await ctx.db
       .query("playerUpgrades")
