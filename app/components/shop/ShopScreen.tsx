@@ -54,7 +54,7 @@ export function ShopScreen({ player }: ShopScreenProps) {
           <ShopPanel player={player} />
         </TabsContent>
         <TabsContent value="bazaar" className="p-4 outline-none">
-          <BazaarPanel player={player} />
+          <BazaarPanel player={player} view="browse" />
         </TabsContent>
       </Tabs>
     </Card>

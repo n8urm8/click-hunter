@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
+import { useSearchParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import { useFulfillBazaarOrder, useBazaarMeta, useOpenBazaarOrders } from "~/hooks/useBazaar";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
@@ -116,7 +117,7 @@ function OrdersList({
           >
             <div className="min-w-40 flex-1 space-y-0.5">
               <div className="flex flex-wrap items-center gap-2">
-                <ItemName name={order.item.name} color={rarity?.color} />
+                <ItemName name={order.item.name} color={rarity?.color} item={order.item} />
                 <span
                   className="text-[10px] uppercase tracking-widest"
                   style={rarity ? { color: rarity.color } : undefined}
@@ -193,19 +194,62 @@ function OrdersList({
 export function BrowseOrders({ player }: BrowseOrdersProps) {
   const meta = useBazaarMeta();
   const fulfillOrder = useFulfillBazaarOrder();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const isTwoColumn = useMediaQuery(TWO_COLUMN_QUERY);
 
-  const [side, setSide] = useState<BazaarSide>("sell");
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [category, setCategory] = useState<"" | ItemCategory>("");
-  const [rarityLevel, setRarityLevel] = useState("");
-  const [sort, setSort] = useState<"price_asc" | "price_desc" | "newest">(
-    "price_asc"
-  );
-  const [minPrice, setMinPrice] = useState("");
-  const [maxPrice, setMaxPrice] = useState("");
+  // Every marketplace filter lives in the URL so combinations are
+  // shareable/bookmarkable:
+  //   ?side=sell|buy&q=&category=crafting|equipment&rarity=&sort=&min=&max=
+  const rawSide = searchParams.get("side");
+  const side: BazaarSide = rawSide === "buy" ? "buy" : "sell";
+
+  const rawCategory = searchParams.get("category");
+  const category: "" | ItemCategory =
+    rawCategory === "crafting" || rawCategory === "equipment"
+      ? rawCategory
+      : "";
+
+  const rawSort = searchParams.get("sort");
+  const sort: "price_asc" | "price_desc" | "newest" =
+    rawSort === "price_desc" || rawSort === "newest" ? rawSort : "price_asc";
+
+  const rarityLevel = searchParams.get("rarity") ?? "";
+  const minPrice = searchParams.get("min") ?? "";
+  const maxPrice = searchParams.get("max") ?? "";
+  const urlSearch = searchParams.get("q") ?? "";
+
+  // Search box updates instantly; the URL (and therefore the query) only
+  // updates after typing pauses, keeping back/forward + shareable links.
+  const [search, setSearch] = useState(urlSearch);
+  useEffect(() => {
+    setSearch(urlSearch);
+  }, [urlSearch]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const trimmed = search.trim();
+      if (trimmed === urlSearch) return;
+      const next = new URLSearchParams(searchParams);
+      if (trimmed === "") next.delete("q");
+      else next.set("q", trimmed);
+      setSearchParams(next, { replace: true });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search, urlSearch, searchParams, setSearchParams]);
+
+  const updateParam = (
+    key: "side" | "category" | "rarity" | "sort" | "min" | "max",
+    value: string,
+    options?: { defaultValue?: string },
+  ) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "" || value === options?.defaultValue) next.delete(key);
+    else next.set(key, value);
+    setSearchParams(next, { replace: true });
+  };
+
+  const debouncedSearch = urlSearch;
   const [quantityByOrder, setQuantityByOrder] = useState<Record<string, string>>(
     {}
   );
@@ -213,13 +257,6 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
     Id<"marketOrders"> | null
   >(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Debounce the search box: the input updates instantly, but the orders query
-  // only re-runs after typing pauses for a moment.
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(timer);
-  }, [search]);
 
   const commonFilters = {
     viewerPlayerId: player._id,
@@ -280,7 +317,7 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
               size="sm"
               variant={side === "sell" ? "default" : "outline"}
               aria-pressed={side === "sell"}
-              onClick={() => setSide("sell")}
+              onClick={() => updateParam("side", "sell", { defaultValue: "sell" })}
             >
               Sell orders
             </Button>
@@ -289,7 +326,7 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
               size="sm"
               variant={side === "buy" ? "default" : "outline"}
               aria-pressed={side === "buy"}
-              onClick={() => setSide("buy")}
+              onClick={() => updateParam("side", "buy", { defaultValue: "sell" })}
             >
               Buy orders
             </Button>
@@ -314,7 +351,7 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
             value={category}
             aria-label="Filter by item type"
             onChange={(event) =>
-              setCategory(event.currentTarget.value as "" | ItemCategory)
+              updateParam("category", event.currentTarget.value)
             }
             className={`${bazaarInputClass} w-28`}
           >
@@ -329,7 +366,9 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
           <select
             value={rarityLevel}
             aria-label="Filter by rarity"
-            onChange={(event) => setRarityLevel(event.currentTarget.value)}
+            onChange={(event) =>
+              updateParam("rarity", event.currentTarget.value)
+            }
             className={`${bazaarInputClass} w-28`}
           >
             <option value="">All</option>
@@ -347,12 +386,9 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
             value={sort}
             aria-label="Sort orders"
             onChange={(event) =>
-              setSort(
-                event.currentTarget.value as
-                  | "price_asc"
-                  | "price_desc"
-                  | "newest"
-              )
+              updateParam("sort", event.currentTarget.value, {
+                defaultValue: "price_asc",
+              })
             }
             className={`${bazaarInputClass} w-32`}
           >
@@ -370,7 +406,7 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
             step="1"
             value={minPrice}
             aria-label="Minimum unit price"
-            onChange={(event) => setMinPrice(event.currentTarget.value)}
+            onChange={(event) => updateParam("min", event.currentTarget.value)}
             className={`${bazaarInputClass} w-20`}
           />
         </label>
@@ -382,7 +418,7 @@ export function BrowseOrders({ player }: BrowseOrdersProps) {
             step="1"
             value={maxPrice}
             aria-label="Maximum unit price"
-            onChange={(event) => setMaxPrice(event.currentTarget.value)}
+            onChange={(event) => updateParam("max", event.currentTarget.value)}
             className={`${bazaarInputClass} w-20`}
           />
         </label>

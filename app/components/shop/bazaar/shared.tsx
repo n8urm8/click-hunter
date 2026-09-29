@@ -1,4 +1,5 @@
 import type { Doc } from "../../../../convex/_generated/dataModel";
+import { ItemIcon } from "~/components/game/ItemIcon";
 
 export const bazaarInputClass =
   "min-h-8 border border-forest-light/30 bg-forest-deep px-2 text-xs font-normal normal-case tracking-normal text-foreground outline-none focus:border-gold focus:ring-1 focus:ring-gold/40";
@@ -40,16 +41,21 @@ export function rarityForLevel(
 export function ItemName({
   name,
   color,
+  item,
 }: {
   name: string;
   color?: string | null;
+  item?: Doc<"items"> | null;
 }) {
   return (
-    <span
-      className="text-xs font-semibold"
-      style={color ? { color } : undefined}
-    >
-      {name}
+    <span className="inline-flex items-center gap-1.5">
+      {item && <ItemIcon item={item} alt="" className="size-5" />}
+      <span
+        className="text-xs font-semibold"
+        style={color ? { color } : undefined}
+      >
+        {name}
+      </span>
     </span>
   );
 }

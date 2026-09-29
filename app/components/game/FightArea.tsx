@@ -12,17 +12,28 @@ import {
   type CurrentFight,
 } from "~/store/gameStore";
 import { calculateDerivedStats } from "~/lib/statCalculations";
+import { ItemIcon } from "./ItemIcon";
 import { ActiveFight } from "./ActiveFight";
 import {
   AutomationControls,
   type AutoBattleMode,
   type AutoBattleSettings,
 } from "./AutomationControls";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
 import { convexQueryCacheOptions } from "~/lib/queryCache";
+import {
+  COMBAT_ZONE_LABELS,
+  COMBAT_ZONE_VALUES,
+  DEFAULT_MONSTER_POWER_MULTIPLIER,
+  groupMonstersByZone,
+  isCombatZone,
+  monstersInZone,
+  type CombatZone,
+} from "~/lib/combatZones";
 import {
   useCancelTask,
   useEnqueueAutoBattle,
@@ -51,6 +62,7 @@ type QueueTask = {
   status: "queued" | "active";
   displayName: string;
   tier?: number;
+  zone?: CombatZone;
   battleMode?: AutoBattleMode;
   completedBattles: number;
   targetBattles?: number;
@@ -220,7 +232,8 @@ function AutoBattleStatus({
                 : "Battle queued"}
           </p>
           <h2 className="font-heading text-2xl text-gold glow-gold">
-            Tier {task.tier} regular wilds
+            Tier {task.tier} ·{" "}
+            {task.zone ? `${COMBAT_ZONE_LABELS[task.zone]} wilds` : "regular wilds"}
           </h2>
           <p className="mt-2 max-w-lg text-sm text-muted-foreground">
             {isRecovering
@@ -392,7 +405,14 @@ function AutoBattleStatus({
                     key={drop.itemId}
                     className="flex items-center justify-between gap-3 border-b border-forest-light/15 pb-2 text-sm last:border-0 last:pb-0"
                   >
-                    <span className="text-foreground">{drop.itemName}</span>
+                    <span className="inline-flex min-w-0 items-center gap-2 text-foreground">
+                      <ItemIcon
+                        item={{ itemId: drop.itemId, name: drop.itemName }}
+                        alt=""
+                        className="size-5"
+                      />
+                      <span className="truncate">{drop.itemName}</span>
+                    </span>
                     <span className="tabular-nums text-forest-glow">
                       ×{formatNumber(drop.quantity)}
                       {drop.pending > 0 && (
@@ -438,7 +458,9 @@ function AutoBattleStatus({
 function createFight(
   combatant: CombatantStats,
   tier: number,
-  isBoss: boolean
+  isBoss: boolean,
+  zone?: CombatZone,
+  monsterPower: number = 1
 ): CurrentFight {
   const combatantStats = calculateDerivedStats(
     combatant.str,
@@ -451,12 +473,16 @@ function createFight(
   return {
     settlementKey: crypto.randomUUID(),
     monsterTier: tier,
+    ...(zone === undefined ? {} : { monsterZone: zone }),
     monsterType: combatant.type,
     monsterName: combatant.name,
     isBoss,
-    monsterHp: combatantStats.health,
-    monsterMaxHp: combatantStats.health,
-    monsterAttack: Math.max(1, Math.ceil(combatantStats.attack)),
+    monsterHp: Math.max(1, Math.round(combatantStats.health * monsterPower)),
+    monsterMaxHp: Math.max(
+      1,
+      Math.round(combatantStats.health * monsterPower)
+    ),
+    monsterAttack: Math.max(1, combatantStats.attack * monsterPower),
     monsterAttackSpeed: combatantStats.attackSpeed,
   };
 }
@@ -468,7 +494,7 @@ export function FightArea({ player }: FightAreaProps) {
   const [, setFightPhase] = useAtom(inFightPhaseAtom);
   const [, setEventTracker] = useAtom(eventTrackerAtom);
   const [respawnTimer, setRespawnTimer] = useAtom(respawnTimerAtom);
-  const [selectedTier, setSelectedTier] = useState(player.currentTier);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [isStarting, setIsStarting] = useState(false);
   const [autoBattleSettings, setAutoBattleSettings] =
     useState<AutoBattleSettings>({
@@ -488,6 +514,44 @@ export function FightArea({ player }: FightAreaProps) {
     ...convexQuery(api.seed.getAllGameBalance, {}),
     ...convexQueryCacheOptions,
   });
+  const monsters = monstersQuery.data;
+  const balanceRows = balanceQuery.data;
+
+  // Build a lookup from balance key -> value
+  const balance = Object.fromEntries(
+    (balanceRows ?? []).map((b) => [b.key, b.value])
+  );
+  const maxTier =
+    typeof balance.maxTier === "number" &&
+    Number.isSafeInteger(balance.maxTier) &&
+    balance.maxTier >= 1
+      ? balance.maxTier
+      : 20;
+
+  // Tier and hunting zone live in the URL (/combat?tier=3&zone=easy) so every
+  // tier/zone combination is a shareable route.
+  const requestedTier = Number(searchParams.get("tier"));
+  const selectedTier = Math.min(
+    Number.isSafeInteger(requestedTier) && requestedTier >= 1
+      ? requestedTier
+      : player.currentTier,
+    maxTier
+  );
+  const rawZone = searchParams.get("zone");
+  const selectedZone: CombatZone = isCombatZone(rawZone) ? rawZone : "easy";
+
+  const updateCombatParams = (tier: number, zone: CombatZone) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tier", String(tier));
+    next.set("zone", zone);
+    setSearchParams(next);
+  };
+
+  const zoneGroups = useMemo(
+    () => (monsters ? groupMonstersByZone(monsters) : null),
+    [monsters]
+  );
+
   const bossQuery = useQuery({
     ...convexQuery(api.seed.getScaledBoss, {
       tier: selectedTier,
@@ -495,18 +559,18 @@ export function FightArea({ player }: FightAreaProps) {
     }),
     ...convexQueryCacheOptions,
   });
-  const monsters = monstersQuery.data;
-  const balanceRows = balanceQuery.data;
   const boss = bossQuery.data;
   const taskQueue = useTaskQueue(player._id);
   const taskQueueData = taskQueue.data;
   const selectedTierRef = useRef(selectedTier);
+  const selectedZoneRef = useRef(selectedZone);
   const currentFightRef = useRef(currentFight);
   const respawnTimerRef = useRef(respawnTimer);
   const isStartingRef = useRef(false);
   const enqueueAutoBattle = useEnqueueAutoBattle();
 
   selectedTierRef.current = selectedTier;
+  selectedZoneRef.current = selectedZone;
   currentFightRef.current = currentFight;
   respawnTimerRef.current = respawnTimer;
 
@@ -522,13 +586,15 @@ export function FightArea({ player }: FightAreaProps) {
   }, [setRespawnTimer]);
 
   // Build a lookup from balance key -> value
-  const balance = Object.fromEntries(
-    (balanceRows ?? []).map((b) => [b.key, b.value])
-  );
-  const maxTier = (balance.maxTier as number) ?? 20;
   const tierMultiplier = (balance.tierScaleMultiplier as number) ?? 2;
   const tierMsReduction = (balance.tierScaleMsReduction as number) ?? 50;
   const minAttackMs = (balance.minAttackMs as number) ?? 800;
+  const monsterPower =
+    typeof balance.monsterPowerMultiplier === "number" &&
+    Number.isFinite(balance.monsterPowerMultiplier) &&
+    balance.monsterPowerMultiplier > 0
+      ? balance.monsterPowerMultiplier
+      : DEFAULT_MONSTER_POWER_MULTIPLIER;
   const respawnTimeMs =
     typeof balance.respawnTimeMs === "number" &&
     Number.isSafeInteger(balance.respawnTimeMs) &&
@@ -601,6 +667,7 @@ export function FightArea({ player }: FightAreaProps) {
     }
 
     const tier = selectedTierRef.current;
+    const zone = selectedZoneRef.current;
     isStartingRef.current = true;
     setIsStarting(true);
 
@@ -629,6 +696,7 @@ export function FightArea({ player }: FightAreaProps) {
         const queuedTask = await enqueueAutoBattle({
           playerId: player._id,
           tier,
+          zone,
           mode: autoBattleSettings.mode,
           ...(autoBattleSettings.mode === "count"
             ? { targetBattles: numericTarget }
@@ -660,16 +728,19 @@ export function FightArea({ player }: FightAreaProps) {
     }
 
     try {
-      // Weighted random selection — weaker monsters appear more often
-      const maxStrength = Math.max(...monsters.map((m) => m.strength));
-      const weights = monsters.map((m) => maxStrength - m.strength + 1);
+      // Weighted random selection within the chosen zone — weaker monsters
+      // appear more often. Falls back to the full pool if the zone is empty.
+      const zonePool = monstersInZone(monsters, zone);
+      const pool = zonePool.length > 0 ? zonePool : monsters;
+      const maxStrength = Math.max(...pool.map((m) => m.strength));
+      const weights = pool.map((m) => maxStrength - m.strength + 1);
       const totalWeight = weights.reduce((a, b) => a + b, 0);
       let rand = Math.random() * totalWeight;
-      let baseMonster = monsters[monsters.length - 1];
-      for (let i = 0; i < monsters.length; i++) {
+      let baseMonster = pool[pool.length - 1];
+      for (let i = 0; i < pool.length; i++) {
         rand -= weights[i];
         if (rand <= 0) {
-          baseMonster = monsters[i];
+          baseMonster = pool[i];
           break;
         }
       }
@@ -689,7 +760,7 @@ export function FightArea({ player }: FightAreaProps) {
         ),
       };
 
-      const fight = createFight(scaledMonster, tier, false);
+      const fight = createFight(scaledMonster, tier, false, zone, monsterPower);
 
       currentFightRef.current = fight;
       setCurrentFight(fight);
@@ -815,7 +886,7 @@ export function FightArea({ player }: FightAreaProps) {
               {Array.from({ length: Math.min(12, maxTier) }, (_, i) => i + 1).map((tier) => (
                 <button
                   key={tier}
-                  onClick={() => setSelectedTier(tier)}
+                  onClick={() => updateCombatParams(tier, selectedZone)}
                   disabled={isStarting}
                   className={`py-1 px-2 rounded text-xs font-heading transition-colors ${
                     selectedTier === tier
@@ -828,12 +899,58 @@ export function FightArea({ player }: FightAreaProps) {
               ))}
             </div>
 
+            {/* Hunting Zone Selection */}
+            <div className="w-full max-w-sm space-y-2">
+              <p className="text-center font-heading text-sm text-forest-glow/70">
+                Hunting zone · Tier {selectedTier}
+              </p>
+              <div
+                className="grid grid-cols-3 gap-2"
+                role="group"
+                aria-label="Hunting zone"
+              >
+                {COMBAT_ZONE_VALUES.map((zone) => {
+                  const zoneMonsters = zoneGroups?.[zone] ?? [];
+                  const isActive = selectedZone === zone;
+                  return (
+                    <button
+                      key={zone}
+                      type="button"
+                      onClick={() => updateCombatParams(selectedTier, zone)}
+                      disabled={isStarting}
+                      aria-pressed={isActive}
+                      className={`rounded border px-2 py-2 transition-colors disabled:opacity-50 ${
+                        isActive
+                          ? "border-gold bg-gold/30 text-gold-light glow-gold"
+                          : "border-forest-light/20 bg-forest-dark/50 text-foreground/60 hover:border-forest-light/40 hover:text-foreground/80"
+                      }`}
+                    >
+                      <span className="block font-heading text-xs">
+                        {COMBAT_ZONE_LABELS[zone]}
+                      </span>
+                      <span className="mt-1 block text-[10px] leading-tight text-muted-foreground">
+                        {zoneMonsters.length > 0
+                          ? zoneMonsters.map((m) => m.name).join(" · ")
+                          : "No monsters"}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-center text-[11px] text-muted-foreground">
+                Each zone holds a third of the tier's monsters, easiest to
+                hardest — pick the zone closest to your level or hunt specific
+                monsters.
+              </p>
+            </div>
+
           </>
         )}
 
         <AutomationControls
           player={player}
           tier={selectedTier}
+          zone={selectedZone}
           settings={autoBattleSettings}
           onEnabledChange={(enabled) => {
             setAutoBattleError(null);

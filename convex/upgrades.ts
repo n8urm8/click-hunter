@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
 import { settleRegularFight } from "./combat";
 import { settleCombatFight } from "./loot";
+import { combatZoneValidator } from "./zones";
 
 const ONE_TIME_AUTOMATION_EFFECTS = new Set([
   "enable-auto-attack",
@@ -382,6 +383,7 @@ export const recordFight = mutation({
     monsterType: v.string(),
     isBoss: v.boolean(),
     won: v.boolean(),
+    monsterZone: v.optional(combatZoneValidator),
     goldEarned: v.optional(v.number()),
     experienceEarned: v.optional(v.number()),
     settlementKey: v.optional(v.string()),
@@ -392,6 +394,7 @@ export const recordFight = mutation({
     monsterType,
     isBoss,
     won,
+    monsterZone,
     settlementKey,
   }) => {
     const key =
@@ -404,6 +407,7 @@ export const recordFight = mutation({
         monsterType,
         won,
         settlementKey: key,
+        ...(monsterZone === undefined ? {} : { monsterZone }),
       });
     }
 

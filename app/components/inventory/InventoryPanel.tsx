@@ -1,4 +1,5 @@
 import { useState, type DragEvent, type ReactNode } from "react";
+import { useNavigate, useParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import {
@@ -18,6 +19,7 @@ import {
 } from "~/hooks/useInventory";
 import { useSkillPanel } from "~/hooks/useSkills";
 import { useEnqueueSkillAction } from "~/hooks/useTasks";
+import { ItemIcon } from "~/components/game/ItemIcon";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
 import {
   COMBAT_EFFECT_TYPES,
@@ -114,15 +116,6 @@ type ItemDragHandler = (
   ownedItem: OwnedItem
 ) => void;
 
-function itemInitials(name: string) {
-  return name
-    .split(/\s+/)
-    .map((word) => word[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
-
 function statLabel(stat: string | undefined) {
   switch (stat) {
     case "str":
@@ -173,12 +166,7 @@ function ItemGridItem({
           : "border-forest-light/30 bg-forest-dark/60 text-forest-glow/80 hover:border-gold/60 hover:bg-forest-mid/60"
       }`}
     >
-      <span
-        className="font-heading text-xs"
-        style={ownedItem.rarity ? { color: ownedItem.rarity.color } : undefined}
-      >
-        {itemInitials(ownedItem.item.name)}
-      </span>
+      <ItemIcon item={ownedItem.item} alt="" />
       {ownedItem.quantity > 1 && (
         <span className="absolute -right-1 -top-1 min-w-4 border border-gold/50 bg-forest-dark px-0.5 text-[9px] font-semibold leading-4 text-gold-light">
           {ownedItem.quantity}
@@ -256,7 +244,9 @@ function ItemDetails({
       {ownedItem ? (
         <>
           <div className="flex items-start justify-between gap-3">
-            <div>
+            <div className="flex min-w-0 items-start gap-2.5">
+              <ItemIcon item={ownedItem.item} alt="" className="size-9 mt-0.5" />
+              <div className="min-w-0">
               <p className="font-heading text-sm text-gold-light">
                 {ownedItem.item.name}
               </p>
@@ -277,6 +267,7 @@ function ItemDetails({
                 {ownedItem.item.itemFamily && ` · ${ownedItem.item.itemFamily}`}
                 {ownedItem.quantity > 1 && ` · Quantity ${ownedItem.quantity}`}
               </p>
+              </div>
             </div>
             {ownedItem.quantity > 1 && (
               <span className="shrink-0 border border-gold/40 px-1.5 py-0.5 text-xs font-semibold text-gold">
@@ -587,13 +578,16 @@ function PendingRewardsCard({
             key={reward._id}
             className="flex items-center justify-between gap-3 border border-forest-light/25 bg-forest-dark/40 px-3 py-2"
           >
-            <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <ItemIcon item={reward.item} alt="" className="size-7" />
+              <div className="min-w-0">
               <p className="truncate text-sm text-foreground">
                 {reward.item?.name ?? "Unknown item"}
               </p>
               <p className="text-xs text-muted-foreground">
                 x{reward.quantity} · {reward.sourceType} reward
               </p>
+              </div>
             </div>
             <Button
               type="button"
@@ -674,14 +668,26 @@ function EquipmentSlotCard({
           onClick={(event) => event.stopPropagation()}
           onDragStart={(event) => onDragStart(event, ownedItem)}
           onDragEnd={onDragEnd}
-          className="mt-1 max-w-full cursor-grab truncate text-[10px] font-semibold leading-tight text-gold-light active:cursor-grabbing"
-          style={ownedItem.rarity ? { color: ownedItem.rarity.color } : undefined}
+          className="mt-1 flex max-w-full cursor-grab flex-col items-center gap-1 active:cursor-grabbing"
           title="Drag to another compatible slot"
         >
-          {ownedItem.item.name}
+          <ItemIcon item={ownedItem.item} alt="" className="size-8" />
+          <span
+            className="max-w-full truncate text-[10px] font-semibold leading-tight text-gold-light"
+            style={ownedItem.rarity ? { color: ownedItem.rarity.color } : undefined}
+          >
+            {ownedItem.item.name}
+          </span>
         </div>
       ) : (
-        <span className="mt-1 text-xs text-muted-foreground/60">Empty</span>
+        <span className="mt-1 flex flex-col items-center gap-1">
+          <ItemIcon
+            item={{ category: "equipment", allowedEquipmentSlots: [slot] }}
+            alt=""
+            className="size-8 opacity-30"
+          />
+          <span className="text-xs text-muted-foreground/60">Empty</span>
+        </span>
       )}
       {ownedItem && (
         <span className="mt-1 text-[9px] text-muted-foreground group-hover:text-foreground/80">
@@ -698,10 +704,16 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
   const unequipItem = useUnequipItem();
   const activateSkillBoost = useSkillBoost();
   const activateCombatBoost = useCombatBoost();
+  const navigate = useNavigate();
+  const params = useParams();
+  const routeTab =
+    params.tab === "crafting" || params.tab === "equipment"
+      ? params.tab
+      : "crafting";
+  const activeTab: InventoryTab = routeTab;
   const [draggingItemId, setDraggingItemId] = useState<Id<"playerItems"> | null>(
     null
   );
-  const [activeTab, setActiveTab] = useState<InventoryTab>("crafting");
   const [selectedCraftingItemId, setSelectedCraftingItemId] =
     useState<Id<"playerItems"> | null>(null);
   const [selectedEquipmentItemId, setSelectedEquipmentItemId] =
@@ -896,8 +908,8 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
         value={activeTab}
         onValueChange={(value) => {
           if (value === "crafting" || value === "equipment") {
-            setActiveTab(value);
             setActionError(null);
+            navigate(`/inventory/${value}`);
           }
         }}
         className="gap-0"

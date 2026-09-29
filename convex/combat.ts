@@ -11,6 +11,10 @@ import {
   type EquipmentStatBonuses,
 } from "./items";
 import { getActiveEventMultipliers, settleCombatFight } from "./loot";
+import {
+  monstersInZone,
+  type CombatZone,
+} from "./zones";
 
 type PlayerId = Id<"players">;
 type Player = Doc<"players">;
@@ -22,6 +26,15 @@ export const DEFAULT_AUTO_BATTLE_REWARDS = {
   experiencePerTier: 50,
   experienceVariance: 25,
 };
+
+/**
+ * Fallback regular-monster power when the `monsterPowerMultiplier` balance
+ * entry is missing or malformed. Scales monster HP and damage (1 = unchanged).
+ * The seeded balance row carries the same value; the admin General tab can
+ * tune it live. Must match DEFAULT_MONSTER_POWER_MULTIPLIER in
+ * app/lib/combatZones.ts (client manual-fight fallback).
+ */
+export const DEFAULT_MONSTER_POWER_MULTIPLIER = 0.5;
 
 type AutoBattleRewards = typeof DEFAULT_AUTO_BATTLE_REWARDS;
 
@@ -111,6 +124,12 @@ function readMinimumAttackMs(value: unknown) {
     : 800;
 }
 
+function readMonsterPowerMultiplier(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_MONSTER_POWER_MULTIPLIER;
+}
+
 function scaleMonster(
   monster: Monster,
   tier: number,
@@ -154,27 +173,36 @@ export async function simulateRegularBattle(
   ctx: MutationCtx,
   player: Player,
   tier: number,
-  equipmentBonuses?: EquipmentStatBonuses
+  equipmentBonuses?: EquipmentStatBonuses,
+  zone?: CombatZone
 ): Promise<AutoBattleResult> {
-  const monsters = await ctx.db.query("monsters").collect();
-  if (monsters.length === 0) {
+  const allMonsters = await ctx.db.query("monsters").collect();
+  if (allMonsters.length === 0) {
     throw new Error("Regular monsters are not configured");
   }
+  // Tasks queued before zones existed carry no zone and hunt the full pool.
+  const pool =
+    zone !== undefined && monstersInZone(allMonsters, zone).length > 0
+      ? monstersInZone(allMonsters, zone)
+      : allMonsters;
 
   const [
     tierMultiplierValue,
     tierMsReductionValue,
     minimumAttackMsValue,
     rewardsValue,
+    monsterPowerValue,
   ] = await Promise.all([
     getBalanceValue(ctx, "tierScaleMultiplier"),
     getBalanceValue(ctx, "tierScaleMsReduction"),
     getBalanceValue(ctx, "minAttackMs"),
     getBalanceValue(ctx, "autoBattleRewards"),
+    getBalanceValue(ctx, "monsterPowerMultiplier"),
   ]);
+  const monsterPower = readMonsterPowerMultiplier(monsterPowerValue);
 
   const monster = scaleMonster(
-    pickWeightedMonster(monsters),
+    pickWeightedMonster(pool),
     tier,
     readTierMultiplier(tierMultiplierValue),
     readTierMsReduction(tierMsReductionValue),
@@ -235,15 +263,19 @@ export async function simulateRegularBattle(
     1,
     Math.max(0, (player.luk + resolvedEquipmentBonuses.luk) * balance.lukCritChancePerPoint)
   );
-  const monsterHealth = Math.max(1, monster.con * 10 + monster.int * 2);
+  const monsterHealth = Math.max(
+    1,
+    (monster.con * 10 + monster.int * 2) * monsterPower
+  );
   const monsterPhysical = Math.max(1, monster.str * 1.2 + monster.dex * 0.5);
   const monsterMagical = Math.max(
     0,
     monster.int * balance.monsterMagicCoeff
   );
   const monsterDamagePerHit =
-    Math.max(0, monsterPhysical - playerPhysDefense) +
-    Math.max(0, monsterMagical - playerMagDefense);
+    (Math.max(0, monsterPhysical - playerPhysDefense) +
+      Math.max(0, monsterMagical - playerMagDefense)) *
+    monsterPower;
   const playerDamagePerSecond =
     playerAttack *
     playerAttackSpeed *
@@ -315,6 +347,7 @@ export async function settleRegularFight(
     monsterType: string;
     won: boolean;
     settlementKey: string;
+    monsterZone?: CombatZone;
     goldEarned?: number;
     experienceEarned?: number;
   }
@@ -326,6 +359,9 @@ export async function settleRegularFight(
     sourceId: args.monsterType,
     tier: args.monsterTier,
     won: args.won,
+    ...(args.monsterZone === undefined
+      ? {}
+      : { monsterZone: args.monsterZone }),
     rewardOverride:
       args.won &&
       args.goldEarned !== undefined &&

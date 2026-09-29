@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { combatZoneValidator } from "./zones";
 import {
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
@@ -488,6 +489,9 @@ export default defineSchema({
     totalExperienceEarned: v.optional(v.number()),
     lootSummary: v.optional(v.any()),
     tier: v.optional(v.number()),
+    // Combat zone the battle task hunts in. Absent on tasks queued before
+    // zones existed, which fall back to the full monster pool.
+    zone: v.optional(combatZoneValidator),
     onlineCreditMs: v.number(),
     lastResolvedAt: v.number(),
     lastHeartbeatAt: v.number(),
@@ -538,6 +542,7 @@ export default defineSchema({
     totalExperienceEarned: v.optional(v.number()),
     lootSummary: v.optional(v.any()),
     tier: v.optional(v.number()),
+    zone: v.optional(combatZoneValidator),
     result: v.optional(v.any()),
     createdAt: v.number(),
     completedAt: v.number(),
@@ -554,6 +559,8 @@ export default defineSchema({
     won: v.boolean(),
     // Optional so existing fight history remains valid after boss battles are added.
     isBoss: v.optional(v.boolean()),
+    // Optional so rows recorded before zones existed remain valid.
+    monsterZone: v.optional(combatZoneValidator),
     goldEarned: v.number(),
     experienceEarned: v.number(),
     timestamp: v.number(),

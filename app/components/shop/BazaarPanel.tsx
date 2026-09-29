@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useNavigate } from "react-router";
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from "~/components/ui/tabs";
+import { bazaarPath, type BazaarView } from "~/lib/gameRoutes";
 import { BrowseOrders } from "./bazaar/BrowseOrders";
 import { CreateBuyOrder } from "./bazaar/CreateBuyOrder";
 import { MyOrders } from "./bazaar/MyOrders";
@@ -12,9 +13,8 @@ import { SellItems } from "./bazaar/SellItems";
 
 interface BazaarPanelProps {
   player: any;
+  view: BazaarView;
 }
-
-type BazaarView = "browse" | "sell" | "buy" | "orders";
 
 const BAZAAR_VIEWS: Array<{ value: BazaarView; label: string }> = [
   { value: "browse", label: "Browse" },
@@ -23,8 +23,8 @@ const BAZAAR_VIEWS: Array<{ value: BazaarView; label: string }> = [
   { value: "orders", label: "My Orders" },
 ];
 
-export function BazaarPanel({ player }: BazaarPanelProps) {
-  const [view, setView] = useState<BazaarView>("browse");
+export function BazaarPanel({ player, view }: BazaarPanelProps) {
+  const navigate = useNavigate();
 
   return (
     <div className="space-y-3">
@@ -32,7 +32,7 @@ export function BazaarPanel({ player }: BazaarPanelProps) {
         value={view}
         onValueChange={(value) => {
           if (BAZAAR_VIEWS.some((entry) => entry.value === value)) {
-            setView(value as BazaarView);
+            navigate(bazaarPath(value as BazaarView));
           }
         }}
         className="gap-4"

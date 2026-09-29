@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import {
@@ -31,6 +32,21 @@ export function MyOrders({ player }: MyOrdersProps) {
   const myOrders = useMyBazaarOrders(player?._id ?? null);
   const meta = useBazaarMeta();
   const cancelOrder = useCancelBazaarOrder();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // ?status=active|history|all — deep-linkable My Orders filter.
+  const rawStatus = searchParams.get("status");
+  const statusFilter: "all" | "active" | "history" =
+    rawStatus === "active" || rawStatus === "history" ? rawStatus : "all";
+  const showActive = statusFilter !== "history";
+  const showHistory = statusFilter !== "active";
+
+  const handleStatusChange = (value: "all" | "active" | "history") => {
+    const next = new URLSearchParams(searchParams);
+    if (value === "all") next.delete("status");
+    else next.set("status", value);
+    setSearchParams(next, { replace: true });
+  };
 
   const [pendingOrderId, setPendingOrderId] = useState<
     Id<"marketOrders"> | null
@@ -83,7 +99,7 @@ export function MyOrders({ player }: MyOrdersProps) {
             >
               {order.side === "sell" ? "Sell" : "Buy"}
             </span>
-            <ItemName name={order.item.name} color={rarity?.color} />
+            <ItemName name={order.item.name} color={rarity?.color} item={order.item} />
             <span
               className="text-[10px] uppercase tracking-widest"
               style={rarity ? { color: rarity.color } : undefined}
@@ -161,10 +177,32 @@ export function MyOrders({ player }: MyOrdersProps) {
 
   return (
     <div className="space-y-3">
-      <p className="text-[10px] text-muted-foreground">
-        Active orders: {activeCount}/{maxOpenOrders}. Cancel anytime to get
-        your escrow back; expired orders hold their escrow until claimed.
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[10px] text-muted-foreground">
+          Active orders: {activeCount}/{maxOpenOrders}. Cancel anytime to get
+          your escrow back; expired orders hold their escrow until claimed.
+        </p>
+        <div className="flex" role="group" aria-label="Order history filter">
+          {(
+            [
+              { value: "all", label: "All" },
+              { value: "active", label: "Active" },
+              { value: "history", label: "History" },
+            ] as const
+          ).map((entry) => (
+            <Button
+              key={entry.value}
+              type="button"
+              size="sm"
+              variant={statusFilter === entry.value ? "default" : "outline"}
+              aria-pressed={statusFilter === entry.value}
+              onClick={() => handleStatusChange(entry.value)}
+            >
+              {entry.label}
+            </Button>
+          ))}
+        </div>
+      </div>
 
       {notice && (
         <p className="text-xs text-forest-light" role="status">
@@ -190,7 +228,7 @@ export function MyOrders({ player }: MyOrdersProps) {
         </div>
       ) : (
         <>
-          {activeOrders.length > 0 && (
+          {showActive && activeOrders.length > 0 && (
             <div className="space-y-2">
               <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
                 Active
@@ -198,7 +236,7 @@ export function MyOrders({ player }: MyOrdersProps) {
               {activeOrders.map((order) => renderRow(order, true))}
             </div>
           )}
-          {pastOrders.length > 0 && (
+          {showHistory && pastOrders.length > 0 && (
             <div className="space-y-2">
               <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
                 History

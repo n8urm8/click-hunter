@@ -3,6 +3,7 @@ import { ClipboardList, ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "~/components/ui/button";
 import { useCancelTask, useTaskQueue } from "~/hooks/useTasks";
+import { COMBAT_ZONE_LABELS } from "~/lib/combatZones";
 import type { Id } from "../../../convex/_generated/dataModel";
 
 type QueueData = NonNullable<ReturnType<typeof useTaskQueue>["data"]>;
@@ -117,6 +118,9 @@ function TaskRow({
         <p className="truncate text-sm text-foreground">
           {task.displayName}
           {task.tier === undefined ? "" : ` · T${task.tier}`}
+          {"zone" in task && task.zone
+            ? ` · ${COMBAT_ZONE_LABELS[task.zone]}`
+            : ""}
         </p>
         <p className="text-xs text-muted-foreground">
           {isActive ? "Active" : "Queued"} ·{" "}

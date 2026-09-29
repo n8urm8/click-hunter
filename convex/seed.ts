@@ -20,6 +20,8 @@ import {
   scaleBossStat,
 } from "./bossData";
 import { calculateCharacterLevel } from "./characterLevel";
+import { DEFAULT_MONSTER_POWER_MULTIPLIER } from "./combat";
+import { combatZoneValidator, monstersInZone } from "./zones";
 import {
   CATALOG_FETCH_LIMIT,
   DEFAULT_BAZAAR_MAX_OPEN_ORDERS,
@@ -121,6 +123,7 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "autoBattleCreditCapMs", value: 5 * 60 * 1000, description: "Maximum online auto-battle time banked between heartbeats (milliseconds)" },
     { key: "respawnTimeMs", value: 5 * 1000, description: "Recovery time after a defeated battle before the next encounter (milliseconds)" },
     { key: "autoBattleRewards", value: { goldPerTier: 100, goldVariance: 50, experiencePerTier: 50, experienceVariance: 25 }, description: "Server-side regular auto-battle reward formula" },
+    { key: "monsterPowerMultiplier", value: DEFAULT_MONSTER_POWER_MULTIPLIER, description: "Scales regular-monster HP and damage (1 = unchanged). Lower this if early fights feel too hard" },
     { key: "bazaarTaxPercent", value: DEFAULT_BAZAAR_TAX_PERCENT, description: "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)" },
     { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
     { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
@@ -285,11 +288,13 @@ export const getHiddenSpots = query({
 
 // ─── Monster selection ────────────────────────────────────────────────────────
 
-/** Pick a weighted-random monster (weaker = more common). */
+/** Pick a weighted-random monster (weaker = more common), optionally within a zone. */
 export const pickRandomMonster = query({
-  args: {},
-  handler: async (ctx) => {
-    const monsters = await ctx.db.query("monsters").collect();
+  args: { zone: v.optional(combatZoneValidator) },
+  handler: async (ctx, args) => {
+    const allMonsters = await ctx.db.query("monsters").collect();
+    const monsters =
+      args.zone === undefined ? allMonsters : monstersInZone(allMonsters, args.zone);
     if (monsters.length === 0) return null;
     const maxStrength = Math.max(...monsters.map((m) => m.strength));
     const weights = monsters.map((m) => maxStrength - m.strength + 1);
@@ -340,9 +345,11 @@ export const getScaledMonster = query({
 
 /** Pick a random weighted monster AND scale it — one-shot call for FightArea. */
 export const pickAndScaleMonster = query({
-  args: { tier: v.number() },
+  args: { tier: v.number(), zone: v.optional(combatZoneValidator) },
   handler: async (ctx, args) => {
-    const monsters = await ctx.db.query("monsters").collect();
+    const allMonsters = await ctx.db.query("monsters").collect();
+    const monsters =
+      args.zone === undefined ? allMonsters : monstersInZone(allMonsters, args.zone);
     if (monsters.length === 0) return null;
 
     const maxStrength = Math.max(...monsters.map((m) => m.strength));

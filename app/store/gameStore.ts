@@ -4,10 +4,12 @@
  */
 
 import { atom } from "jotai";
+import type { CombatZone } from "~/lib/combatZones";
 
 export interface CurrentFight {
   settlementKey: string;
   monsterTier: number;
+  monsterZone?: CombatZone;
   monsterType: string;
   monsterName: string;
   isBoss: boolean;
@@ -69,7 +71,10 @@ export const discoveredSpotsAtom = atom<Set<string>>(
   new Set<string>()
 );
 
-// Active game page
+// Active game page (legacy).
+// Navigation is now route-driven (see ~/lib/gameRoutes and GameNavbar).
+// Kept for backwards compatibility with legacy GameLayout; new code should
+// read the route (navPanelForPath / useParams / useSearchParams) instead.
 export type ActivePanel =
   | "combat"
   | "skills"

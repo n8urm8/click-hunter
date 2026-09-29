@@ -10,7 +10,7 @@ import {
   type PlayerSummaryStats,
 } from "../player/PlayerStatsSummary";
 import { cn } from "~/lib/utils";
-import type { ActivePanel } from "~/store/gameStore";
+import { GAME_PATHS, inventoryPath, navPanelForPath } from "~/lib/gameRoutes";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { TaskQueueMenu } from "./TaskQueueMenu";
 
@@ -22,33 +22,44 @@ export type GameNavbarPlayer = PlayerSummaryStats & {
 
 interface GameNavbarProps {
   player: GameNavbarPlayer;
-  activePanel: ActivePanel;
-  onPanelChange: (panel: ActivePanel) => void;
 }
 
 const PANEL_ITEMS: Array<{
-  value: ActivePanel;
+  to: string;
   label: string;
+  matchPrefix: string;
+  end?: boolean;
 }> = [
-  { value: "combat", label: "Combat" },
-  { value: "skills", label: "Skills" },
-  { value: "shop", label: "Shop" },
-  { value: "inventory", label: "Inventory" },
-  { value: "rebirth", label: "Rebirth" },
-  { value: "leaderboard", label: "Board" },
-  { value: "admin", label: "Admin" },
+  { to: GAME_PATHS.combat, label: "Combat", matchPrefix: "/combat", end: true },
+  { to: GAME_PATHS.skills, label: "Skills", matchPrefix: "/skills" },
+  { to: GAME_PATHS.shopStore, label: "Shop", matchPrefix: "/shop" },
+  { to: inventoryPath("crafting"), label: "Inventory", matchPrefix: "/inventory" },
+  { to: GAME_PATHS.rebirth, label: "Rebirth", matchPrefix: "/rebirth", end: true },
+  { to: GAME_PATHS.board, label: "Board", matchPrefix: "/board" },
+  { to: GAME_PATHS.admin, label: "Admin", matchPrefix: "/admin" },
 ];
+
+const PANEL_LABELS: Record<string, string> = {
+  combat: "Combat",
+  skills: "Skills",
+  shop: "Shop",
+  inventory: "Inventory",
+  rebirth: "Rebirth",
+  leaderboard: "Board",
+  admin: "Admin",
+  profile: "Profile",
+};
 
 function PanelNavigation({
   items,
-  activePanel,
-  onPanelChange,
+  pathname,
   mobile = false,
+  onNavigate,
 }: {
-  items: Array<{ value: ActivePanel; label: string }>;
-  activePanel: ActivePanel;
-  onPanelChange: (panel: ActivePanel) => void;
+  items: Array<{ to: string; label: string; matchPrefix: string; end?: boolean }>;
+  pathname: string;
   mobile?: boolean;
+  onNavigate?: () => void;
 }) {
   return (
     <nav
@@ -59,17 +70,21 @@ function PanelNavigation({
       )}
     >
       {items.map((item) => {
-        const isActive = activePanel === item.value;
+        const isActive = item.end
+          ? pathname === item.matchPrefix
+          : pathname === item.matchPrefix ||
+            pathname.startsWith(`${item.matchPrefix}/`);
         return (
-          <button
-            key={item.value}
-            type="button"
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
             aria-current={isActive ? "page" : undefined}
-            onClick={() => onPanelChange(item.value)}
+            onClick={onNavigate}
             className="game-nav-link"
           >
             {item.label}
-          </button>
+          </NavLink>
         );
       })}
     </nav>
@@ -118,23 +133,16 @@ function PlayerStatsPopover({ player }: { player: GameNavbarPlayer }) {
   );
 }
 
-export function GameNavbar({
-  player,
-  activePanel,
-  onPanelChange,
-}: GameNavbarProps) {
+export function GameNavbar({ player }: GameNavbarProps) {
   const location = useLocation();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const headerRef = useRef<HTMLElement>(null);
   const panelItems = PANEL_ITEMS.filter(
-    (item) => item.value !== "admin" || player.role === "admin"
+    (item) => item.matchPrefix !== "/admin" || player.role === "admin"
   );
-  const isProfileRoute =
-    location.pathname === "/profile" || location.pathname === "/profile/";
-  const currentPanelLabel = isProfileRoute
-    ? "Profile"
-    : PANEL_ITEMS.find((item) => item.value === activePanel)?.label;
+  const navPanel = navPanelForPath(location.pathname);
+  const currentPanelLabel = navPanel ? PANEL_LABELS[navPanel] : undefined;
 
   useEffect(() => {
     if (!isMenuOpen) return;
@@ -150,10 +158,10 @@ export function GameNavbar({
     return () => desktop.removeEventListener("change", closeOnDesktop);
   }, [isMenuOpen]);
 
-  const handlePanelSelect = (panel: ActivePanel) => {
-    onPanelChange(panel);
+  // Close the mobile menu on route change.
+  useEffect(() => {
     setIsMenuOpen(false);
-  };
+  }, [location.pathname, location.search]);
 
   return (
     <Dialog.Root open={isMenuOpen} onOpenChange={setIsMenuOpen}>
@@ -174,11 +182,7 @@ export function GameNavbar({
             <TaskQueueMenu playerId={player._id} />
           </div>
 
-          <PanelNavigation
-            items={panelItems}
-            activePanel={activePanel}
-            onPanelChange={onPanelChange}
-          />
+          <PanelNavigation items={panelItems} pathname={location.pathname} />
 
           <span className="game-navbar-page" aria-label="Current page">
             {currentPanelLabel}
@@ -249,8 +253,8 @@ export function GameNavbar({
 
             <PanelNavigation
               items={panelItems}
-              activePanel={activePanel}
-              onPanelChange={handlePanelSelect}
+              pathname={location.pathname}
+              onNavigate={() => setIsMenuOpen(false)}
               mobile
             />
             <PlayerStatsSummary player={player} />

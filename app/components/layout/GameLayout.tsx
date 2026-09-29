@@ -1,5 +1,5 @@
 import { useAtom } from "jotai";
-import { activePanelAtom, type ActivePanel } from "~/store/gameStore";
+import { activePanelAtom } from "~/store/gameStore";
 import { AdminPanel } from "../admin/AdminPanel";
 import { EventBanner } from "../events/EventBanner";
 import { FightArea } from "../game/FightArea";
@@ -16,8 +16,8 @@ interface GameLayoutProps {
 }
 
 export function GameLayout({ player }: GameLayoutProps) {
-  const [activePanel, setActivePanel] = useAtom(activePanelAtom);
-  const visiblePanel: ActivePanel =
+  const [activePanel] = useAtom(activePanelAtom);
+  const visiblePanel =
     activePanel === "admin" && player.role !== "admin" ? "combat" : activePanel;
 
   const renderActivePanel = () => {
@@ -41,16 +41,8 @@ export function GameLayout({ player }: GameLayoutProps) {
     }
   };
 
-  const handlePanelChange = (panel: ActivePanel) => {
-    setActivePanel(panel);
-  };
-
   return (
-    <GameFrame
-      player={player}
-      activePanel={visiblePanel}
-      onPanelChange={handlePanelChange}
-    >
+    <GameFrame player={player}>
       <EventBanner />
       {renderActivePanel()}
       <ChatBox player={player} />

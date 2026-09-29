@@ -146,7 +146,7 @@ export function SellItems({ player }: SellItemsProps) {
               >
                 <div className="min-w-40 flex-1 space-y-0.5">
                   <div className="flex flex-wrap items-center gap-2">
-                    <ItemName name={row.item.name} color={rarity?.color} />
+                    <ItemName name={row.item.name} color={rarity?.color} item={row.item} />
                     <span
                       className="text-[10px] uppercase tracking-widest"
                       style={rarity ? { color: rarity.color } : undefined}

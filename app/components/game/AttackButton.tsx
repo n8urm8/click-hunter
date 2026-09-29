@@ -99,6 +99,9 @@ export function AttackButton({
         monsterType: fight.monsterType,
         isBoss: fight.isBoss,
         won: true,
+        ...(fight.monsterZone === undefined
+          ? {}
+          : { monsterZone: fight.monsterZone }),
         goldEarned: baseGold,
         experienceEarned: baseExp,
         settlementKey: fight.settlementKey,

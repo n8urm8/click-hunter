@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { usePlayerInventory } from "~/hooks/useInventory";
@@ -11,6 +12,8 @@ import {
   TabsTrigger,
 } from "~/components/ui/tabs";
 import type { Id } from "../../../convex/_generated/dataModel";
+import { ItemIcon } from "~/components/game/ItemIcon";
+import type { ItemIconInput } from "~/lib/itemIcons";
 
 interface SkillsPanelProps {
   playerId: Id<"players">;
@@ -71,11 +74,12 @@ function ItemLabel({
   item,
   quantity,
 }: {
-  item: { name: string } | null;
+  item: (ItemIconInput & { name: string }) | null;
   quantity: number;
 }) {
   return (
-    <span className="text-xs text-foreground/80">
+    <span className="inline-flex items-center gap-1.5 text-xs text-foreground/80">
+      <ItemIcon item={item} alt="" className="size-5" />
       {quantity}x {item?.name ?? "Unknown item"}
     </span>
   );
@@ -191,11 +195,14 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   const inventory = usePlayerInventory(playerId);
   const enqueueSkillAction = useEnqueueSkillAction();
   const taskQueue = useTaskQueue(playerId);
+  const navigate = useNavigate();
+  const params = useParams();
+  const routeSkillId =
+    typeof params.skillId === "string" ? params.skillId : null;
   const hasQueuedTasks =
     taskQueue.data !== undefined &&
     (taskQueue.data.active != null ||
       (taskQueue.data.queued?.length ?? 0) > 0);
-  const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedEquipmentByAugmentation, setSelectedEquipmentByAugmentation] =
@@ -271,7 +278,9 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
 
   const data = panel.data;
   const activeSkill =
-    data.definitions.find((skill) => skill.skillId === activeSkillId) ??
+    (routeSkillId
+      ? data.definitions.find((skill) => skill.skillId === routeSkillId)
+      : undefined) ??
     data.definitions[0] ??
     null;
 
@@ -364,7 +373,8 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
           <p className="mt-1 text-xs text-muted-foreground">
             {activity.description}
           </p>
-          <p className="mt-2 text-xs text-forest-glow">
+          <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-forest-glow">
+            <ItemIcon item={activity.outputItem} alt="" className="size-5" />
             Yields {activity.minYield}–{activity.maxYield}{" "}
             {activity.outputItem?.name ?? "resource"} · Base action{" "}
             {formatDuration(baseActionDurationMs)} · +{activity.experienceReward} XP
@@ -943,8 +953,8 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
         value={activeSkill.skillId}
         onValueChange={(value) => {
           if (data.definitions.some((skill) => skill.skillId === value)) {
-            setActiveSkillId(value);
             setError(null);
+            navigate(`/skills/${value}`, { replace: false });
           }
         }}
         className="gap-0"

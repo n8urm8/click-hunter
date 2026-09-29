@@ -286,9 +286,12 @@ body {
 
   .game-nav-link {
     position: relative;
+    display: inline-flex;
+    align-items: center;
     min-height: 2.75rem;
     cursor: pointer;
     white-space: nowrap;
+    text-decoration: none;
     color: var(--muted-foreground);
     font-size: 0.8125rem;
     font-weight: 500;
@@ -448,6 +451,7 @@ body {
   }
 
   .game-nav-links--menu .game-nav-link {
+    justify-content: flex-start;
     text-align: left;
     font-size: 0.875rem;
   }

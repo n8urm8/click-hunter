@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import {
@@ -29,8 +30,22 @@ export function CreateBuyOrder({ player }: CreateBuyOrderProps) {
   const meta = useBazaarMeta();
   const myOrders = useMyBazaarOrders(player?._id ?? null);
   const placeBuyOrder = usePlaceBazaarBuyOrder();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [itemId, setItemId] = useState("");
+  // ?item=<itemId> preselects the buy form so buy orders are deep-linkable.
+  const urlItem = searchParams.get("item") ?? "";
+  const [itemId, setItemId] = useState(urlItem);
+  useEffect(() => {
+    setItemId(urlItem);
+  }, [urlItem]);
+
+  const handleItemChange = (value: string) => {
+    setItemId(value);
+    const next = new URLSearchParams(searchParams);
+    if (value === "") next.delete("item");
+    else next.set("item", value);
+    setSearchParams(next, { replace: true });
+  };
   const [quantity, setQuantity] = useState("1");
   const [unitPrice, setUnitPrice] = useState("");
   const [isPlacing, setIsPlacing] = useState(false);
@@ -104,7 +119,7 @@ export function CreateBuyOrder({ player }: CreateBuyOrderProps) {
           <select
             value={itemId}
             aria-label="Item to buy"
-            onChange={(event) => setItemId(event.currentTarget.value)}
+            onChange={(event) => handleItemChange(event.currentTarget.value)}
             className={`${bazaarInputClass} w-56`}
           >
             <option value="">Choose an item...</option>

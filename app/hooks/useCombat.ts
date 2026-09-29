@@ -94,6 +94,9 @@ export function useCombat(player: any, respawnTimeMs: number) {
         monsterType: currentFight.monsterType,
         isBoss: currentFight.isBoss,
         won: false,
+        ...(currentFight.monsterZone === undefined
+          ? {}
+          : { monsterZone: currentFight.monsterZone }),
         goldEarned: 0,
         experienceEarned: 0,
         settlementKey: currentFight.settlementKey,

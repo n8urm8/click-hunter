@@ -76,6 +76,7 @@
       --tw-backdrop-opacity: initial;
       --tw-backdrop-saturate: initial;
       --tw-backdrop-sepia: initial;
+      --tw-duration: initial;
       --tw-content: "";
       --tw-translate-x: 0;
       --tw-translate-y: 0;
@@ -570,9 +571,12 @@
     white-space: nowrap;
     min-height: 2.75rem;
     color: var(--muted-foreground);
+    align-items: center;
     font-size: .8125rem;
     font-weight: 500;
+    text-decoration: none;
     transition: color .15s ease-out;
+    display: inline-flex;
     position: relative;
   }
 
@@ -735,6 +739,7 @@
 
   .game-nav-links--menu .game-nav-link {
     text-align: left;
+    justify-content: flex-start;
     font-size: .875rem;
   }
 
@@ -1199,9 +1204,24 @@
     height: calc(var(--spacing) * 4);
   }
 
+  .size-5 {
+    width: calc(var(--spacing) * 5);
+    height: calc(var(--spacing) * 5);
+  }
+
+  .size-6 {
+    width: calc(var(--spacing) * 6);
+    height: calc(var(--spacing) * 6);
+  }
+
   .size-7 {
     width: calc(var(--spacing) * 7);
     height: calc(var(--spacing) * 7);
+  }
+
+  .size-8 {
+    width: calc(var(--spacing) * 8);
+    height: calc(var(--spacing) * 8);
   }
 
   .size-9 {
@@ -1267,6 +1287,10 @@
 
   .h-11 {
     height: calc(var(--spacing) * 11);
+  }
+
+  .h-14 {
+    height: calc(var(--spacing) * 14);
   }
 
   .h-\[150px\] {
@@ -1381,6 +1405,30 @@
     width: calc(var(--spacing) * 10);
   }
 
+  .w-16 {
+    width: calc(var(--spacing) * 16);
+  }
+
+  .w-20 {
+    width: calc(var(--spacing) * 20);
+  }
+
+  .w-24 {
+    width: calc(var(--spacing) * 24);
+  }
+
+  .w-28 {
+    width: calc(var(--spacing) * 28);
+  }
+
+  .w-32 {
+    width: calc(var(--spacing) * 32);
+  }
+
+  .w-56 {
+    width: calc(var(--spacing) * 56);
+  }
+
   .w-\[min\(23rem\,calc\(100vw-1\.5rem\)\)\] {
     width: min(23rem, 100vw - 1.5rem);
   }
@@ -1447,6 +1495,10 @@
 
   .min-w-36 {
     min-width: calc(var(--spacing) * 36);
+  }
+
+  .min-w-40 {
+    min-width: calc(var(--spacing) * 40);
   }
 
   .min-w-\[58rem\] {
@@ -1689,6 +1741,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .grid-cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .grid-cols-6 {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
@@ -1765,6 +1821,10 @@
     gap: calc(var(--spacing) * 2);
   }
 
+  .gap-2\.5 {
+    gap: calc(var(--spacing) * 2.5);
+  }
+
   .gap-3 {
     gap: calc(var(--spacing) * 3);
   }
@@ -1784,6 +1844,12 @@
   :where(.space-y-0 > :not(:last-child)) {
     --tw-space-y-reverse: 0;
     margin-block: 0;
+  }
+
+  :where(.space-y-0\.5 > :not(:last-child)) {
+    --tw-space-y-reverse: 0;
+    margin-block-start: calc(calc(var(--spacing) * .5) * var(--tw-space-y-reverse));
+    margin-block-end: calc(calc(var(--spacing) * .5) * calc(1 - var(--tw-space-y-reverse)));
   }
 
   :where(.space-y-1 > :not(:last-child)) {
@@ -2117,6 +2183,10 @@
     border-color: oklab(47.729% -.0777546 .0320187 / .4);
   }
 
+  .border-forest-light\/50 {
+    border-color: oklab(47.729% -.0777546 .0320187 / .5);
+  }
+
   .border-gold {
     border-color: #d4a017;
   }
@@ -2143,6 +2213,10 @@
 
   .border-gold\/50 {
     border-color: oklab(73.4969% .0146058 .145484 / .5);
+  }
+
+  .border-gold\/60 {
+    border-color: oklab(73.4969% .0146058 .145484 / .6);
   }
 
   .border-green-500\/30 {
@@ -2620,6 +2694,10 @@
     padding-right: var(--spacing);
   }
 
+  .pr-3 {
+    padding-right: calc(var(--spacing) * 3);
+  }
+
   .pr-10 {
     padding-right: calc(var(--spacing) * 10);
   }
@@ -2899,6 +2977,10 @@
     color: oklab(79.3037% -.162017 .0790278 / .8);
   }
 
+  .text-forest-light {
+    color: #2d6b4a;
+  }
+
   .text-gold {
     color: #d4a017;
   }
@@ -3075,8 +3157,16 @@
     accent-color: #d4a017;
   }
 
+  .opacity-30 {
+    opacity: .3;
+  }
+
   .opacity-50 {
     opacity: .5;
+  }
+
+  .opacity-60 {
+    opacity: .6;
   }
 
   .opacity-75 {
@@ -3143,9 +3233,19 @@
     filter: var(--tw-blur, ) var(--tw-brightness, ) var(--tw-contrast, ) var(--tw-grayscale, ) var(--tw-hue-rotate, ) var(--tw-invert, ) var(--tw-saturate, ) var(--tw-sepia, ) var(--tw-drop-shadow, );
   }
 
+  .brightness-0 {
+    --tw-brightness: brightness(0%);
+    filter: var(--tw-blur, ) var(--tw-brightness, ) var(--tw-contrast, ) var(--tw-grayscale, ) var(--tw-hue-rotate, ) var(--tw-invert, ) var(--tw-saturate, ) var(--tw-sepia, ) var(--tw-drop-shadow, );
+  }
+
   .drop-shadow {
     --tw-drop-shadow-size: drop-shadow(0 1px 2px var(--tw-drop-shadow-color, #0000001a)) drop-shadow(0 1px 1px var(--tw-drop-shadow-color, #0000000f));
     --tw-drop-shadow: drop-shadow(0 1px 2px #0000001a) drop-shadow(0 1px 1px #0000000f);
+    filter: var(--tw-blur, ) var(--tw-brightness, ) var(--tw-contrast, ) var(--tw-grayscale, ) var(--tw-hue-rotate, ) var(--tw-invert, ) var(--tw-saturate, ) var(--tw-sepia, ) var(--tw-drop-shadow, );
+  }
+
+  .invert {
+    --tw-invert: invert(100%);
     filter: var(--tw-blur, ) var(--tw-brightness, ) var(--tw-contrast, ) var(--tw-grayscale, ) var(--tw-hue-rotate, ) var(--tw-invert, ) var(--tw-saturate, ) var(--tw-sepia, ) var(--tw-drop-shadow, );
   }
 
@@ -3206,10 +3306,21 @@
     transition-duration: var(--tw-duration, var(--default-transition-duration));
   }
 
+  .transition-opacity {
+    transition-property: opacity;
+    transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
+    transition-duration: var(--tw-duration, var(--default-transition-duration));
+  }
+
   .transition-transform {
     transition-property: transform, translate, scale, rotate;
     transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
     transition-duration: var(--tw-duration, var(--default-transition-duration));
+  }
+
+  .duration-200 {
+    --tw-duration: .2s;
+    transition-duration: .2s;
   }
 
   .outline-none {
@@ -3433,6 +3544,10 @@
 
     .hover\:border-forest-light\/40:hover {
       border-color: oklab(47.729% -.0777546 .0320187 / .4);
+    }
+
+    .hover\:border-forest-light\/50:hover {
+      border-color: oklab(47.729% -.0777546 .0320187 / .5);
     }
 
     .hover\:border-gold\/50:hover {
@@ -3865,6 +3980,10 @@
 
     .sm\:justify-between {
       justify-content: space-between;
+    }
+
+    .sm\:justify-end {
+      justify-content: flex-end;
     }
 
     .sm\:p-4 {
@@ -5034,6 +5153,11 @@ html, body {
 }
 
 @property --tw-backdrop-sepia {
+  syntax: "*";
+  inherits: false
+}
+
+@property --tw-duration {
   syntax: "*";
   inherits: false
 }

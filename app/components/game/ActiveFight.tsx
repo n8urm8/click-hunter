@@ -6,6 +6,7 @@ import { AttackButton } from "./AttackButton";
 import { DamageFloater } from "./DamageFloater";
 import { HiddenSpots } from "./HiddenSpots";
 import { AutomationControls } from "./AutomationControls";
+import { COMBAT_ZONE_LABELS } from "~/lib/combatZones";
 import { useCombat } from "~/hooks/useCombat";
 import { useRef } from "react";
 import { convexQuery } from "@convex-dev/react-query";
@@ -66,6 +67,9 @@ export function ActiveFight({
             </div>
             <span className="text-sm text-muted-foreground">
               Tier {currentFight.monsterTier}
+              {!currentFight.isBoss && currentFight.monsterZone
+                ? ` · ${COMBAT_ZONE_LABELS[currentFight.monsterZone]}`
+                : ""}
             </span>
           </div>
 

@@ -33,6 +33,7 @@ import type * as skillProgression from "../skillProgression.js";
 import type * as skills from "../skills.js";
 import type * as tasks from "../tasks.js";
 import type * as upgrades from "../upgrades.js";
+import type * as zones from "../zones.js";
 
 import type {
   ApiFromModules,
@@ -66,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   skills: typeof skills;
   tasks: typeof tasks;
   upgrades: typeof upgrades;
+  zones: typeof zones;
 }>;
 
 /**

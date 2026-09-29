@@ -2,6 +2,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getBossUnlockLevelPerTier } from "./bossData";
 import { calculateCharacterLevel } from "./characterLevel";
+import type { CombatZone } from "./zones";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
 import {
   getSkillXpRequiredForLevel,
@@ -74,6 +75,7 @@ type CombatSettlementArgs = {
   sourceId: string;
   tier: number;
   won: boolean;
+  monsterZone?: CombatZone;
   rewardOverride?: {
     goldEarned: number;
     experienceEarned: number;
@@ -395,6 +397,9 @@ export async function settleCombatFight(
       monsterType: args.sourceId,
       won: args.won,
       isBoss: false,
+      ...(args.monsterZone === undefined
+        ? {}
+        : { monsterZone: args.monsterZone }),
       goldEarned,
       experienceEarned,
       timestamp: Date.now(),

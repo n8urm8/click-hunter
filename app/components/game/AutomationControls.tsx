@@ -3,6 +3,7 @@ import {
   usePlayerUpgrades,
   useSetAutoAttack,
 } from "~/hooks/usePlayer";
+import { COMBAT_ZONE_LABELS, type CombatZone } from "~/lib/combatZones";
 
 export type AutoBattleMode = "count" | "duration" | "until-stopped";
 
@@ -15,6 +16,7 @@ export interface AutoBattleSettings {
 interface AutomationControlsProps {
   player: any;
   tier?: number;
+  zone?: CombatZone;
   settings?: AutoBattleSettings;
   onEnabledChange?: (enabled: boolean) => void;
   onModeChange?: (mode: AutoBattleMode) => void;
@@ -26,6 +28,7 @@ interface AutomationControlsProps {
 export function AutomationControls({
   player,
   tier,
+  zone,
   settings,
   onEnabledChange,
   onModeChange,
@@ -54,6 +57,7 @@ export function AutomationControls({
     onTargetChange
       ? {
           tier,
+          zone,
           settings,
           onEnabledChange,
           onModeChange,
@@ -127,8 +131,12 @@ export function AutomationControls({
                 Battle automation
               </span>
               <span className="block text-xs text-muted-foreground">
-                Queue regular Tier {autoBattleConfig.tier} battles when you
-                enter the wilds. Owned upgrades remain usable at any level.
+                Queue regular Tier {autoBattleConfig.tier}
+                {autoBattleConfig.zone
+                  ? ` · ${COMBAT_ZONE_LABELS[autoBattleConfig.zone]}`
+                  : ""}{" "}
+                battles when you enter the wilds. Owned upgrades remain usable
+                at any level.
               </span>
             </span>
             <span

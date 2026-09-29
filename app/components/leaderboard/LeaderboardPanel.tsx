@@ -5,7 +5,14 @@ import { Card } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { convexQueryCacheOptions } from "../../lib/queryCache";
 
-export function LeaderboardPanel() {
+export function LeaderboardPanel({
+  only,
+}: {
+  only?: "experience" | "tier" | "rebirth";
+}) {
+  const showExperience = !only || only === "experience";
+  const showTier = !only || only === "tier";
+  const showRebirth = !only || only === "rebirth";
   const topExpQuery = useQuery({
     ...convexQuery(api.leaderboards.getTopByExperience, { limit: 10 }),
     ...convexQueryCacheOptions,
@@ -22,7 +29,11 @@ export function LeaderboardPanel() {
   const topTier = topTierQuery.data;
   const topRebirth = topRebirthQuery.data;
 
-  if (topExpQuery.isPending || topTierQuery.isPending || topRebirthQuery.isPending) {
+  if (
+    (showExperience && topExpQuery.isPending) ||
+    (showTier && topTierQuery.isPending) ||
+    (showRebirth && topRebirthQuery.isPending)
+  ) {
     return (
       <div className="space-y-4">
         {[...Array(3)].map((_, index) => (
@@ -35,9 +46,9 @@ export function LeaderboardPanel() {
   }
 
   if (
-    (topExpQuery.isError && !topExpQuery.data) ||
-    (topTierQuery.isError && !topTierQuery.data) ||
-    (topRebirthQuery.isError && !topRebirthQuery.data)
+    (showExperience && topExpQuery.isError && !topExpQuery.data) ||
+    (showTier && topTierQuery.isError && !topTierQuery.data) ||
+    (showRebirth && topRebirthQuery.isError && !topRebirthQuery.data)
   ) {
     return (
       <Card className="p-4">
@@ -51,6 +62,7 @@ export function LeaderboardPanel() {
   return (
     <div className="space-y-4">
       {/* Experience Leaderboard */}
+      {showExperience && (
       <Card className="p-4">
         <h3 className="text-lg font-semibold mb-3">Top Adventurers (XP)</h3>
         <div className="space-y-2">
@@ -74,8 +86,10 @@ export function LeaderboardPanel() {
           ))}
         </div>
       </Card>
+      )}
 
       {/* Tier Leaderboard */}
+      {showTier && (
       <Card className="p-4">
         <h3 className="text-lg font-semibold mb-3">Highest Tier Reached</h3>
         <div className="space-y-2">
@@ -99,8 +113,10 @@ export function LeaderboardPanel() {
           ))}
         </div>
       </Card>
+      )}
 
       {/* Rebirth Leaderboard */}
+      {showRebirth && (
       <Card className="p-4">
         <h3 className="text-lg font-semibold mb-3">Most Rebirths</h3>
         <div className="space-y-2">
@@ -124,6 +140,7 @@ export function LeaderboardPanel() {
           ))}
         </div>
       </Card>
+      )}
     </div>
   );
 }

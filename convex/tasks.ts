@@ -11,6 +11,11 @@ import {
 import type { LootSummary } from "./loot";
 import { getEquippedStatBonuses } from "./items";
 import {
+  combatZoneValidator,
+  isCombatZone,
+  type CombatZone,
+} from "./zones";
+import {
   advanceSkillActionTask,
   prepareSkillAction,
   refundSkillTaskReservation,
@@ -365,7 +370,8 @@ async function validateAutoBattleRequest(
   tier: number,
   mode: "count" | "duration" | "until-stopped",
   targetBattles: number | undefined,
-  targetDurationMs: number | undefined
+  targetDurationMs: number | undefined,
+  zone?: CombatZone
 ) {
   const player = await getPlayer(ctx, playerId);
   if (!(await ownsAutoBattleUpgrade(ctx, playerId))) {
@@ -373,6 +379,9 @@ async function validateAutoBattleRequest(
   }
   if (!Number.isSafeInteger(tier) || tier < 1) {
     throw new Error("Battle tier must be a positive integer");
+  }
+  if (zone !== undefined && !isCombatZone(zone)) {
+    throw new Error("Battle zone must be easy, medium, or hard");
   }
 
   const maxTier = readIntegerBalance(
@@ -433,6 +442,7 @@ async function insertTask(
     targetBattles?: number;
     targetDurationMs?: number;
     tier?: number;
+    zone?: CombatZone;
     payload?: unknown;
   }
 ) {
@@ -468,6 +478,7 @@ async function insertTask(
     totalExperienceEarned: 0,
     lootSummary: [],
     ...(args.tier === undefined ? {} : { tier: args.tier }),
+    ...(args.zone === undefined ? {} : { zone: args.zone }),
     onlineCreditMs: 0,
     lastResolvedAt: now,
     lastHeartbeatAt: now,
@@ -517,6 +528,7 @@ async function completeTask(
       ? {}
       : { lootSummary: task.lootSummary }),
     ...(task.tier === undefined ? {} : { tier: task.tier }),
+    ...(task.zone === undefined ? {} : { zone: task.zone }),
     ...(result === undefined ? {} : { result }),
     createdAt: task.createdAt,
     completedAt: now,
@@ -935,7 +947,8 @@ async function processAutoBattle(
       ctx,
       player,
       tier,
-      equipmentBonuses
+      equipmentBonuses,
+      task.zone
     );
     currentMonsterName = result.monsterName;
     currentMonsterType = result.monsterType;
@@ -974,6 +987,7 @@ async function processAutoBattle(
       monsterType: result.monsterType,
       won: result.won,
       settlementKey: `${task._id}:${completedBattles}`,
+      ...(task.zone === undefined ? {} : { monsterZone: task.zone }),
       goldEarned: result.goldEarned,
       experienceEarned: result.experienceEarned,
     });
@@ -1508,6 +1522,7 @@ export const enqueueAutoBattle = mutation({
   args: {
     playerId: v.id("players"),
     tier: v.number(),
+    zone: v.optional(combatZoneValidator),
     mode: v.union(
       v.literal("count"),
       v.literal("duration"),
@@ -1523,7 +1538,8 @@ export const enqueueAutoBattle = mutation({
       args.tier,
       args.mode,
       args.targetBattles,
-      args.targetDurationMs
+      args.targetDurationMs,
+      args.zone ?? undefined
     );
     const definition = await getTaskDefinition(ctx, "auto_battle");
     if (!definition || !definition.enabled) {
@@ -1534,11 +1550,12 @@ export const enqueueAutoBattle = mutation({
       playerId: args.playerId,
       definition,
       taskType: "battle",
-      displayName: `Auto-battle · Tier ${args.tier}`,
+      displayName: "Auto-battle",
       battleMode: args.mode,
       targetBattles: args.targetBattles,
       targetDurationMs: args.targetDurationMs,
       tier: args.tier,
+      ...(args.zone === undefined ? {} : { zone: args.zone }),
     });
   },
 });
