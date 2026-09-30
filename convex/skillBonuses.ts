@@ -68,6 +68,8 @@ export type SkillModifierTimeline = {
   globalXpMultipliers: Record<SkillBonusScope, number>;
   events: SkillModifier[];
   itemBoosts: SkillModifier[];
+  passiveSpeedMultipliers: Record<SkillBonusScope, number>;
+  passiveXpMultipliers: Record<SkillBonusScope, number>;
 };
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
@@ -154,7 +156,7 @@ export async function getSkillModifierTimeline(
     `skillTaskSpeedMultiplier${scope === "all" ? "All" : scope === "gathering" ? "Gathering" : "Crafting"}`,
     `skillTaskXpMultiplier${scope === "all" ? "All" : scope === "gathering" ? "Gathering" : "Crafting"}`,
   ]);
-  const [balanceValues, eventRows, boostRows] = await Promise.all([
+  const [balanceValues, eventRows, boostRows, passiveRows] = await Promise.all([
     Promise.all(balanceKeys.map((key) => getBalanceValue(ctx, key))),
     ctx.db
       .query("gameEvents")
@@ -165,6 +167,10 @@ export async function getSkillModifierTimeline(
       .query("playerSkillBoosts")
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
       .take(SKILL_BONUS_SCOPE_VALUES.length * SKILL_TASK_EFFECT_TYPES.length),
+    ctx.db
+      .query("playerPassives")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .take(500),
   ]);
 
   const globalSpeedMultipliers = {} as Record<SkillBonusScope, number>;
@@ -204,11 +210,63 @@ export async function getSkillModifierTimeline(
     )
     .filter((modifier): modifier is SkillModifier => modifier !== null);
 
+  const passiveSpeedMultipliers: Record<SkillBonusScope, number> = {
+    all: 1,
+    gathering: 1,
+    crafting: 1,
+  };
+  const passiveXpMultipliers: Record<SkillBonusScope, number> = {
+    all: 1,
+    gathering: 1,
+    crafting: 1,
+  };
+  if (passiveRows.length > 0) {
+    const passiveNodeIds = new Set(passiveRows.map((row) => row.nodeId));
+    const passiveNodes = await ctx.db
+      .query("passiveNodes")
+      .withIndex("by_enabled", (q) => q.eq("enabled", true))
+      .take(500);
+    for (const node of passiveNodes) {
+      if (!passiveNodeIds.has(node.nodeId)) continue;
+      if (
+        node.effectType !== "skill-xp-multiplier" &&
+        node.effectType !== "skill-speed-multiplier"
+      ) {
+        continue;
+      }
+      const scope =
+        node.effectScope === "gathering" || node.effectScope === "crafting"
+          ? node.effectScope
+          : "all";
+      if (
+        typeof node.effectAmount !== "number" ||
+        !Number.isFinite(node.effectAmount) ||
+        node.effectAmount <= 0 ||
+        node.effectAmount > MAX_SKILL_MODIFIER_MULTIPLIER
+      ) {
+        continue;
+      }
+      if (node.effectType === "skill-xp-multiplier") {
+        passiveXpMultipliers[scope] = Math.min(
+          MAX_SKILL_MODIFIER_MULTIPLIER,
+          passiveXpMultipliers[scope] * node.effectAmount
+        );
+      } else {
+        passiveSpeedMultipliers[scope] = Math.min(
+          MAX_SKILL_MODIFIER_MULTIPLIER,
+          passiveSpeedMultipliers[scope] * node.effectAmount
+        );
+      }
+    }
+  }
+
   return {
     globalSpeedMultipliers,
     globalXpMultipliers,
     events,
     itemBoosts,
+    passiveSpeedMultipliers,
+    passiveXpMultipliers,
   };
 }
 
@@ -244,6 +302,8 @@ export function getSkillModifiersAt(
     MAX_COMBINED_MULTIPLIER,
     timeline.globalSpeedMultipliers.all *
       timeline.globalSpeedMultipliers[category] *
+      (timeline.passiveSpeedMultipliers.all ?? 1) *
+      (timeline.passiveSpeedMultipliers[category] ?? 1) *
       activeMultiplier(
         timeline.events,
         "skill-speed-multiplier",
@@ -261,6 +321,8 @@ export function getSkillModifiersAt(
     MAX_COMBINED_MULTIPLIER,
     timeline.globalXpMultipliers.all *
       timeline.globalXpMultipliers[category] *
+      (timeline.passiveXpMultipliers.all ?? 1) *
+      (timeline.passiveXpMultipliers[category] ?? 1) *
       activeMultiplier(
         timeline.events,
         "skill-xp-multiplier",

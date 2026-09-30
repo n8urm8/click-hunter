@@ -10,6 +10,7 @@ import {
   readCombatBalance,
   type EquipmentStatBonuses,
 } from "./items";
+import { getPassiveBonuses } from "./passiveTree";
 import { getActiveEventMultipliers, settleCombatFight } from "./loot";
 import {
   monstersInZone,
@@ -214,16 +215,17 @@ export async function simulateRegularBattle(
   const balance = await readCombatBalance(ctx);
   const resolvedEquipmentBonuses =
     equipmentBonuses ?? (await getEquippedStatBonuses(ctx, player._id));
-  const [weapon, armor, combatBoosts] = await Promise.all([
+  const [weapon, armor, combatBoosts, passives] = await Promise.all([
     getEquippedWeapon(ctx, player._id),
     getEquippedArmorTotals(ctx, player._id),
     getActiveCombatBoosts(ctx, player._id, now),
+    getPassiveBonuses(ctx, player._id),
   ]);
   const effectiveStats = {
-    str: player.str + resolvedEquipmentBonuses.str + combatBoosts.statBonus.str,
-    dex: player.dex + resolvedEquipmentBonuses.dex + combatBoosts.statBonus.dex,
-    int: player.int + resolvedEquipmentBonuses.int + combatBoosts.statBonus.int,
-    con: player.con + resolvedEquipmentBonuses.con + combatBoosts.statBonus.con,
+    str: player.str + resolvedEquipmentBonuses.str + combatBoosts.statBonus.str + passives.stats.str,
+    dex: player.dex + resolvedEquipmentBonuses.dex + combatBoosts.statBonus.dex + passives.stats.dex,
+    int: player.int + resolvedEquipmentBonuses.int + combatBoosts.statBonus.int + passives.stats.int,
+    con: player.con + resolvedEquipmentBonuses.con + combatBoosts.statBonus.con + passives.stats.con,
   };
 
   const weaponDamage = weapon?.baseDamage ?? 2;
@@ -242,26 +244,29 @@ export async function simulateRegularBattle(
   );
   const playerAttack = Math.max(
     1,
-    isMagical ? Math.max(0, rawAttack - monsterMagDef) : rawAttack
+    (isMagical ? Math.max(0, rawAttack - monsterMagDef) : rawAttack) *
+      (1 + passives.damagePercent)
   );
-  const playerHealth = Math.max(1, Math.max(balance.minPlayerHp, effectiveStats.con * 10));
+  const playerHealth = Math.max(1, Math.max(balance.minPlayerHp, effectiveStats.con * 10) * (1 + passives.healthPercent));
   const playerPhysDefense = Math.max(
     0,
-    armor.defense + effectiveStats.con * balance.physDefConCoeff
+    (armor.defense + effectiveStats.con * balance.physDefConCoeff) *
+      (1 + passives.defensePercent)
   );
   const playerMagDefense = Math.max(
     0,
-    effectiveStats.int * balance.magDefIntCoeff
+    effectiveStats.int * balance.magDefIntCoeff * (1 + passives.defensePercent)
   );
-  const playerAttackSpeed = computeAttackSpeed(
-    weapon?.attackSpeed ?? 1,
-    effectiveStats.dex,
-    armor.speedPenalty,
-    balance
-  );
+  const playerAttackSpeed =
+    computeAttackSpeed(
+      weapon?.attackSpeed ?? 1,
+      effectiveStats.dex,
+      armor.speedPenalty,
+      balance
+    ) * (1 + passives.attackSpeedPercent);
   const critChance = Math.min(
     1,
-    Math.max(0, (player.luk + resolvedEquipmentBonuses.luk) * balance.lukCritChancePerPoint)
+    Math.max(0, (player.luk + resolvedEquipmentBonuses.luk + passives.stats.luk) * balance.lukCritChancePerPoint + passives.critChance)
   );
   const monsterHealth = Math.max(
     1,
@@ -317,7 +322,8 @@ export async function simulateRegularBattle(
           Math.floor(
             (tier * rewards.goldPerTier +
               Math.random() * (rewards.goldVariance + 1)) *
-              eventMultipliers.goldMultiplier
+              eventMultipliers.goldMultiplier *
+              passives.goldMultiplier
           )
         )
       : 0,
@@ -328,7 +334,8 @@ export async function simulateRegularBattle(
             (tier * rewards.experiencePerTier +
               Math.random() * (rewards.experienceVariance + 1)) *
               eventMultipliers.experienceMultiplier *
-              combatBoosts.xpMultiplier
+              combatBoosts.xpMultiplier *
+              passives.xpMultiplier
           )
         )
       : 0,

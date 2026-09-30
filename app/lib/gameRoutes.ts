@@ -10,8 +10,8 @@
 export const GAME_PATHS = {
   combat: "/combat",
   skills: "/skills",
-  shopStore: "/shop",
-  bazaar: "/shop/bazaar",
+  tree: "/tree",
+  bazaar: "/bazaar",
   inventory: "/inventory",
   rebirth: "/rebirth",
   board: "/board",
@@ -50,8 +50,9 @@ export function inventoryPath(tab: InventoryTab): string {
 export type NavPanel =
   | "combat"
   | "skills"
-  | "shop"
+  | "tree"
   | "inventory"
+  | "bazaar"
   | "rebirth"
   | "leaderboard"
   | "admin"
@@ -60,7 +61,8 @@ export type NavPanel =
 export function navPanelForPath(pathname: string): NavPanel | null {
   if (pathname === "/" || pathname.startsWith("/combat")) return "combat";
   if (pathname.startsWith("/skills")) return "skills";
-  if (pathname.startsWith("/shop")) return "shop";
+  if (pathname.startsWith("/tree")) return "tree";
+  if (pathname.startsWith("/bazaar")) return "bazaar";
   if (pathname.startsWith("/inventory")) return "inventory";
   if (pathname.startsWith("/rebirth")) return "rebirth";
   if (pathname.startsWith("/board")) return "leaderboard";

@@ -30,6 +30,7 @@ import {
   useCreateLootSource,
   useCreateLootTable,
   useCreateLootTableEntry,
+  useCreatePassiveNode,
   useCreateRecipe,
   useCreateSkillDefinition,
   useCreateSkillTierDefinition,
@@ -48,6 +49,7 @@ import {
   useUpdateLootTable,
   useUpdateLootTableEntry,
   useUpdateMonster,
+  useUpdatePassiveNode,
   useUpdatePlayer,
   useUpdateRecipe,
   useResetForestCrafting,
@@ -57,6 +59,7 @@ import {
   useUpdateTaskDefinition,
   useUpdateUpgrade,
 } from "~/hooks/useAdmin";
+import { useSeedDefaultTree } from "~/hooks/usePassives";
 import {
   calculateCombatLevel,
   calculateDerivedStats,
@@ -281,7 +284,7 @@ function AdminSection({
   );
 }
 
-type AdminTab = "players" | "monsters" | "items" | "skills" | "general";
+type AdminTab = "players" | "monsters" | "items" | "skills" | "tree" | "general";
 
 const ADMIN_TAB_PARAM = "adminTab";
 const DEFAULT_ADMIN_TAB: AdminTab = "players";
@@ -290,6 +293,7 @@ const ADMIN_TABS: Array<{ value: AdminTab; label: string }> = [
   { value: "monsters", label: "Monsters" },
   { value: "items", label: "Items" },
   { value: "skills", label: "Skills" },
+  { value: "tree", label: "Tree" },
   { value: "general", label: "General" },
 ];
 
@@ -354,6 +358,277 @@ function characterForm(player?: AdminPlayer | null): CharacterForm {
 function playerOptionLabel(player: AdminPlayer) {
   const name = player.name.trim() || "Unnamed character";
   return `${name} - ${player.anonymousId.slice(-8)}`;
+}
+
+type PassiveBranch = "sword" | "dagger" | "mace" | "bow" | "staff" | "skilling";
+
+interface PassiveNodeForm {
+  nodeId: string;
+  branch: PassiveBranch;
+  name: string;
+  description: string;
+  effectType: string;
+  effectStat: string;
+  effectScope: string;
+  effectAmount: string;
+  requires: string;
+  positionX: string;
+  positionY: string;
+  enabled: boolean;
+}
+
+function passiveNodeForm(row?: Doc<"passiveNodes">): PassiveNodeForm {
+  return {
+    nodeId: row?.nodeId ?? "",
+    branch: (row?.branch as PassiveBranch | undefined) ?? "sword",
+    name: row?.name ?? "",
+    description: row?.description ?? "",
+    effectType: row?.effectType ?? "stat-boost",
+    effectStat: row?.effectStat ?? "",
+    effectScope: row?.effectScope ?? "",
+    effectAmount: String(row?.effectAmount ?? 0),
+    requires: (row?.requires ?? []).join(", "),
+    positionX: String(row?.positionX ?? 50),
+    positionY: String(row?.positionY ?? 50),
+    enabled: row?.enabled ?? true,
+  };
+}
+
+function PassiveNodeEditor({
+  playerId,
+  row,
+}: {
+  playerId: Id<"players">;
+  row?: Doc<"passiveNodes">;
+}) {
+  const create = useCreatePassiveNode();
+  const update = useUpdatePassiveNode();
+  const [form, setForm] = useState(() => passiveNodeForm(row));
+  const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => setForm(passiveNodeForm(row)), [row]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    try {
+      setIsSaving(true);
+      const effectAmount = Number(form.effectAmount);
+      if (!Number.isFinite(effectAmount)) {
+        throw new Error("Effect amount must be a finite number");
+      }
+      const args = {
+        playerId,
+        branch: form.branch,
+        name: form.name,
+        description: form.description,
+        effectType: form.effectType.trim(),
+        effectStat: form.effectStat.trim() || null,
+        effectScope:
+          (form.effectScope.trim() || null) as
+            | "all"
+            | "gathering"
+            | "crafting"
+            | null,
+        effectAmount,
+        requires: form.requires
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0),
+        positionX: requiredNumber(form.positionX, "Position X", 0),
+        positionY: requiredNumber(form.positionY, "Position Y", 0),
+        enabled: form.enabled,
+      };
+      if (args.positionX > 100 || args.positionY > 100) {
+        throw new Error("Positions must be between 0 and 100");
+      }
+      if (row) {
+        await update({ ...args, passiveNodeId: row._id });
+      } else {
+        await create({ ...args, nodeId: form.nodeId.trim() });
+        setForm(passiveNodeForm());
+      }
+    } catch (saveError) {
+      setError(errorMessage(saveError));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <EditorShell
+      title={row ? row.name : "Create passive node"}
+      identifier={row ? `ID: ${row.nodeId}` : "New node"}
+      columns={[
+        "Node ID",
+        "Branch",
+        "Name",
+        "Effect type",
+        "Effect stat",
+        "Effect scope",
+        "Effect amount",
+        "Requires",
+        "Position",
+        "Enabled",
+        "Description",
+      ]}
+      onSubmit={handleSubmit}
+      isSaving={isSaving}
+      error={error}
+    >
+      <Field label="Node ID">
+        <TextInput
+          value={form.nodeId}
+          disabled={Boolean(row)}
+          onChange={(event) => setForm({ ...form, nodeId: event.currentTarget.value })}
+        />
+      </Field>
+      <Field label="Branch">
+        <select
+          value={form.branch}
+          onChange={(event) =>
+            setForm({ ...form, branch: event.currentTarget.value as PassiveBranch })
+          }
+          className={inputClass}
+        >
+          <option value="sword">sword</option>
+          <option value="dagger">dagger</option>
+          <option value="mace">mace</option>
+          <option value="bow">bow</option>
+          <option value="staff">staff</option>
+          <option value="skilling">skilling</option>
+        </select>
+      </Field>
+      <Field label="Name">
+        <TextInput
+          value={form.name}
+          onChange={(event) => setForm({ ...form, name: event.currentTarget.value })}
+        />
+      </Field>
+      <Field label="Effect type">
+        <TextInput
+          value={form.effectType}
+          placeholder="stat-boost, damage-percent, ..."
+          onChange={(event) =>
+            setForm({ ...form, effectType: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Effect stat">
+        <TextInput
+          value={form.effectStat}
+          placeholder="str, dex, int, luk, con"
+          onChange={(event) =>
+            setForm({ ...form, effectStat: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Effect scope">
+        <TextInput
+          value={form.effectScope}
+          placeholder="all, gathering, crafting"
+          onChange={(event) =>
+            setForm({ ...form, effectScope: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Effect amount">
+        <TextInput
+          type="number"
+          step="any"
+          value={form.effectAmount}
+          onChange={(event) =>
+            setForm({ ...form, effectAmount: event.currentTarget.value })
+          }
+        />
+      </Field>
+      <Field label="Requires (comma-separated)">
+        <TextInput
+          value={form.requires}
+          onChange={(event) => setForm({ ...form, requires: event.currentTarget.value })}
+        />
+      </Field>
+      <Field label="Position X/Y">
+        <div className="grid grid-cols-2 gap-2">
+          <TextInput
+            aria-label="Position X"
+            type="number"
+            min="0"
+            max="100"
+            value={form.positionX}
+            onChange={(event) =>
+              setForm({ ...form, positionX: event.currentTarget.value })
+            }
+          />
+          <TextInput
+            aria-label="Position Y"
+            type="number"
+            min="0"
+            max="100"
+            value={form.positionY}
+            onChange={(event) =>
+              setForm({ ...form, positionY: event.currentTarget.value })
+            }
+          />
+        </div>
+      </Field>
+      <Field label="Enabled">
+        <input
+          type="checkbox"
+          checked={form.enabled}
+          onChange={(event) => setForm({ ...form, enabled: event.currentTarget.checked })}
+          className="mt-2 size-4 accent-gold"
+        />
+      </Field>
+      <Field label="Description">
+        <textarea
+          value={form.description}
+          onChange={(event) => setForm({ ...form, description: event.currentTarget.value })}
+          className={textareaClass}
+          rows={2}
+        />
+      </Field>
+    </EditorShell>
+  );
+}
+
+function SeedPassiveTreeButton({ playerId }: { playerId: Id<"players"> }) {
+  const seedDefaults = useSeedDefaultTree();
+  const [status, setStatus] = useState<string | null>(null);
+  const [isSeeding, setIsSeeding] = useState(false);
+
+  const handleSeed = async () => {
+    setIsSeeding(true);
+    setStatus(null);
+    try {
+      const result = await seedDefaults({ playerId });
+      setStatus(`Seeded ${result.seeded} passive nodes.`);
+    } catch (seedError) {
+      setStatus(errorMessage(seedError));
+    } finally {
+      setIsSeeding(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={isSeeding}
+        onClick={() => void handleSeed()}
+      >
+        {isSeeding ? "Seeding..." : "Seed default skill web"}
+      </Button>
+      {status && (
+        <p className="text-xs text-muted-foreground" role="status">
+          {status}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function CharacterEditorCard({ playerId }: { playerId: Id<"players"> }) {
@@ -4093,6 +4368,42 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
         </TabsContent>
 
         <TabsContent
+          value="tree"
+          keepMounted
+          className="space-y-6 outline-none"
+        >
+          <SeedPassiveTreeButton playerId={playerId} />
+          <AdminSection
+            title="Passive skill web"
+            description="Edit PoE-like passive nodes: modest weapon-branch bonuses, skilling XP/speed, and automation unlocks. Point pacing (passivePointInterval) lives under Global balance."
+            columns={[
+              "Node ID",
+              "Branch",
+              "Name",
+              "Effect type",
+              "Effect stat",
+              "Effect scope",
+              "Effect amount",
+              "Requires",
+              "Position",
+              "Enabled",
+              "Description",
+            ]}
+          >
+            <PassiveNodeEditor playerId={playerId} />
+            {[...(config.data.passiveNodes ?? [])]
+              .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
+              .map((row) => (
+                <PassiveNodeEditor
+                  key={row._id}
+                  playerId={playerId}
+                  row={row}
+                />
+              ))}
+          </AdminSection>
+        </TabsContent>
+
+        <TabsContent
           value="general"
           keepMounted
           className="space-y-6 outline-none"
@@ -4130,8 +4441,8 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
           </AdminSection>
 
           <AdminSection
-            title="Upgrades"
-            description="Adjust shop prices, effects, descriptions, and unlock requirements."
+            title="Upgrades (legacy)"
+            description="Legacy NPC shop rows kept for hidden-spot and old automation records. The stat/auto shop is removed; new unlocks live in the passive tree."
             columns={[
               "Name",
               "Category",

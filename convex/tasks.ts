@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
+import { getPassiveBonuses } from "./passiveTree";
 import {
   settleRegularFight,
   simulateRegularBattle,
@@ -354,10 +355,14 @@ async function ownsAutoBattleUpgrade(
   ctx: MutationCtx,
   playerId: PlayerId
 ) {
-  const upgrades = await ctx.db
-    .query("playerUpgrades")
-    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-    .collect();
+  const [passives, upgrades] = await Promise.all([
+    getPassiveBonuses(ctx, playerId),
+    ctx.db
+      .query("playerUpgrades")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .collect(),
+  ]);
+  if (passives.autoBattle) return true;
   return upgrades.some(
     (upgrade) =>
       upgrade.upgradeId === "auto_start_fight" && upgrade.quantity > 0
@@ -375,7 +380,7 @@ async function validateAutoBattleRequest(
 ) {
   const player = await getPlayer(ctx, playerId);
   if (!(await ownsAutoBattleUpgrade(ctx, playerId))) {
-    throw new Error("Unlock Battle Automation before queueing auto-battle");
+    throw new Error("Unlock Battle Automation in the passive skill tree before queueing auto-battle");
   }
   if (!Number.isSafeInteger(tier) || tier < 1) {
     throw new Error("Battle tier must be a positive integer");

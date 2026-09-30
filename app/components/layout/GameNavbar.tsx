@@ -10,7 +10,12 @@ import {
   type PlayerSummaryStats,
 } from "../player/PlayerStatsSummary";
 import { cn } from "~/lib/utils";
-import { GAME_PATHS, inventoryPath, navPanelForPath } from "~/lib/gameRoutes";
+import {
+  GAME_PATHS,
+  bazaarPath,
+  inventoryPath,
+  navPanelForPath,
+} from "~/lib/gameRoutes";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { TaskQueueMenu } from "./TaskQueueMenu";
 
@@ -32,8 +37,9 @@ const PANEL_ITEMS: Array<{
 }> = [
   { to: GAME_PATHS.combat, label: "Combat", matchPrefix: "/combat", end: true },
   { to: GAME_PATHS.skills, label: "Skills", matchPrefix: "/skills" },
-  { to: GAME_PATHS.shopStore, label: "Shop", matchPrefix: "/shop" },
+  { to: GAME_PATHS.tree, label: "Tree", matchPrefix: "/tree" },
   { to: inventoryPath("crafting"), label: "Inventory", matchPrefix: "/inventory" },
+  { to: bazaarPath("browse"), label: "Bazaar", matchPrefix: "/bazaar" },
   { to: GAME_PATHS.rebirth, label: "Rebirth", matchPrefix: "/rebirth", end: true },
   { to: GAME_PATHS.board, label: "Board", matchPrefix: "/board" },
   { to: GAME_PATHS.admin, label: "Admin", matchPrefix: "/admin" },
@@ -42,8 +48,9 @@ const PANEL_ITEMS: Array<{
 const PANEL_LABELS: Record<string, string> = {
   combat: "Combat",
   skills: "Skills",
-  shop: "Shop",
+  tree: "Tree",
   inventory: "Inventory",
+  bazaar: "Bazaar",
   rebirth: "Rebirth",
   leaderboard: "Board",
   admin: "Admin",

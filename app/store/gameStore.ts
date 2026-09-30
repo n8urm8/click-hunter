@@ -78,6 +78,7 @@ export const discoveredSpotsAtom = atom<Set<string>>(
 export type ActivePanel =
   | "combat"
   | "skills"
+  | "tree"
   | "shop"
   | "inventory"
   | "rebirth"

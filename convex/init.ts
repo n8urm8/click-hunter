@@ -14,6 +14,10 @@ import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import {
+  PASSIVE_POINT_BALANCE_DEFAULT,
+  seedPassiveContent,
+} from "./passiveTree";
+import {
   DEFAULT_BAZAAR_MAX_OPEN_ORDERS,
   DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS,
   DEFAULT_BAZAAR_TAX_PERCENT,
@@ -96,6 +100,7 @@ async function seedGameBalance(ctx: MutationCtx) {
     { key: "bazaarTaxPercent", value: DEFAULT_BAZAAR_TAX_PERCENT, description: "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)" },
     { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
     { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
+    { ...PASSIVE_POINT_BALANCE_DEFAULT },
   ];
   for (const e of entries) {
     await ctx.db.insert("gameBalance", { ...e, lastUpdated: Date.now() });
@@ -133,7 +138,7 @@ async function seedTaskDefinitions(ctx: MutationCtx) {
     canProgressOffline: false,
     requiresOnline: true,
     enabled: true,
-    prerequisites: { upgradeId: "auto_start_fight" },
+    prerequisites: {},
     rewards: { uses: "autoBattleRewards" },
     createdAt: now,
     updatedAt: now,
@@ -283,6 +288,7 @@ export default internalMutation({
     await ensureBossForTier(ctx, 2);
     await ensureBossForTier(ctx, 3);
     await seedForestCraftingContent(ctx);
+    await seedPassiveContent(ctx);
     await seedHiddenSpots(ctx);
     await seedAchievements(ctx);
     await seedRebirthRewards(ctx);

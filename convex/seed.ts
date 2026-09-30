@@ -34,6 +34,10 @@ import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
 import { validateAllRecipeChains } from "./recipeValidation";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
+import {
+  PASSIVE_POINT_BALANCE_DEFAULT,
+  seedPassiveContent,
+} from "./passiveTree";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -127,6 +131,7 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "bazaarTaxPercent", value: DEFAULT_BAZAAR_TAX_PERCENT, description: "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)" },
     { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
     { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
+    { ...PASSIVE_POINT_BALANCE_DEFAULT },
     ...SKILL_TASK_BALANCE_DEFAULTS,
   ];
   for (const entry of entries) {
@@ -145,11 +150,11 @@ async function populateTaskDefinitions(ctx: MutationCtx) {
       name: "Auto-battle",
       category: "battle",
       description:
-        "Fight regular monsters at a selected tier while the player remains online.",
+        "Fight regular monsters at a selected tier while the player remains online. Unlock via the passive skill tree.",
       canProgressOffline: false,
       requiresOnline: true,
       enabled: true,
-      prerequisites: { upgradeId: "auto_start_fight" },
+      prerequisites: {},
       rewards: { uses: "autoBattleRewards" },
     },
   ];
@@ -159,7 +164,14 @@ async function populateTaskDefinitions(ctx: MutationCtx) {
       .query("taskDefinitions")
       .withIndex("by_taskId", (q) => q.eq("taskId", definition.taskId))
       .first();
-    if (existing) continue;
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        description: definition.description,
+        prerequisites: definition.prerequisites,
+        updatedAt: now,
+      });
+      continue;
+    }
 
     await ctx.db.insert("taskDefinitions", {
       ...definition,
@@ -453,6 +465,7 @@ export const populateAll = mutation({
     await populateItemRarities(ctx);
     await populateGameBalance(ctx);
     await populateTaskDefinitions(ctx);
+    await seedPassiveContent(ctx);
     await ensureBossForTier(ctx, 1);
     await ensureBossForTier(ctx, 2);
     await ensureBossForTier(ctx, 3);

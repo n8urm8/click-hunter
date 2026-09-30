@@ -103,6 +103,14 @@ export function useUpdateUpgrade() {
   return useMutation(api.admin.updateUpgrade);
 }
 
+export function useCreatePassiveNode() {
+  return useMutation(api.admin.createPassiveNode);
+}
+
+export function useUpdatePassiveNode() {
+  return useMutation(api.admin.updatePassiveNode);
+}
+
 export function useCreateItemRarity() {
   return useMutation(api.admin.createItemRarity);
 }

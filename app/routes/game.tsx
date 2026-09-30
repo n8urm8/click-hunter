@@ -26,9 +26,9 @@ function PlayerDataPrefetch({
   useEffect(() => {
     const prefetches: Array<{ label: string; promise: Promise<unknown> }> = [
       {
-        label: "shop upgrades",
+        label: "passive tree",
         promise: queryClient.prefetchQuery({
-          ...convexQuery(api.upgrades.getShopUpgrades, { playerId }),
+          ...convexQuery(api.passiveTree.getTree, { playerId }),
           ...convexQueryCacheOptions,
         }),
       },
@@ -192,7 +192,7 @@ export function useGamePlayer(): PlayerWithDerivedStats {
 /**
  * Shared game shell: player gate, prefetching, task queue, navbar frame,
  * persistent event banner + chat, and an <Outlet /> for the active page
- * route (/combat, /skills, /shop, ...).
+ * route (/combat, /skills, /tree, ...).
  */
 export default function GameShell() {
   return (

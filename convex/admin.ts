@@ -470,6 +470,7 @@ export const getConfig = query({
       lootTables,
       lootTableEntries,
       lootSources,
+      passiveNodes,
     ] = await Promise.all([
       ctx.db.query("gameBalance").collect(),
       ctx.db.query("upgrades").collect(),
@@ -492,6 +493,7 @@ export const getConfig = query({
       ctx.db.query("lootTables").collect(),
       ctx.db.query("lootTableEntries").collect(),
       ctx.db.query("lootSources").collect(),
+      ctx.db.query("passiveNodes").collect(),
     ]);
 
     return {
@@ -516,6 +518,7 @@ export const getConfig = query({
       lootTables,
       lootTableEntries,
       lootSources,
+      passiveNodes,
     };
   },
 });
@@ -2912,6 +2915,169 @@ export const saveCraftingConfig = mutation({
       lootTableId,
       createdAt: existing.createdAt,
       updatedAt: now,
+    });
+    return await ctx.db.get(existing._id);
+  },
+});
+
+const passiveBranchValidator = v.union(
+  v.literal("sword"),
+  v.literal("dagger"),
+  v.literal("mace"),
+  v.literal("bow"),
+  v.literal("staff"),
+  v.literal("skilling")
+);
+
+const PASSIVE_EFFECT_TYPES = new Set([
+  "stat-boost",
+  "damage-percent",
+  "attack-speed-percent",
+  "defense-percent",
+  "health-percent",
+  "crit-chance",
+  "gold-multiplier",
+  "xp-multiplier",
+  "skill-xp-multiplier",
+  "skill-speed-multiplier",
+  "unlock-auto-attack",
+  "unlock-auto-battle",
+]);
+
+function normalizePassiveNode(args: {
+  nodeId: string;
+  branch: "sword" | "dagger" | "mace" | "bow" | "staff" | "skilling";
+  name: string;
+  description: string;
+  effectType: string;
+  effectStat: string | null;
+  effectScope: SkillBonusScope | null;
+  effectAmount: number;
+  requires: unknown;
+  positionX: number;
+  positionY: number;
+  enabled: boolean;
+}) {
+  const nodeId = requiredText(args.nodeId, "Node ID", 100);
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(nodeId)) {
+    throw new Error("Node ID must be lowercase alphanumeric with hyphens/underscores");
+  }
+  if (!PASSIVE_EFFECT_TYPES.has(args.effectType)) {
+    throw new Error("Unsupported passive effect type");
+  }
+  let effectStat: string | undefined;
+  if (args.effectStat !== null) {
+    const stat = requiredText(args.effectStat, "Effect stat", 20);
+    if (!STAT_KEYS.has(stat)) throw new Error("Effect stat must be STR, DEX, INT, LUK, or CON");
+    effectStat = stat;
+  }
+  if (args.effectType === "stat-boost" && effectStat === undefined) {
+    throw new Error("Stat-boost nodes require an effect stat");
+  }
+  let effectScope: SkillBonusScope | undefined;
+  if (args.effectScope !== null) {
+    if (!SKILL_BONUS_SCOPE_VALUES.includes(args.effectScope)) {
+      throw new Error("Effect scope must be all, gathering, or crafting");
+    }
+    effectScope = args.effectScope;
+  }
+  if (
+    (args.effectType === "skill-xp-multiplier" ||
+      args.effectType === "skill-speed-multiplier") &&
+    effectScope === undefined
+  ) {
+    effectScope = "all";
+  }
+  if (
+    args.effectType !== "skill-xp-multiplier" &&
+    args.effectType !== "skill-speed-multiplier" &&
+    args.effectScope !== null
+  ) {
+    throw new Error("Only skill multiplier nodes can define an effect scope");
+  }
+  if (!Number.isFinite(args.effectAmount)) {
+    throw new Error("Effect amount must be finite");
+  }
+  if (!Array.isArray(args.requires)) throw new Error("Requires must be an array");
+  const requires = args.requires.map((entry) => {
+    if (typeof entry !== "string" || !entry.trim()) throw new Error("Requires entries must be node IDs");
+    return entry.trim();
+  });
+  if (requires.includes(nodeId)) throw new Error("A node cannot require itself");
+  if (args.positionX < 0 || args.positionX > 100 || args.positionY < 0 || args.positionY > 100) {
+    throw new Error("Node positions must be between 0 and 100");
+  }
+  return {
+    nodeId,
+    branch: args.branch,
+    name: requiredText(args.name, "Name", 200),
+    description: requiredText(args.description, "Description", 1000),
+    effectType: args.effectType,
+    ...(effectStat === undefined ? {} : { effectStat }),
+    ...(effectScope === undefined ? {} : { effectScope }),
+    effectAmount: args.effectAmount,
+    requires,
+    positionX: args.positionX,
+    positionY: args.positionY,
+    enabled: args.enabled,
+  };
+}
+
+export const createPassiveNode = mutation({
+  args: {
+    playerId: v.id("players"),
+    nodeId: v.string(),
+    branch: passiveBranchValidator,
+    name: v.string(),
+    description: v.string(),
+    effectType: v.string(),
+    effectStat: v.union(v.string(), v.null()),
+    effectScope: v.union(skillBonusScopeValidator, v.null()),
+    effectAmount: v.number(),
+    requires: v.any(),
+    positionX: v.number(),
+    positionY: v.number(),
+    enabled: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx, args.playerId);
+    const existing = await ctx.db.query("passiveNodes").withIndex("by_nodeId", (q) => q.eq("nodeId", args.nodeId.trim())).first();
+    if (existing) throw new Error("A passive node with that ID already exists");
+    const now = Date.now();
+    const id = await ctx.db.insert("passiveNodes", {
+      ...normalizePassiveNode(args),
+      createdAt: now,
+      updatedAt: now,
+    });
+    return await ctx.db.get(id);
+  },
+});
+
+export const updatePassiveNode = mutation({
+  args: {
+    playerId: v.id("players"),
+    passiveNodeId: v.id("passiveNodes"),
+    branch: passiveBranchValidator,
+    name: v.string(),
+    description: v.string(),
+    effectType: v.string(),
+    effectStat: v.union(v.string(), v.null()),
+    effectScope: v.union(skillBonusScopeValidator, v.null()),
+    effectAmount: v.number(),
+    requires: v.any(),
+    positionX: v.number(),
+    positionY: v.number(),
+    enabled: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx, args.playerId);
+    const existing = await ctx.db.get(args.passiveNodeId);
+    if (!existing) throw new Error("Passive node not found");
+    const normalized = normalizePassiveNode({ ...args, nodeId: existing.nodeId });
+    await ctx.db.replace(existing._id, {
+      ...normalized,
+      createdAt: existing.createdAt,
+      updatedAt: Date.now(),
     });
     return await ctx.db.get(existing._id);
   },

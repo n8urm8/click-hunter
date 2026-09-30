@@ -975,6 +975,10 @@
     z-index: 101;
   }
 
+  .z-\[200\] {
+    z-index: 200;
+  }
+
   .z-\[999\] {
     z-index: 999;
   }
@@ -1301,6 +1305,10 @@
     height: calc(100% - 1px);
   }
 
+  .h-auto {
+    height: auto;
+  }
+
   .h-full {
     height: 100%;
   }
@@ -1365,10 +1373,6 @@
     min-height: 260px;
   }
 
-  .min-h-\[300px\] {
-    min-height: 300px;
-  }
-
   .min-h-\[348px\] {
     min-height: 348px;
   }
@@ -1427,6 +1431,10 @@
 
   .w-56 {
     width: calc(var(--spacing) * 56);
+  }
+
+  .w-64 {
+    width: calc(var(--spacing) * 64);
   }
 
   .w-\[min\(23rem\,calc\(100vw-1\.5rem\)\)\] {
@@ -1715,6 +1723,10 @@
   .touch-pinch-zoom {
     --tw-pinch-zoom: pinch-zoom;
     touch-action: var(--tw-pan-x, ) var(--tw-pan-y, ) var(--tw-pinch-zoom, );
+  }
+
+  .touch-manipulation {
+    touch-action: manipulation;
   }
 
   .resize {
@@ -2359,6 +2371,10 @@
     background-color: #0a2818;
   }
 
+  .bg-forest-deep\/60 {
+    background-color: oklab(24.8943% -.0433696 .0184906 / .6);
+  }
+
   .bg-forest-deep\/95 {
     background-color: oklab(24.8943% -.0433696 .0184906 / .95);
   }
@@ -2694,10 +2710,6 @@
     padding-right: var(--spacing);
   }
 
-  .pr-3 {
-    padding-right: calc(var(--spacing) * 3);
-  }
-
   .pr-10 {
     padding-right: calc(var(--spacing) * 10);
   }
@@ -2806,6 +2818,11 @@
   .leading-5 {
     --tw-leading: calc(var(--spacing) * 5);
     line-height: calc(var(--spacing) * 5);
+  }
+
+  .leading-none {
+    --tw-leading: 1;
+    line-height: 1;
   }
 
   .leading-relaxed {
@@ -3200,6 +3217,11 @@
 
   .shadow-sm {
     --tw-shadow: 0 1px 3px 0 var(--tw-shadow-color, #0000001a), 0 1px 2px -1px var(--tw-shadow-color, #0000001a);
+    box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  }
+
+  .shadow-xl {
+    --tw-shadow: 0 20px 25px -5px var(--tw-shadow-color, #0000001a), 0 8px 10px -6px var(--tw-shadow-color, #0000001a);
     box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
   }
 
@@ -4004,6 +4026,10 @@
 
     .lg\:grid-cols-2 {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .lg\:grid-cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .lg\:grid-cols-4 {

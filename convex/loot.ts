@@ -4,6 +4,7 @@ import { getBossUnlockLevelPerTier } from "./bossData";
 import { calculateCharacterLevel } from "./characterLevel";
 import type { CombatZone } from "./zones";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
+import { getPassiveBonuses } from "./passiveTree";
 import {
   getSkillXpRequiredForLevel,
   readSkillXpBase,
@@ -346,11 +347,10 @@ export async function settleCombatFight(
       .first();
     if (!monster) throw new Error("Monster not found");
     const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
-    const combatBoosts = await getActiveCombatBoosts(
-      ctx,
-      args.playerId,
-      Date.now()
-    );
+    const [combatBoosts, passives] = await Promise.all([
+      getActiveCombatBoosts(ctx, args.playerId, Date.now()),
+      getPassiveBonuses(ctx, args.playerId),
+    ]);
     if (
       args.rewardOverride &&
       (!Number.isSafeInteger(args.rewardOverride.goldEarned) ||
@@ -365,7 +365,7 @@ export async function settleCombatFight(
         Math.max(
           0,
           Math.floor(
-            monster.goldDrop * args.tier * eventMultipliers.goldMultiplier
+            monster.goldDrop * args.tier * eventMultipliers.goldMultiplier * passives.goldMultiplier
           )
         )
       : 0;
@@ -377,7 +377,8 @@ export async function settleCombatFight(
             monster.experienceReward *
               args.tier *
               eventMultipliers.experienceMultiplier *
-              combatBoosts.xpMultiplier
+              combatBoosts.xpMultiplier *
+              passives.xpMultiplier
           )
         )
       : 0;
@@ -443,13 +444,12 @@ export async function settleCombatFight(
     args.tier *
     boss.rewardMultiplier;
   const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
-  const combatBoosts = await getActiveCombatBoosts(
-    ctx,
-    args.playerId,
-    Date.now()
-  );
+  const [combatBoosts, passives] = await Promise.all([
+    getActiveCombatBoosts(ctx, args.playerId, Date.now()),
+    getPassiveBonuses(ctx, args.playerId),
+  ]);
   const goldEarned = args.won
-    ? Math.max(0, Math.floor(baseGold * eventMultipliers.goldMultiplier))
+    ? Math.max(0, Math.floor(baseGold * eventMultipliers.goldMultiplier * passives.goldMultiplier))
     : 0;
   const experienceEarned = args.won
     ? Math.max(
@@ -457,7 +457,8 @@ export async function settleCombatFight(
         Math.floor(
           baseExperience *
             eventMultipliers.experienceMultiplier *
-            combatBoosts.xpMultiplier
+            combatBoosts.xpMultiplier *
+            passives.xpMultiplier
         )
       )
     : 0;

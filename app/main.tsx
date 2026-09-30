@@ -14,7 +14,7 @@ import Home from "./routes/home";
 import Profile from "./routes/profile";
 import CombatPage from "./routes/combat";
 import SkillsPage from "./routes/skills";
-import ShopStorePage from "./routes/shop";
+import TreePage from "./routes/tree";
 import BazaarPage from "./routes/bazaar";
 import InventoryPage from "./routes/inventory";
 import RebirthPage from "./routes/rebirth";
@@ -46,14 +46,14 @@ const router = createBrowserRouter([
       { path: "combat", Component: CombatPage },
       { path: "skills", Component: SkillsPage },
       { path: "skills/:skillId", Component: SkillsPage },
-      { path: "shop", Component: ShopStorePage },
+      { path: "tree", Component: TreePage },
       {
-        path: "shop/bazaar",
+        path: "bazaar",
         Component: () => (
           <Navigate to={`${GAME_PATHS.bazaar}/browse`} replace />
         ),
       },
-      { path: "shop/bazaar/:view", Component: BazaarPage },
+      { path: "bazaar/:view", Component: BazaarPage },
       { path: "inventory", Component: InventoryPage },
       { path: "inventory/:tab", Component: InventoryPage },
       { path: "rebirth", Component: RebirthPage },

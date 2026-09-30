@@ -14,6 +14,7 @@ import {
   readCombatBalance,
   grantItemToInventory,
 } from "./items";
+import { getPassiveBonuses, clearPlayerPassives } from "./passiveTree";
 import { STARTER_KITS } from "./forestCraftingSeed";
 
 // Default balance constants — must match gameBalance seeds in seed.ts
@@ -66,10 +67,14 @@ async function withEquipmentStats(
   ctx: DatabaseCtx,
   player: Doc<"players">
 ) {
-  const bonuses = await getEquippedStatBonuses(ctx, player._id);
+  const [bonuses, passives] = await Promise.all([
+    getEquippedStatBonuses(ctx, player._id),
+    getPassiveBonuses(ctx, player._id),
+  ]);
   return {
     ...player,
     equipmentStatBonuses: bonuses,
+    passiveBonuses: passives,
   };
 }
 
@@ -291,18 +296,22 @@ export const attemptAttack = mutation({
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
 
-    const bonuses = await getEquippedStatBonuses(ctx, playerId);
+    const [bonuses, passives] = await Promise.all([
+      getEquippedStatBonuses(ctx, playerId),
+      getPassiveBonuses(ctx, playerId),
+    ]);
     const [weapon, armor, balance] = await Promise.all([
       getEquippedWeapon(ctx, playerId),
       getEquippedArmorTotals(ctx, playerId),
       readCombatBalance(ctx),
     ]);
-    const attackSpeed = computeAttackSpeed(
-      weapon?.attackSpeed ?? 1,
-      player.dex + bonuses.dex,
-      armor.speedPenalty,
-      balance
-    );
+    const attackSpeed =
+      computeAttackSpeed(
+        weapon?.attackSpeed ?? 1,
+        player.dex + bonuses.dex + passives.stats.dex,
+        armor.speedPenalty,
+        balance
+      ) * (1 + passives.attackSpeedPercent);
     const cooldownMs = Math.ceil(1000 / attackSpeed);
     const status = await rateLimiter.limit(ctx, "manualAttack", {
       key: playerId,
@@ -480,7 +489,9 @@ export const rebirth = mutation({
 
     // Full wipe: all stats return to base (earned and paid alike).
     // Permanent prestige power lives only in rebirth unlocks.
+    // Passive skill web fully resets each run.
     await resetAllStatUpgrades(ctx, playerId);
+    await clearPlayerPassives(ctx, playerId);
 
     await ctx.db.patch(playerId, {
       str: startingStats.str,
@@ -496,6 +507,8 @@ export const rebirth = mutation({
       rebirthTierThreshold: nextThreshold,
       currentTier: 1,
       maxTierReached: 1,
+      autoAttackEnabled: false,
+      autoStartFightEnabled: false,
       lastUpdated: Date.now(),
     });
 
@@ -520,12 +533,19 @@ export const setAutoAttack = mutation({
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
     if (enabled) {
-      const upgrades = await ctx.db
-        .query("playerUpgrades")
-        .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-        .collect();
-      if (!upgrades.some((upgrade) => upgrade.upgradeId === "auto_attack" && upgrade.quantity > 0)) {
-        throw new Error("Purchase Automated Striking first");
+      const [passives, upgrades] = await Promise.all([
+        getPassiveBonuses(ctx, playerId),
+        ctx.db
+          .query("playerUpgrades")
+          .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+          .collect(),
+      ]);
+      const hasPassive = passives.autoAttack;
+      const hasLegacy = upgrades.some(
+        (upgrade) => upgrade.upgradeId === "auto_attack" && upgrade.quantity > 0
+      );
+      if (!hasPassive && !hasLegacy) {
+        throw new Error("Unlock automatic attacks in the passive skill tree first");
       }
     }
 
@@ -548,12 +568,20 @@ export const setAutoStartFight = mutation({
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
     if (enabled) {
-      const upgrades = await ctx.db
-        .query("playerUpgrades")
-        .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-        .collect();
-      if (!upgrades.some((upgrade) => upgrade.upgradeId === "auto_start_fight" && upgrade.quantity > 0)) {
-        throw new Error("Purchase Battle Automation first");
+      const [passives, upgrades] = await Promise.all([
+        getPassiveBonuses(ctx, playerId),
+        ctx.db
+          .query("playerUpgrades")
+          .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+          .collect(),
+      ]);
+      const hasPassive = passives.autoBattle;
+      const hasLegacy = upgrades.some(
+        (upgrade) =>
+          upgrade.upgradeId === "auto_start_fight" && upgrade.quantity > 0
+      );
+      if (!hasPassive && !hasLegacy) {
+        throw new Error("Unlock battle automation in the passive skill tree first");
       }
     }
 

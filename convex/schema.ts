@@ -56,6 +56,14 @@ const lootPurposeValidator = v.union(
   v.literal("augmentation"),
   v.literal("boss-catalyst")
 );
+const passiveBranchValidator = v.union(
+  v.literal("sword"),
+  v.literal("dagger"),
+  v.literal("mace"),
+  v.literal("bow"),
+  v.literal("staff"),
+  v.literal("skilling")
+);
 
 export default defineSchema({
   players: defineTable({
@@ -806,4 +814,34 @@ export default defineSchema({
       "itemId",
       "unitPrice",
     ]),
+
+  // PoE-like passive skill web. Tunable content lives in passiveNodes rows
+  // (seeded, admin-editable); players unlock nodes with earned passive points.
+  passiveNodes: defineTable({
+    nodeId: v.string(),
+    branch: passiveBranchValidator,
+    name: v.string(),
+    description: v.string(),
+    effectType: v.string(),
+    effectStat: v.optional(v.string()),
+    effectScope: v.optional(skillBonusScopeValidator),
+    effectAmount: v.number(),
+    requires: v.array(v.string()),
+    positionX: v.number(),
+    positionY: v.number(),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_nodeId", ["nodeId"])
+    .index("by_branch", ["branch"])
+    .index("by_enabled", ["enabled"]),
+
+  playerPassives: defineTable({
+    playerId: v.id("players"),
+    nodeId: v.string(),
+    unlockedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_and_nodeId", ["playerId", "nodeId"]),
 });

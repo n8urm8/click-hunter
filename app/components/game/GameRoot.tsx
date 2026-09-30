@@ -22,9 +22,9 @@ function PlayerDataPrefetch({
   useEffect(() => {
     const prefetches: Array<{ label: string; promise: Promise<unknown> }> = [
       {
-        label: "shop upgrades",
+        label: "passive tree",
         promise: queryClient.prefetchQuery({
-          ...convexQuery(api.upgrades.getShopUpgrades, { playerId }),
+          ...convexQuery(api.passiveTree.getTree, { playerId }),
           ...convexQueryCacheOptions,
         }),
       },

@@ -1,8 +1,6 @@
 import { useState } from "react";
-import {
-  usePlayerUpgrades,
-  useSetAutoAttack,
-} from "~/hooks/usePlayer";
+import { useSetAutoAttack } from "~/hooks/usePlayer";
+import { usePassiveTree } from "~/hooks/usePassives";
 import { COMBAT_ZONE_LABELS, type CombatZone } from "~/lib/combatZones";
 
 export type AutoBattleMode = "count" | "duration" | "until-stopped";
@@ -36,19 +34,12 @@ export function AutomationControls({
   isQueueing = false,
   error = null,
 }: AutomationControlsProps) {
-  const ownedUpgrades = usePlayerUpgrades(player._id);
+  const passiveTree = usePassiveTree(player._id);
   const setAutoAttack = useSetAutoAttack();
   const [isToggling, setIsToggling] = useState(false);
 
-  const ownsAutoAttack =
-    ownedUpgrades.data?.some(
-      (upgrade) => upgrade.upgradeId === "auto_attack" && upgrade.quantity > 0
-    ) ?? false;
-  const ownsAutoBattle =
-    ownedUpgrades.data?.some(
-      (upgrade) =>
-        upgrade.upgradeId === "auto_start_fight" && upgrade.quantity > 0
-    ) ?? false;
+  const ownsAutoAttack = passiveTree.data?.bonuses.autoAttack ?? false;
+  const ownsAutoBattle = passiveTree.data?.bonuses.autoBattle ?? false;
   const autoBattleConfig =
     tier !== undefined &&
     settings &&
@@ -135,8 +126,8 @@ export function AutomationControls({
                 {autoBattleConfig.zone
                   ? ` · ${COMBAT_ZONE_LABELS[autoBattleConfig.zone]}`
                   : ""}{" "}
-                battles when you enter the wilds. Owned upgrades remain usable
-                at any level.
+                battles when you enter the wilds. Unlock via the passive
+                skill tree.
               </span>
             </span>
             <span

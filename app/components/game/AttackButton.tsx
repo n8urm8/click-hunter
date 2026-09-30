@@ -87,12 +87,9 @@ export function AttackButton({
     setIsProcessingVictory(true);
     setFightPhase("victory");
 
-    // Calculate rewards based on tier
-    const baseGold = (fight.monsterTier * 100) + Math.floor(Math.random() * 50);
-    const baseExp = (fight.monsterTier * 50) + Math.floor(Math.random() * 25);
-
     try {
-      // Record fight in database
+      // Server-authoritative rewards (passive tree multipliers applied
+      // server-side in loot.ts). No client-calculated gold/XP is sent.
       const reward = await recordFight({
         playerId: player._id,
         monsterTier: fight.monsterTier,
@@ -102,8 +99,6 @@ export function AttackButton({
         ...(fight.monsterZone === undefined
           ? {}
           : { monsterZone: fight.monsterZone }),
-        goldEarned: baseGold,
-        experienceEarned: baseExp,
         settlementKey: fight.settlementKey,
       });
 

@@ -25,6 +25,7 @@ import type * as items from "../items.js";
 import type * as leaderboards from "../leaderboards.js";
 import type * as loot from "../loot.js";
 import type * as migrations from "../migrations.js";
+import type * as passiveTree from "../passiveTree.js";
 import type * as players from "../players.js";
 import type * as recipeValidation from "../recipeValidation.js";
 import type * as seed from "../seed.js";
@@ -59,6 +60,7 @@ declare const fullApi: ApiFromModules<{
   leaderboards: typeof leaderboards;
   loot: typeof loot;
   migrations: typeof migrations;
+  passiveTree: typeof passiveTree;
   players: typeof players;
   recipeValidation: typeof recipeValidation;
   seed: typeof seed;

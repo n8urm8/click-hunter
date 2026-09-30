@@ -1031,8 +1031,8 @@ export function FightArea({ player }: FightAreaProps) {
         {manualFightBlocked && !isRespawning && (
           <p className="text-center text-xs text-muted-foreground" role="status">
             Finish or stop your queued tasks before entering the wilds or
-            challenging a boss. Battles can only be queued once you own Battle
-            Automation.
+            challenging a boss. Battles can only be queued once you unlock
+            battle automation in the passive skill tree.
           </p>
         )}
       </div>
