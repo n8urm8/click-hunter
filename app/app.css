@@ -171,6 +171,106 @@ body {
 }
 
 @layer components {
+  .combat-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem 1.5rem;
+  }
+
+  .combat-stat {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .combat-stat dt {
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+  }
+
+  .combat-stat dd {
+    color: var(--foreground);
+    font-size: 1.125rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  .combat-choice {
+    display: flex;
+    position: relative;
+    min-height: 2.75rem;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    padding: 0.5rem;
+    color: var(--foreground);
+    background: var(--secondary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: border-color 150ms ease-out, background-color 150ms ease-out;
+  }
+
+  .combat-choice:hover {
+    border-color: var(--primary);
+  }
+
+  .combat-choice:has(input:checked) {
+    border-color: var(--primary);
+    background: color-mix(in oklab, var(--primary) 15%, var(--secondary));
+    color: var(--primary);
+  }
+
+  .combat-choice:has(input:focus-visible) {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  .combat-choice:has(input:disabled) {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .combat-choice--zone {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 0.5rem;
+    padding: 0.75rem;
+  }
+
+  .combat-choice--zone > span:last-child {
+    color: var(--foreground);
+  }
+
+  .combat-input {
+    min-height: 2.75rem;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    background: var(--background);
+    padding: 0.5rem 0.75rem;
+    color: var(--foreground);
+    font-size: 0.875rem;
+  }
+
+  .combat-input--select {
+    appearance: none;
+    padding-right: 2.5rem;
+  }
+
+  .combat-input:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  @media (min-width: 640px) {
+    .combat-stats {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
+  }
+
   .game-navbar {
     position: sticky;
     top: 0;

@@ -1,7 +1,7 @@
 import { cn, formatNumber } from "~/lib/utils";
-import { calculateDerivedStats } from "~/lib/statCalculations";
+import type { DerivedStats } from "~/lib/statCalculations";
 
-export interface PlayerSummaryStats {
+export interface PlayerSummaryStats extends DerivedStats {
   gold: number;
   level: number;
   str: number;
@@ -26,14 +26,6 @@ export function PlayerStatsSummary({
   layout = "menu",
   className,
 }: PlayerStatsSummaryProps) {
-  const derived = calculateDerivedStats(
-    player.str,
-    player.dex,
-    player.int,
-    player.luk,
-    player.con
-  );
-
   const groups = [
     {
       label: "Attributes",
@@ -48,26 +40,26 @@ export function PlayerStatsSummary({
     {
       label: "Combat",
       stats: [
-        { label: "Health", shortLabel: "HP", value: derived.health },
+        { label: "Health", shortLabel: "HP", value: player.health },
         {
           label: "Attack",
           shortLabel: "ATK",
-          value: Math.floor(derived.attack),
+          value: Math.floor(player.attack),
         },
         {
           label: "Defense",
           shortLabel: "DEF",
-          value: Math.floor(derived.defense),
+          value: Math.floor(player.defense),
         },
         {
           label: "Attack speed",
           shortLabel: "AS",
-          value: `${derived.attackSpeed.toFixed(2)}/s`,
+          value: `${player.attackSpeed.toFixed(2)}/s`,
         },
         {
           label: "Crit chance",
           shortLabel: "Crit",
-          value: `${derived.critChance.toFixed(1)}%`,
+          value: `${player.critChance.toFixed(1)}%`,
         },
       ],
     },

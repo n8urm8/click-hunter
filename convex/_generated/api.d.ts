@@ -11,6 +11,7 @@
 import type * as achievements from "../achievements.js";
 import type * as admin from "../admin.js";
 import type * as adminAuth from "../adminAuth.js";
+import type * as adminConfig from "../adminConfig.js";
 import type * as bazaar from "../bazaar.js";
 import type * as bossData from "../bossData.js";
 import type * as characterLevel from "../characterLevel.js";
@@ -32,6 +33,8 @@ import type * as seed from "../seed.js";
 import type * as skillBonuses from "../skillBonuses.js";
 import type * as skillProgression from "../skillProgression.js";
 import type * as skills from "../skills.js";
+import type * as taskSettlement from "../taskSettlement.js";
+import type * as taskTiming from "../taskTiming.js";
 import type * as tasks from "../tasks.js";
 import type * as upgrades from "../upgrades.js";
 import type * as zones from "../zones.js";
@@ -46,6 +49,7 @@ declare const fullApi: ApiFromModules<{
   achievements: typeof achievements;
   admin: typeof admin;
   adminAuth: typeof adminAuth;
+  adminConfig: typeof adminConfig;
   bazaar: typeof bazaar;
   bossData: typeof bossData;
   characterLevel: typeof characterLevel;
@@ -67,6 +71,8 @@ declare const fullApi: ApiFromModules<{
   skillBonuses: typeof skillBonuses;
   skillProgression: typeof skillProgression;
   skills: typeof skills;
+  taskSettlement: typeof taskSettlement;
+  taskTiming: typeof taskTiming;
   tasks: typeof tasks;
   upgrades: typeof upgrades;
   zones: typeof zones;

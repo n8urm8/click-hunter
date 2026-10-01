@@ -2,12 +2,14 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
+import { settleTasksBeforeInteraction } from "./taskSettlement";
 import {
   BUFF_VARIANT_VALUES,
   COMBAT_EFFECT_TYPES,
   DAMAGE_STAT_VALUES,
   DAMAGE_TYPE_VALUES,
   DEFAULT_ITEM_RARITY_LEVEL,
+  ELEMENT_VALUES,
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
   SKILL_BONUS_SCOPE_VALUES,
@@ -16,6 +18,7 @@ import {
   type CombatEffectType,
   type DamageStat,
   type DamageType,
+  type ElementKind,
   type EquipmentSlot,
   type ItemCategory,
   type ItemEffectStat,
@@ -144,6 +147,7 @@ export interface ItemDefinitionInput {
   attackSpeed?: number;
   damageStat?: DamageStat;
   damageType?: DamageType;
+  element?: ElementKind;
   baseDefense?: number;
   speedPenalty?: number;
   buffVariant?: BuffVariant;
@@ -321,6 +325,14 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
     ) {
       throw new Error("Weapon damage type must be physical or magical");
     }
+    if (
+      input.element !== undefined &&
+      !ELEMENT_VALUES.includes(input.element)
+    ) {
+      throw new Error(
+        "Weapon element must be light, dark, water, fire, wind, or earth"
+      );
+    }
     if (input.baseDefense !== undefined || input.speedPenalty !== undefined) {
       throw new Error("Weapons cannot define armor fields");
     }
@@ -328,7 +340,8 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
     input.baseDamage !== undefined ||
     input.attackSpeed !== undefined ||
     input.damageStat !== undefined ||
-    input.damageType !== undefined
+    input.damageType !== undefined ||
+    input.element !== undefined
   ) {
     throw new Error("Only main-hand weapons can define weapon combat fields");
   }
@@ -416,6 +429,7 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
         ? { damageType: "physical" as const }
         : {}
       : { damageType: input.damageType }),
+    ...(input.element === undefined ? {} : { element: input.element }),
     ...(input.baseDefense === undefined
       ? {}
       : { baseDefense: input.baseDefense }),
@@ -427,6 +441,12 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
       : { buffVariant: input.buffVariant }),
   };
 }
+
+export const PLAYER_ATTACK_SPEED_BALANCE_DEFAULT = {
+  key: "combatAttackSpeedMultiplier",
+  value: 0.5,
+  description: "Multiplier on all player attack speeds after DEX, armor and the minimum speed (0.5 = half speed)",
+} as const;
 
 export const COMBAT_BALANCE_DEFAULTS = [
   { key: "combatStatAttackCoeff", value: 1.2, description: "Attack gained per point of a weapon's scaling stat" },
@@ -442,6 +462,7 @@ export const COMBAT_BALANCE_DEFAULTS = [
   { key: "combatRegenCapPerSecond", value: 10, description: "Maximum heal-over-time HP per second" },
   { key: "combatStatBonusCap", value: 100, description: "Maximum combined timed stat bonus per stat" },
   { key: "combatXpMultiplierCap", value: 10, description: "Maximum combined combat XP multiplier" },
+  PLAYER_ATTACK_SPEED_BALANCE_DEFAULT,
 ] as const;
 
 async function getCombatBalanceNumber(
@@ -454,7 +475,8 @@ async function getCombatBalanceNumber(
     .withIndex("by_key", (q) => q.eq("key", key))
     .first();
   const value = row?.value;
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
+  return typeof value === "number" && Number.isFinite(value) &&
+    (key === "combatAttackSpeedMultiplier" ? value > 0 : value >= 0)
     ? value
     : fallback;
 }
@@ -479,6 +501,7 @@ export async function readCombatBalance(ctx: DatabaseCtx) {
     regenCapPerSecond: entries[10],
     statBonusCap: entries[11],
     xpMultiplierCap: entries[12],
+    attackSpeedMultiplier: entries[13],
   };
 }
 
@@ -488,6 +511,7 @@ export const useSkillBoost = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
       throw new Error("Owned item not found");
@@ -575,6 +599,7 @@ export const useCombatBoost = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
       throw new Error("Owned item not found");
@@ -659,6 +684,7 @@ export type EquippedWeaponStats = {
   attackSpeed: number;
   damageStat: DamageStat;
   damageType: DamageType;
+  element: ElementKind | null;
 } | null;
 
 export async function getEquippedWeapon(
@@ -686,6 +712,11 @@ export async function getEquippedWeapon(
     attackSpeed: item.attackSpeed,
     damageStat: item.damageStat,
     damageType: item.damageType ?? "physical",
+    element:
+      item.element !== undefined &&
+      (ELEMENT_VALUES as readonly string[]).includes(item.element)
+        ? (item.element as ElementKind)
+        : null,
   };
 }
 
@@ -714,12 +745,12 @@ export function computeAttackSpeed(
   weaponSpeed: number,
   dex: number,
   armorPenalty: number,
-  balance: { dexSpeedCoeff: number; minAttackSpeed: number }
+  balance: { dexSpeedCoeff: number; minAttackSpeed: number; attackSpeedMultiplier: number }
 ) {
   return Math.max(
     balance.minAttackSpeed,
     weaponSpeed + Math.max(0, dex - 10) * balance.dexSpeedCoeff - armorPenalty
-  );
+  ) * balance.attackSpeedMultiplier;
 }
 
 export type ActiveCombatBoosts = {
@@ -731,9 +762,10 @@ export type ActiveCombatBoosts = {
 export async function getActiveCombatBoosts(
   ctx: DatabaseCtx,
   playerId: Id<"players">,
-  now: number
+  now: number,
+  balance?: Awaited<ReturnType<typeof readCombatBalance>>
 ): Promise<ActiveCombatBoosts> {
-  const balance = await readCombatBalance(ctx);
+  const resolvedBalance = balance ?? await readCombatBalance(ctx);
   const rows = await ctx.db
     .query("playerCombatBoosts")
     .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
@@ -751,17 +783,17 @@ export async function getActiveCombatBoosts(
     if (row.expiresAt <= now) continue;
     if (row.effectType === "combat-stat-boost" && row.effectStat) {
       statBonus[row.effectStat] = Math.min(
-        balance.statBonusCap,
+        resolvedBalance.statBonusCap,
         statBonus[row.effectStat] + row.effectAmount
       );
     } else if (row.effectType === "heal-over-time") {
       regenPerSecond = Math.min(
-        balance.regenCapPerSecond,
+        resolvedBalance.regenCapPerSecond,
         regenPerSecond + row.effectAmount
       );
     } else if (row.effectType === "combat-xp-multiplier") {
       xpMultiplier = Math.min(
-        balance.xpMultiplierCap,
+        resolvedBalance.xpMultiplierCap,
         xpMultiplier * row.effectAmount
       );
     }
@@ -801,7 +833,7 @@ export const getPlayerInventory = query({
   handler: async (ctx, { playerId }) => {
     const capacity = await getInventorySlotCapacity(ctx);
     const rows = await getOwnedItemRows(ctx, playerId, capacity);
-    const [rarities, pendingRewards] = await Promise.all([
+    const [rarities, pendingRewards, attackSpeedMultiplier] = await Promise.all([
       ctx.db.query("itemRarities").collect(),
       ctx.db
         .query("pendingRewards")
@@ -810,6 +842,7 @@ export const getPlayerInventory = query({
         )
         .order("desc")
         .take(100),
+      getCombatBalanceNumber(ctx, PLAYER_ATTACK_SPEED_BALANCE_DEFAULT.key, PLAYER_ATTACK_SPEED_BALANCE_DEFAULT.value),
     ]);
     const rarityByLevel = new Map(
       rarities.map((rarity) => [rarity.level, rarity])
@@ -851,6 +884,7 @@ export const getPlayerInventory = query({
 
     return {
       capacity,
+      attackSpeedMultiplier,
       usedSlots: inventory.length,
       remainingSlots: Math.max(0, capacity - inventory.length),
       inventory,
@@ -1119,6 +1153,7 @@ export const claimPendingReward = mutation({
     rewardId: v.id("pendingRewards"),
   },
   handler: async (ctx, { playerId, rewardId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const reward = await ctx.db.get(rewardId);
     if (
       !reward ||
@@ -1156,6 +1191,7 @@ export const claimAllPendingRewards = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const rewards = await ctx.db
       .query("pendingRewards")
       .withIndex("by_playerId_and_status", (q) =>
@@ -1191,6 +1227,7 @@ export const equipItem = mutation({
     slot: equipmentSlotValidator,
   },
   handler: async (ctx, { playerId, playerItemId, slot }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
       throw new Error("Owned item not found");
@@ -1256,6 +1293,7 @@ export const unequipItem = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
       throw new Error("Owned item not found");

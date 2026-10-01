@@ -34,6 +34,7 @@ import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
 import { validateAllRecipeChains } from "./recipeValidation";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
+import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 import {
   PASSIVE_POINT_BALANCE_DEFAULT,
   seedPassiveContent,
@@ -127,12 +128,13 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "autoBattleCreditCapMs", value: 5 * 60 * 1000, description: "Maximum online auto-battle time banked between heartbeats (milliseconds)" },
     { key: "respawnTimeMs", value: 5 * 1000, description: "Recovery time after a defeated battle before the next encounter (milliseconds)" },
     { key: "autoBattleRewards", value: { goldPerTier: 100, goldVariance: 50, experiencePerTier: 50, experienceVariance: 25 }, description: "Server-side regular auto-battle reward formula" },
-    { key: "monsterPowerMultiplier", value: DEFAULT_MONSTER_POWER_MULTIPLIER, description: "Scales regular-monster HP and damage (1 = unchanged). Lower this if early fights feel too hard" },
+    { key: "monsterPowerMultiplier", value: DEFAULT_MONSTER_POWER_MULTIPLIER, description: "Multiplier for regular-monster HP and damage (1 = original strength)" },
     { key: "bazaarTaxPercent", value: DEFAULT_BAZAAR_TAX_PERCENT, description: "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)" },
     { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
     { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
     { ...PASSIVE_POINT_BALANCE_DEFAULT },
     ...SKILL_TASK_BALANCE_DEFAULTS,
+    ...TASK_SYNC_BALANCE_DEFAULTS,
   ];
   for (const entry of entries) {
     const existing = await ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", entry.key)).first();
@@ -150,7 +152,7 @@ async function populateTaskDefinitions(ctx: MutationCtx) {
       name: "Auto-battle",
       category: "battle",
       description:
-        "Fight regular monsters at a selected tier while the player remains online. Unlock via the passive skill tree.",
+        "Fight regular monsters at a selected tier while the player remains online. Available to everyone.",
       canProgressOffline: false,
       requiresOnline: true,
       enabled: true,
@@ -509,6 +511,11 @@ export const resetForestCrafting = mutation({
       ) {
         skillActionTaskIds.add(String(task._id));
         await ctx.db.delete(task._id);
+        if (!task.canProgressOffline) {
+          const presence = await ctx.db.query("taskPresence")
+            .withIndex("by_playerId", (q) => q.eq("playerId", task.playerId)).unique();
+          if (presence?.taskId === task._id) await ctx.db.delete(presence._id);
+        }
       }
     }
 
@@ -795,7 +802,7 @@ export const seedBazaarOrders = mutation({
         rebirthTierThreshold,
         currentTier: 1,
         maxTierReached: 1,
-        autoAttackEnabled: false,
+        autoAttackEnabled: true,
         autoStartFightEnabled: false,
         createdAt: now,
         lastUpdated: now,

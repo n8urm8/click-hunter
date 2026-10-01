@@ -1,14 +1,20 @@
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./adminAuth";
+import {
+  ADMIN_CONFIG_TABLES,
+  type AdminConfigTable,
+} from "./adminConfig";
 import { createCharacterLevelLookup } from "./characterLevel";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
+  ELEMENT_VALUES,
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
   SKILL_BONUS_SCOPE_VALUES,
   SKILL_TASK_EFFECT_TYPES,
+  type ElementKind,
   type ItemEffectStat,
   type SkillBonusScope,
 } from "./itemTypes";
@@ -18,6 +24,7 @@ import {
   normalizeItemDefinition,
 } from "./items";
 import { validateRecipeChain } from "./recipeValidation";
+import { isTaskSyncInterval, TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 
 const STAT_KEYS = new Set(["str", "dex", "int", "luk", "con"]);
 const craftingConfigKindValidator = v.union(
@@ -65,6 +72,14 @@ const damageStatValidator = v.union(
 const damageTypeValidator = v.union(
   v.literal("physical"),
   v.literal("magical")
+);
+const elementValidator = v.union(
+  v.literal("light"),
+  v.literal("dark"),
+  v.literal("water"),
+  v.literal("fire"),
+  v.literal("wind"),
+  v.literal("earth")
 );
 const buffVariantValidator = v.union(
   v.literal("base"),
@@ -439,14 +454,32 @@ async function recipeItemRows(
 }
 
 /**
- * Read all live configuration for the admin editor.
+ * Read one editor section and its lookup catalogs. Older clients omitting
+ * section retain the full response; unrequested tables are empty and not read.
  */
 export const getConfig = query({
   args: {
     playerId: v.id("players"),
+    section: v.optional(v.union(
+      v.literal("monsters"),
+      v.literal("items"),
+      v.literal("skills"),
+      v.literal("tree"),
+      v.literal("general")
+    )),
   },
-  handler: async (ctx, { playerId }) => {
+  handler: async (ctx, { playerId, section }) => {
     await requireAdmin(ctx, playerId);
+
+    const tables = section
+      ? new Set<AdminConfigTable>(ADMIN_CONFIG_TABLES[section])
+      : null;
+    const read = async <Table extends AdminConfigTable>(
+      table: Table
+    ): Promise<Doc<Table>[]> =>
+      tables === null || tables.has(table)
+        ? ctx.db.query(table).collect()
+        : [];
 
     const [
       gameBalance,
@@ -472,28 +505,28 @@ export const getConfig = query({
       lootSources,
       passiveNodes,
     ] = await Promise.all([
-      ctx.db.query("gameBalance").collect(),
-      ctx.db.query("upgrades").collect(),
-      ctx.db.query("itemRarities").collect(),
-      ctx.db.query("items").collect(),
-      ctx.db.query("monsters").collect(),
-      ctx.db.query("bosses").collect(),
-      ctx.db.query("hiddenSpots").collect(),
-      ctx.db.query("achievements").collect(),
-      ctx.db.query("rebirthRewards").collect(),
-      ctx.db.query("gameEvents").collect(),
-      ctx.db.query("taskDefinitions").collect(),
-      ctx.db.query("skillDefinitions").collect(),
-      ctx.db.query("skillTierDefinitions").collect(),
-      ctx.db.query("gatheringActivities").collect(),
-      ctx.db.query("recipes").collect(),
-      ctx.db.query("recipeIngredients").collect(),
-      ctx.db.query("recipeOutputs").collect(),
-      ctx.db.query("augmentationDefinitions").collect(),
-      ctx.db.query("lootTables").collect(),
-      ctx.db.query("lootTableEntries").collect(),
-      ctx.db.query("lootSources").collect(),
-      ctx.db.query("passiveNodes").collect(),
+      read("gameBalance"),
+      read("upgrades"),
+      read("itemRarities"),
+      read("items"),
+      read("monsters"),
+      read("bosses"),
+      read("hiddenSpots"),
+      read("achievements"),
+      read("rebirthRewards"),
+      read("gameEvents"),
+      read("taskDefinitions"),
+      read("skillDefinitions"),
+      read("skillTierDefinitions"),
+      read("gatheringActivities"),
+      read("recipes"),
+      read("recipeIngredients"),
+      read("recipeOutputs"),
+      read("augmentationDefinitions"),
+      read("lootTables"),
+      read("lootTableEntries"),
+      read("lootSources"),
+      read("passiveNodes"),
     ]);
 
     return {
@@ -646,6 +679,18 @@ export const updateGameBalance = mutation({
     const balance = await ctx.db.get(args.balanceId);
     if (!balance) {
       throw new Error("Balance entry not found");
+    }
+    if (TASK_SYNC_BALANCE_DEFAULTS.some((entry) => entry.key === balance.key) &&
+      !isTaskSyncInterval(args.value)) {
+      throw new Error("Task sync intervals must be whole milliseconds between 1000 and 300000");
+    }
+    if (balance.key === "taskHeartbeatGraceMs" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1_500)) {
+      throw new Error("Online grace must be at least 1500 whole milliseconds");
+    }
+    if (balance.key === "combatAttackSpeedMultiplier" &&
+      (typeof args.value !== "number" || !Number.isFinite(args.value) || args.value <= 0)) {
+      throw new Error("Combat attack speed multiplier must be a positive finite number");
     }
 
     await ctx.db.patch(balance._id, {
@@ -941,6 +986,7 @@ export const createItem = mutation({
     attackSpeed: v.optional(v.union(v.number(), v.null())),
     damageStat: v.optional(v.union(damageStatValidator, v.null())),
     damageType: v.optional(v.union(damageTypeValidator, v.null())),
+    element: v.optional(v.union(elementValidator, v.null())),
     baseDefense: v.optional(v.union(v.number(), v.null())),
     speedPenalty: v.optional(v.union(v.number(), v.null())),
     buffVariant: v.optional(v.union(buffVariantValidator, v.null())),
@@ -1003,6 +1049,10 @@ export const createItem = mutation({
       args.damageType === undefined || args.damageType === null
         ? undefined
         : args.damageType;
+    const element =
+      args.element === undefined || args.element === null
+        ? undefined
+        : args.element;
     const baseDefense =
       args.baseDefense === undefined || args.baseDefense === null
         ? undefined
@@ -1041,6 +1091,7 @@ export const createItem = mutation({
       ...(attackSpeed === undefined ? {} : { attackSpeed }),
       ...(damageStat === undefined ? {} : { damageStat }),
       ...(damageType === undefined ? {} : { damageType }),
+      ...(element === undefined ? {} : { element }),
       ...(baseDefense === undefined ? {} : { baseDefense }),
       ...(speedPenalty === undefined ? {} : { speedPenalty }),
       ...(buffVariant === undefined ? {} : { buffVariant }),
@@ -1087,6 +1138,7 @@ export const updateItem = mutation({
     attackSpeed: v.optional(v.union(v.number(), v.null())),
     damageStat: v.optional(v.union(damageStatValidator, v.null())),
     damageType: v.optional(v.union(damageTypeValidator, v.null())),
+    element: v.optional(v.union(elementValidator, v.null())),
     baseDefense: v.optional(v.union(v.number(), v.null())),
     speedPenalty: v.optional(v.union(v.number(), v.null())),
     buffVariant: v.optional(v.union(buffVariantValidator, v.null())),
@@ -1163,6 +1215,14 @@ export const updateItem = mutation({
       args.damageStat === undefined ? existing.damageStat : args.damageStat;
     const damageType =
       args.damageType === undefined ? existing.damageType : args.damageType;
+    const element =
+      args.element === undefined
+        ? (ELEMENT_VALUES as readonly string[]).includes(
+            existing.element ?? ""
+          )
+          ? (existing.element as ElementKind)
+          : undefined
+        : (args.element ?? undefined);
     const baseDefense =
       args.baseDefense === undefined
         ? existing.baseDefense
@@ -1213,6 +1273,7 @@ export const updateItem = mutation({
       ...(damageType === undefined || damageType === null
         ? {}
         : { damageType }),
+      ...(element === undefined || element === null ? {} : { element }),
       ...(baseDefense === undefined ? {} : { baseDefense }),
       ...(speedPenalty === undefined ? {} : { speedPenalty }),
       ...(buffVariant === undefined || buffVariant === null
@@ -2926,7 +2987,8 @@ const passiveBranchValidator = v.union(
   v.literal("mace"),
   v.literal("bow"),
   v.literal("staff"),
-  v.literal("skilling")
+  v.literal("skilling"),
+  v.literal("elemental")
 );
 
 const PASSIVE_EFFECT_TYPES = new Set([
@@ -2940,20 +3002,21 @@ const PASSIVE_EFFECT_TYPES = new Set([
   "xp-multiplier",
   "skill-xp-multiplier",
   "skill-speed-multiplier",
-  "unlock-auto-attack",
-  "unlock-auto-battle",
+  "elemental-damage-percent",
 ]);
 
 function normalizePassiveNode(args: {
   nodeId: string;
-  branch: "sword" | "dagger" | "mace" | "bow" | "staff" | "skilling";
+  branch: "sword" | "dagger" | "mace" | "bow" | "staff" | "skilling" | "elemental";
   name: string;
   description: string;
   effectType: string;
   effectStat: string | null;
   effectScope: SkillBonusScope | null;
+  element: string | null;
   effectAmount: number;
   requires: unknown;
+  requiresAny?: unknown;
   positionX: number;
   positionY: number;
   enabled: boolean;
@@ -2995,6 +3058,20 @@ function normalizePassiveNode(args: {
   ) {
     throw new Error("Only skill multiplier nodes can define an effect scope");
   }
+  let element: string | undefined;
+  if (args.element !== null) {
+    const candidate = requiredText(args.element, "Element", 20).toLowerCase();
+    if (!ELEMENT_VALUES.includes(candidate as (typeof ELEMENT_VALUES)[number])) {
+      throw new Error("Element must be light, dark, water, fire, wind, or earth");
+    }
+    element = candidate;
+  }
+  if (args.effectType === "elemental-damage-percent" && element === undefined) {
+    throw new Error("Elemental damage nodes require an element");
+  }
+  if (args.effectType !== "elemental-damage-percent" && args.element !== null) {
+    throw new Error("Only elemental damage nodes can define an element");
+  }
   if (!Number.isFinite(args.effectAmount)) {
     throw new Error("Effect amount must be finite");
   }
@@ -3004,8 +3081,15 @@ function normalizePassiveNode(args: {
     return entry.trim();
   });
   if (requires.includes(nodeId)) throw new Error("A node cannot require itself");
-  if (args.positionX < 0 || args.positionX > 100 || args.positionY < 0 || args.positionY > 100) {
-    throw new Error("Node positions must be between 0 and 100");
+  const requiresAnyRaw = args.requiresAny ?? [];
+  if (!Array.isArray(requiresAnyRaw)) throw new Error("RequiresAny must be an array");
+  const requiresAny = requiresAnyRaw.map((entry) => {
+    if (typeof entry !== "string" || !entry.trim()) throw new Error("RequiresAny entries must be node IDs");
+    return entry.trim();
+  });
+  if (requiresAny.includes(nodeId)) throw new Error("A node cannot require itself");
+  if (args.positionX < 0 || args.positionX > 21 || args.positionY < 0 || args.positionY > 21) {
+    throw new Error("Node positions must be grid cells between 0 and 21");
   }
   return {
     nodeId,
@@ -3015,8 +3099,10 @@ function normalizePassiveNode(args: {
     effectType: args.effectType,
     ...(effectStat === undefined ? {} : { effectStat }),
     ...(effectScope === undefined ? {} : { effectScope }),
+    ...(element === undefined ? {} : { element }),
     effectAmount: args.effectAmount,
     requires,
+    requiresAny,
     positionX: args.positionX,
     positionY: args.positionY,
     enabled: args.enabled,
@@ -3033,8 +3119,10 @@ export const createPassiveNode = mutation({
     effectType: v.string(),
     effectStat: v.union(v.string(), v.null()),
     effectScope: v.union(skillBonusScopeValidator, v.null()),
+    element: v.union(v.string(), v.null()),
     effectAmount: v.number(),
     requires: v.any(),
+    requiresAny: v.optional(v.any()),
     positionX: v.number(),
     positionY: v.number(),
     enabled: v.boolean(),
@@ -3063,8 +3151,10 @@ export const updatePassiveNode = mutation({
     effectType: v.string(),
     effectStat: v.union(v.string(), v.null()),
     effectScope: v.union(skillBonusScopeValidator, v.null()),
+    element: v.union(v.string(), v.null()),
     effectAmount: v.number(),
     requires: v.any(),
+    requiresAny: v.optional(v.any()),
     positionX: v.number(),
     positionY: v.number(),
     enabled: v.boolean(),

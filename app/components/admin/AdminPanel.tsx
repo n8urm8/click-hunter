@@ -53,13 +53,15 @@ import {
   useUpdatePlayer,
   useUpdateRecipe,
   useResetForestCrafting,
+  useSeedAdminPassiveTree,
   useUpdateRebirthReward,
   useUpdateSkillDefinition,
   useUpdateSkillTierDefinition,
   useUpdateTaskDefinition,
   useUpdateUpgrade,
 } from "~/hooks/useAdmin";
-import { useSeedDefaultTree } from "~/hooks/usePassives";
+import { useAdminDraft } from "~/hooks/useAdminDraft";
+import type { AdminConfigSection } from "../../../convex/adminConfig";
 import {
   calculateCombatLevel,
   calculateDerivedStats,
@@ -75,6 +77,7 @@ import {
   type BuffVariant,
   type DamageStat,
   type DamageType,
+  type ElementKind,
   type EquipmentSlot,
   type ItemEffectStat,
   type ItemCategory,
@@ -360,7 +363,14 @@ function playerOptionLabel(player: AdminPlayer) {
   return `${name} - ${player.anonymousId.slice(-8)}`;
 }
 
-type PassiveBranch = "sword" | "dagger" | "mace" | "bow" | "staff" | "skilling";
+type PassiveBranch =
+  | "sword"
+  | "dagger"
+  | "mace"
+  | "bow"
+  | "staff"
+  | "skilling"
+  | "elemental";
 
 interface PassiveNodeForm {
   nodeId: string;
@@ -370,8 +380,10 @@ interface PassiveNodeForm {
   effectType: string;
   effectStat: string;
   effectScope: string;
+  element: string;
   effectAmount: string;
   requires: string;
+  requiresAny: string;
   positionX: string;
   positionY: string;
   enabled: boolean;
@@ -386,10 +398,12 @@ function passiveNodeForm(row?: Doc<"passiveNodes">): PassiveNodeForm {
     effectType: row?.effectType ?? "stat-boost",
     effectStat: row?.effectStat ?? "",
     effectScope: row?.effectScope ?? "",
+    element: row?.element ?? "",
     effectAmount: String(row?.effectAmount ?? 0),
     requires: (row?.requires ?? []).join(", "),
-    positionX: String(row?.positionX ?? 50),
-    positionY: String(row?.positionY ?? 50),
+    requiresAny: (row?.requiresAny ?? []).join(", "),
+    positionX: String(row?.positionX ?? 10.5),
+    positionY: String(row?.positionY ?? 10.5),
     enabled: row?.enabled ?? true,
   };
 }
@@ -403,11 +417,9 @@ function PassiveNodeEditor({
 }) {
   const create = useCreatePassiveNode();
   const update = useUpdatePassiveNode();
-  const [form, setForm] = useState(() => passiveNodeForm(row));
+  const [form, setForm] = useAdminDraft(passiveNodeForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(passiveNodeForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -431,8 +443,13 @@ function PassiveNodeEditor({
             | "gathering"
             | "crafting"
             | null,
+        element: form.element.trim() || null,
         effectAmount,
         requires: form.requires
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0),
+        requiresAny: form.requiresAny
           .split(",")
           .map((entry) => entry.trim())
           .filter((entry) => entry.length > 0),
@@ -440,8 +457,8 @@ function PassiveNodeEditor({
         positionY: requiredNumber(form.positionY, "Position Y", 0),
         enabled: form.enabled,
       };
-      if (args.positionX > 100 || args.positionY > 100) {
-        throw new Error("Positions must be between 0 and 100");
+      if (args.positionX > 21 || args.positionY > 21) {
+        throw new Error("Positions must be grid cells between 0 and 21");
       }
       if (row) {
         await update({ ...args, passiveNodeId: row._id });
@@ -467,8 +484,10 @@ function PassiveNodeEditor({
         "Effect type",
         "Effect stat",
         "Effect scope",
+        "Element",
         "Effect amount",
         "Requires",
+        "Requires any",
         "Position",
         "Enabled",
         "Description",
@@ -498,6 +517,7 @@ function PassiveNodeEditor({
           <option value="bow">bow</option>
           <option value="staff">staff</option>
           <option value="skilling">skilling</option>
+          <option value="elemental">elemental</option>
         </select>
       </Field>
       <Field label="Name">
@@ -533,6 +553,15 @@ function PassiveNodeEditor({
           }
         />
       </Field>
+      <Field label="Element">
+        <TextInput
+          value={form.element}
+          placeholder="light, dark, water, fire, wind, earth"
+          onChange={(event) =>
+            setForm({ ...form, element: event.currentTarget.value })
+          }
+        />
+      </Field>
       <Field label="Effect amount">
         <TextInput
           type="number"
@@ -549,13 +578,21 @@ function PassiveNodeEditor({
           onChange={(event) => setForm({ ...form, requires: event.currentTarget.value })}
         />
       </Field>
-      <Field label="Position X/Y">
+      <Field label="Requires any (comma-separated, unlocks with one)">
+        <TextInput
+          value={form.requiresAny}
+          placeholder="sword-5, dagger-5"
+          onChange={(event) => setForm({ ...form, requiresAny: event.currentTarget.value })}
+        />
+      </Field>
+      <Field label="Position X/Y (grid cells 0–21)">
         <div className="grid grid-cols-2 gap-2">
           <TextInput
             aria-label="Position X"
             type="number"
             min="0"
-            max="100"
+            max="21"
+            step="0.5"
             value={form.positionX}
             onChange={(event) =>
               setForm({ ...form, positionX: event.currentTarget.value })
@@ -565,7 +602,8 @@ function PassiveNodeEditor({
             aria-label="Position Y"
             type="number"
             min="0"
-            max="100"
+            max="21"
+            step="0.5"
             value={form.positionY}
             onChange={(event) =>
               setForm({ ...form, positionY: event.currentTarget.value })
@@ -594,7 +632,7 @@ function PassiveNodeEditor({
 }
 
 function SeedPassiveTreeButton({ playerId }: { playerId: Id<"players"> }) {
-  const seedDefaults = useSeedDefaultTree();
+  const seedDefaults = useSeedAdminPassiveTree();
   const [status, setStatus] = useState<string | null>(null);
   const [isSeeding, setIsSeeding] = useState(false);
 
@@ -631,8 +669,14 @@ function SeedPassiveTreeButton({ playerId }: { playerId: Id<"players"> }) {
   );
 }
 
-function CharacterEditorCard({ playerId }: { playerId: Id<"players"> }) {
-  const playersQuery = useAdminPlayers(playerId);
+function CharacterEditorCard({
+  playerId,
+  active,
+}: {
+  playerId: Id<"players">;
+  active: boolean;
+}) {
+  const playersQuery = useAdminPlayers(playerId, active);
   const updatePlayer = useUpdatePlayer();
   const players = playersQuery.data ?? [];
   const [selectedPlayerId, setSelectedPlayerId] =
@@ -689,12 +733,18 @@ function CharacterEditorCard({ playerId }: { playerId: Id<"players"> }) {
     setIsDirty(true);
   };
 
-  const handleReload = () => {
-    if (!selectedPlayer) return;
-    setForm(characterForm(selectedPlayer));
-    setExpectedLastUpdated(selectedPlayer.lastUpdated);
-    setIsDirty(false);
-    setError(null);
+  const handleReload = async () => {
+    try {
+      const result = await playersQuery.refetch({ throwOnError: true });
+      const latest = result.data?.find((player) => player._id === selectedPlayerId);
+      if (!latest) throw new Error("Selected character is no longer available.");
+      setForm(characterForm(latest));
+      setExpectedLastUpdated(latest.lastUpdated);
+      setIsDirty(false);
+      setError(null);
+    } catch (reloadError) {
+      setError(errorMessage(reloadError));
+    }
   };
 
   const hasRemoteUpdate =
@@ -820,15 +870,29 @@ function CharacterEditorCard({ playerId }: { playerId: Id<"players"> }) {
           Select any player to adjust resources, base stats, and progression.
           Level and combat values update from the base stats and are read-only.
         </CardDescription>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          disabled={!active || playersQuery.isFetching || isSaving}
+          onClick={() => void playersQuery.refetch()}
+        >
+          {playersQuery.isFetching ? "Refreshing..." : "Refresh players"}
+        </Button>
       </CardHeader>
       <CardContent className="space-y-5">
+        {playersQuery.isError && playersQuery.data && (
+          <p className="text-sm text-blood-light" role="alert">
+            Unable to refresh player characters: {errorMessage(playersQuery.error)}
+          </p>
+        )}
         {playersQuery.isPending ? (
           <p className="text-sm text-muted-foreground">
             Loading player characters...
           </p>
-        ) : playersQuery.isError ? (
+        ) : playersQuery.isError && !playersQuery.data ? (
           <p className="text-sm text-blood-light" role="alert">
-            Unable to load player characters.
+            Unable to load player characters: {errorMessage(playersQuery.error)}
           </p>
         ) : players.length === 0 ? (
           <p className="text-sm text-muted-foreground">
@@ -1068,7 +1132,7 @@ function CharacterEditorCard({ playerId }: { playerId: Id<"players"> }) {
                         type="button"
                         size="xs"
                         variant="outline"
-                        onClick={handleReload}
+                        onClick={() => void handleReload()}
                       >
                         Reload latest
                       </Button>
@@ -1114,15 +1178,10 @@ function BalanceEditor({
   row: Doc<"gameBalance">;
 }) {
   const update = useUpdateGameBalance();
-  const [value, setValue] = useState(() => JSON.stringify(row.value, null, 2) ?? "null");
-  const [description, setDescription] = useState(row.description);
+  const [value, setValue] = useAdminDraft(JSON.stringify(row.value, null, 2) ?? "null");
+  const [description, setDescription] = useAdminDraft(row.description);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => {
-    setValue(JSON.stringify(row.value, null, 2) ?? "null");
-    setDescription(row.description);
-  }, [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1295,11 +1354,9 @@ function SkillDefinitionEditor({
 }) {
   const create = useCreateSkillDefinition();
   const update = useUpdateSkillDefinition();
-  const [form, setForm] = useState(() => skillDefinitionForm(row));
+  const [form, setForm] = useAdminDraft(skillDefinitionForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(skillDefinitionForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1408,11 +1465,9 @@ function SkillTierDefinitionEditor({
 }) {
   const create = useCreateSkillTierDefinition();
   const update = useUpdateSkillTierDefinition();
-  const [form, setForm] = useState(() => skillTierForm(skills, row));
+  const [form, setForm] = useAdminDraft(skillTierForm(skills, row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(skillTierForm(skills, row)), [row, skills]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1521,11 +1576,9 @@ function GatheringActivityEditor({
 }) {
   const create = useCreateGatheringActivity();
   const update = useUpdateGatheringActivity();
-  const [form, setForm] = useState(() => gatheringActivityForm(skills, items, row));
+  const [form, setForm] = useAdminDraft(gatheringActivityForm(skills, items, row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(gatheringActivityForm(skills, items, row)), [row, skills, items]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1636,11 +1689,9 @@ function RecipeEditor({
 }) {
   const create = useCreateRecipe();
   const update = useUpdateRecipe();
-  const [form, setForm] = useState(() => recipeForm(skills, items, ingredients, outputs, row));
+  const [form, setForm] = useAdminDraft(recipeForm(skills, items, ingredients, outputs, row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(recipeForm(skills, items, ingredients, outputs, row)), [row, skills, items, ingredients, outputs]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1790,11 +1841,9 @@ function AugmentationDefinitionEditor({
 }) {
   const create = useCreateAugmentationDefinition();
   const update = useUpdateAugmentationDefinition();
-  const [form, setForm] = useState(() => augmentationForm(skills, items, row));
+  const [form, setForm] = useAdminDraft(augmentationForm(skills, items, row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(augmentationForm(skills, items, row)), [row, skills, items]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1888,11 +1937,9 @@ function lootTableForm(row?: Doc<"lootTables">): LootTableForm {
 function LootTableEditor({ playerId, row }: { playerId: Id<"players">; row?: Doc<"lootTables"> }) {
   const create = useCreateLootTable();
   const update = useUpdateLootTable();
-  const [form, setForm] = useState(() => lootTableForm(row));
+  const [form, setForm] = useAdminDraft(lootTableForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(lootTableForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1975,11 +2022,9 @@ function LootTableEntryEditor({
 }) {
   const create = useCreateLootTableEntry();
   const update = useUpdateLootTableEntry();
-  const [form, setForm] = useState(() => lootEntryForm(lootTables, items, row));
+  const [form, setForm] = useAdminDraft(lootEntryForm(lootTables, items, row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(lootEntryForm(lootTables, items, row)), [row, lootTables, items]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2051,11 +2096,9 @@ function LootSourceEditor({
 }) {
   const create = useCreateLootSource();
   const update = useUpdateLootSource();
-  const [form, setForm] = useState(() => lootSourceForm(lootTables, row));
+  const [form, setForm] = useAdminDraft(lootSourceForm(lootTables, row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(lootSourceForm(lootTables, row)), [row, lootTables]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2128,11 +2171,9 @@ function TaskDefinitionEditor({
 }) {
   const create = useCreateTaskDefinition();
   const update = useUpdateTaskDefinition();
-  const [form, setForm] = useState(() => taskDefinitionForm(row));
+  const [form, setForm] = useAdminDraft(taskDefinitionForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(taskDefinitionForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2342,11 +2383,9 @@ function UpgradeEditor({
   row: Doc<"upgrades">;
 }) {
   const update = useUpdateUpgrade();
-  const [form, setForm] = useState(() => upgradeForm(row));
+  const [form, setForm] = useAdminDraft(upgradeForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(upgradeForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2497,11 +2536,9 @@ function ItemRarityEditor({
 }) {
   const create = useCreateItemRarity();
   const update = useUpdateItemRarity();
-  const [form, setForm] = useState(() => itemRarityForm(row));
+  const [form, setForm] = useAdminDraft(itemRarityForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(itemRarityForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2606,6 +2643,7 @@ interface ItemForm {
   attackSpeed: string;
   damageStat: DamageStat | "";
   damageType: DamageType | "";
+  element: ElementKind | "";
   baseDefense: string;
   speedPenalty: string;
   buffVariant: BuffVariant | "";
@@ -2643,6 +2681,7 @@ function itemForm(
       row?.attackSpeed === undefined ? "" : String(row.attackSpeed),
     damageStat: row?.damageStat ?? "",
     damageType: row?.damageType ?? "",
+    element: (row?.element as ElementKind | undefined) ?? "",
     baseDefense:
       row?.baseDefense === undefined ? "" : String(row.baseDefense),
     speedPenalty:
@@ -2670,14 +2709,9 @@ function ItemEditor({
   const update = useUpdateItem();
   const defaultRarityLevel =
     rarities[0]?.level ?? DEFAULT_ITEM_RARITY_LEVEL;
-  const [form, setForm] = useState(() => itemForm(row, defaultRarityLevel));
+  const [form, setForm] = useAdminDraft(itemForm(row, defaultRarityLevel));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(itemForm(row, defaultRarityLevel)), [
-    row,
-    defaultRarityLevel,
-  ]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2722,6 +2756,7 @@ function ItemEditor({
         attackSpeed: optionalNumber(form.attackSpeed, "Attack speed", 0),
         damageStat: form.damageStat || null,
         damageType: form.damageType || null,
+        element: form.element || null,
         baseDefense: optionalNumber(form.baseDefense, "Base defense", 0),
         speedPenalty: optionalNumber(form.speedPenalty, "Speed penalty", 0),
         buffVariant: form.buffVariant || null,
@@ -2993,7 +3028,7 @@ function ItemEditor({
           }
         />
       </Field>
-      <Field label="Attack speed (weapons)">
+      <Field label="Base attack speed (before combatAttackSpeedMultiplier)">
         <TextInput
           type="number"
           min="0"
@@ -3035,6 +3070,26 @@ function ItemEditor({
           <option value="">None (physical for weapons)</option>
           <option value="physical">Physical</option>
           <option value="magical">Magical</option>
+        </select>
+      </Field>
+      <Field label="Element (weapon)">
+        <select
+          value={form.element}
+          onChange={(event) =>
+            setForm({
+              ...form,
+              element: event.currentTarget.value as ElementKind | "",
+            })
+          }
+          className={inputClass}
+        >
+          <option value="">None</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="water">Water</option>
+          <option value="fire">Fire</option>
+          <option value="wind">Wind</option>
+          <option value="earth">Earth</option>
         </select>
       </Field>
       <Field label="Base defense (armor)">
@@ -3147,11 +3202,9 @@ function MonsterEditor({
   encounterRate: number;
 }) {
   const update = useUpdateMonster();
-  const [form, setForm] = useState(() => monsterForm(row));
+  const [form, setForm] = useAdminDraft(monsterForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(monsterForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3314,11 +3367,9 @@ function BossEditor({
   row: Doc<"bosses">;
 }) {
   const update = useUpdateBoss();
-  const [form, setForm] = useState(() => bossForm(row));
+  const [form, setForm] = useAdminDraft(bossForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(bossForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3432,11 +3483,9 @@ function HiddenSpotEditor({
   row: Doc<"hiddenSpots">;
 }) {
   const update = useUpdateHiddenSpot();
-  const [form, setForm] = useState(() => hiddenSpotForm(row));
+  const [form, setForm] = useAdminDraft(hiddenSpotForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(hiddenSpotForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3531,11 +3580,9 @@ function AchievementEditor({
   row: Doc<"achievements">;
 }) {
   const update = useUpdateAchievement();
-  const [form, setForm] = useState(() => achievementForm(row));
+  const [form, setForm] = useAdminDraft(achievementForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(achievementForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3626,11 +3673,9 @@ function RebirthRewardEditor({
   row: Doc<"rebirthRewards">;
 }) {
   const update = useUpdateRebirthReward();
-  const [form, setForm] = useState(() => rebirthRewardForm(row));
+  const [form, setForm] = useAdminDraft(rebirthRewardForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => setForm(rebirthRewardForm(row)), [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3758,13 +3803,9 @@ function EventEditor({
   row?: Doc<"gameEvents">;
 }) {
   const save = useSaveEvent();
-  const [form, setForm] = useState(() => eventForm(row));
+  const [form, setForm] = useAdminDraft(eventForm(row));
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-
-  useEffect(() => {
-    if (row) setForm(eventForm(row));
-  }, [row]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3920,8 +3961,57 @@ function EventEditor({
   );
 }
 
+function ConfigSection({
+  playerId,
+  section,
+  active,
+  children,
+}: {
+  playerId: Id<"players">;
+  section: AdminConfigSection;
+  active: boolean;
+  children: (
+    config: { data: NonNullable<ReturnType<typeof useAdminConfig>["data"]> }
+  ) => ReactNode;
+}) {
+  const config = useAdminConfig(playerId, section, active);
+  return (
+    <TabsContent
+      value={section}
+      keepMounted
+      className="flex flex-col gap-6 outline-none [&[hidden]]:hidden"
+    >
+      <div className="flex items-center gap-3">
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          disabled={!active || config.isFetching}
+          onClick={() => void config.refetch()}
+        >
+          {config.isFetching ? "Refreshing..." : "Refresh configuration"}
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          Cached snapshot. Refresh to load changes from another session.
+        </p>
+      </div>
+      {config.isError && (
+        <p className="text-sm text-blood-light" role="alert">
+          Unable to load current configuration: {errorMessage(config.error)}
+        </p>
+      )}
+      {config.data
+        ? children({ data: config.data })
+        : config.isPending && (
+          <p className="text-sm text-muted-foreground">
+            Loading admin configuration...
+          </p>
+        )}
+    </TabsContent>
+  );
+}
+
 export function AdminPanel({ playerId }: AdminPanelProps) {
-  const config = useAdminConfig(playerId);
   const resetForestCrafting = useResetForestCrafting();
   const [resetStatus, setResetStatus] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -3943,28 +4033,6 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
     }
   };
 
-  if (config.isPending) {
-    return (
-      <Card className="forest-card p-4">
-        <p className="text-sm text-muted-foreground">Loading admin configuration...</p>
-      </Card>
-    );
-  }
-
-  if (!config.data) {
-    return (
-      <Card className="forest-card p-4">
-        <p className="text-sm text-blood-light" role="alert">
-          Unable to load admin configuration.
-        </p>
-      </Card>
-    );
-  }
-
-  const encounterRates = getMonsterEncounterRates(config.data.monsters);
-  const itemRarities = [...config.data.itemRarities].sort(
-    (left, right) => left.level - right.level
-  );
   const requestedTab = searchParams.get(ADMIN_TAB_PARAM);
   const activeTab = isAdminTab(requestedTab)
     ? requestedTab
@@ -3989,7 +4057,9 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
             <p className="mt-1 text-xs text-muted-foreground">
               Changes apply immediately to the live game, including stat-upgrade
               pricing and level requirements. Stable IDs and references are
-              read-only so existing player progress remains valid.
+              read-only so existing player progress remains valid. Each tab
+              loads on demand and refreshes after saves; unsaved drafts are
+              preserved when switching tabs or refreshing.
             </p>
           </div>
           <div className="shrink-0">
@@ -4034,488 +4104,516 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
           keepMounted
           className="space-y-6 outline-none"
         >
-          <CharacterEditorCard playerId={playerId} />
+          <CharacterEditorCard playerId={playerId} active={activeTab === "players"} />
         </TabsContent>
 
-        <TabsContent
-          value="monsters"
-          keepMounted
-          className="space-y-6 outline-none"
+        <ConfigSection
+          playerId={playerId}
+          section="monsters"
+          active={activeTab === "monsters"}
         >
-          <AdminSection
-            title="Monsters"
-            description="Tune base stats, rewards, attack timing, and encounter weighting. Rates are derived from the difficulty weights."
-            columns={[
-              "Name",
-              "STR",
-              "DEX",
-              "INT",
-              "LUK",
-              "CON",
-              "Gold drop",
-              "Experience reward",
-              "Base ms per attack",
-              "Difficulty weight",
-              "Encounter rate",
-            ]}
-          >
-            {config.data.monsters.map((row) => (
-              <MonsterEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                encounterRate={encounterRates.get(row._id) ?? 0}
-              />
-            ))}
-          </AdminSection>
+          {(config) => {
+            const encounterRates = getMonsterEncounterRates(config.data.monsters);
+            return (
+              <>
+                <AdminSection
+                  title="Monsters"
+                  description="Tune base stats, rewards, attack timing, and encounter weighting. Rates are derived from the difficulty weights."
+                  columns={[
+                    "Name",
+                    "STR",
+                    "DEX",
+                    "INT",
+                    "LUK",
+                    "CON",
+                    "Gold drop",
+                    "Experience reward",
+                    "Base ms per attack",
+                    "Difficulty weight",
+                    "Encounter rate",
+                  ]}
+                >
+                  {config.data.monsters.map((row) => (
+                    <MonsterEditor
+                      key={row._id}
+                      playerId={playerId}
+                      row={row}
+                      encounterRate={encounterRates.get(row._id) ?? 0}
+                    />
+                  ))}
+                </AdminSection>
 
-          <AdminSection
-            title="Bosses"
-            description="Tune generated tier bosses, their names, tier-scaled stats, and reward multipliers."
-            columns={[
-              "Name",
-              "Tier",
-              "STR",
-              "DEX",
-              "INT",
-              "LUK",
-              "CON",
-              "Reward multiplier",
-            ]}
-          >
-            {config.data.bosses.map((row) => (
-              <BossEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+                <AdminSection
+                  title="Bosses"
+                  description="Tune generated tier bosses, their names, tier-scaled stats, and reward multipliers."
+                  columns={[
+                    "Name",
+                    "Tier",
+                    "STR",
+                    "DEX",
+                    "INT",
+                    "LUK",
+                    "CON",
+                    "Reward multiplier",
+                  ]}
+                >
+                  {config.data.bosses.map((row) => (
+                    <BossEditor key={row._id} playerId={playerId} row={row} />
+                  ))}
+                </AdminSection>
 
-          <AdminSection
-            title="Loot tables"
-            description="Create and edit loot tables used by monster and boss reward sources."
-            columns={[
-              "Loot table ID",
-              "Name",
-              "Source type",
-              "Tier",
-              "Roll count",
-              "Enabled",
-            ]}
-          >
-            <LootTableEditor playerId={playerId} />
-            {config.data.lootTables.map((row) => (
-              <LootTableEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+                <AdminSection
+                  title="Loot tables"
+                  description="Create and edit loot tables used by monster and boss reward sources."
+                  columns={[
+                    "Loot table ID",
+                    "Name",
+                    "Source type",
+                    "Tier",
+                    "Roll count",
+                    "Enabled",
+                  ]}
+                >
+                  <LootTableEditor playerId={playerId} />
+                  {config.data.lootTables.map((row) => (
+                    <LootTableEditor key={row._id} playerId={playerId} row={row} />
+                  ))}
+                </AdminSection>
 
-          <AdminSection
-            title="Loot table entries"
-            description="Configure each table's item drops, chance, quantity range, and drop purpose."
-            columns={[
-              "Loot table",
-              "Item",
-              "Weight",
-              "Drop chance",
-              "Quantity",
-              "Guaranteed",
-              "Purpose",
-              "Enabled",
-            ]}
-          >
-            <LootTableEntryEditor
-              playerId={playerId}
-              lootTables={config.data.lootTables}
-              items={config.data.items}
-            />
-            {config.data.lootTableEntries.map((row) => (
-              <LootTableEntryEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                lootTables={config.data.lootTables}
-                items={config.data.items}
-              />
-            ))}
-          </AdminSection>
+                <AdminSection
+                  title="Loot table entries"
+                  description="Configure each table's item drops, chance, quantity range, and drop purpose."
+                  columns={[
+                    "Loot table",
+                    "Item",
+                    "Weight",
+                    "Drop chance",
+                    "Quantity",
+                    "Guaranteed",
+                    "Purpose",
+                    "Enabled",
+                  ]}
+                >
+                  <LootTableEntryEditor
+                    playerId={playerId}
+                    lootTables={config.data.lootTables}
+                    items={config.data.items}
+                  />
+                  {config.data.lootTableEntries.map((row) => (
+                    <LootTableEntryEditor
+                      key={row._id}
+                      playerId={playerId}
+                      row={row}
+                      lootTables={config.data.lootTables}
+                      items={config.data.items}
+                    />
+                  ))}
+                </AdminSection>
 
-          <AdminSection
-            title="Loot sources"
-            description="Map combat source identifiers to loot tables. Source identifiers are immutable after creation."
-            columns={["Source type", "Source ID", "Tier", "Loot table"]}
-          >
-            <LootSourceEditor
-              playerId={playerId}
-              lootTables={config.data.lootTables}
-            />
-            {config.data.lootSources.map((row) => (
-              <LootSourceEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                lootTables={config.data.lootTables}
-              />
-            ))}
-          </AdminSection>
-        </TabsContent>
+                <AdminSection
+                  title="Loot sources"
+                  description="Map combat source identifiers to loot tables. Source identifiers are immutable after creation."
+                  columns={["Source type", "Source ID", "Tier", "Loot table"]}
+                >
+                  <LootSourceEditor
+                    playerId={playerId}
+                    lootTables={config.data.lootTables}
+                  />
+                  {config.data.lootSources.map((row) => (
+                    <LootSourceEditor
+                      key={row._id}
+                      playerId={playerId}
+                      row={row}
+                      lootTables={config.data.lootTables}
+                    />
+                  ))}
+                </AdminSection>
+              </>
+            );
+          }}
+        </ConfigSection>
 
-        <TabsContent
-          value="items"
-          keepMounted
-          className="space-y-6 outline-none"
+        <ConfigSection
+          playerId={playerId}
+          section="items"
+          active={activeTab === "items"}
         >
-          <AdminSection
-            title="Item rarities"
-            description="Create and update item rarity names and colors. Higher numeric levels are more rare; changing a level updates assigned items."
-            columns={["Level", "Name", "Color"]}
-          >
-            <ItemRarityEditor playerId={playerId} />
-            {itemRarities.map((row) => (
-              <ItemRarityEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+          {(config) => {
+            const itemRarities = [...config.data.itemRarities].sort(
+              (left, right) => left.level - right.level
+            );
+            return (
+              <>
+                <AdminSection
+                  title="Item rarities"
+                  description="Create and update item rarity names and colors. Higher numeric levels are more rare; changing a level updates assigned items."
+                  columns={["Level", "Name", "Color"]}
+                >
+                  <ItemRarityEditor playerId={playerId} />
+                  {itemRarities.map((row) => (
+                    <ItemRarityEditor key={row._id} playerId={playerId} row={row} />
+                  ))}
+                </AdminSection>
 
-          <AdminSection
-            title="Items"
-            description="Create item definitions, assign rarity, and configure stacking and compatible equipment slots. Item definitions do not grant items to players."
-            columns={[
-              "Item ID",
-              "Name",
-              "Category",
-              "Rarity",
-              "Stackable",
-              "Maximum stack",
-              "Equipment slots",
-              "Description",
-            ]}
-          >
-            <ItemEditor playerId={playerId} rarities={itemRarities} />
-            {config.data.items.map((row) => (
-              <ItemEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                rarities={itemRarities}
-              />
-            ))}
-          </AdminSection>
-        </TabsContent>
+                <AdminSection
+                  title="Items"
+                  description="Create item definitions, assign rarity, and configure stacking and compatible equipment slots. Item definitions do not grant items to players."
+                  columns={[
+                    "Item ID",
+                    "Name",
+                    "Category",
+                    "Rarity",
+                    "Stackable",
+                    "Maximum stack",
+                    "Equipment slots",
+                    "Description",
+                  ]}
+                >
+                  <ItemEditor playerId={playerId} rarities={itemRarities} />
+                  {config.data.items.map((row) => (
+                    <ItemEditor
+                      key={row._id}
+                      playerId={playerId}
+                      row={row}
+                      rarities={itemRarities}
+                    />
+                  ))}
+                </AdminSection>
+              </>
+            );
+          }}
+        </ConfigSection>
 
-        <TabsContent
-          value="skills"
-          keepMounted
-          className="space-y-6 outline-none"
+        <ConfigSection
+          playerId={playerId}
+          section="skills"
+          active={activeTab === "skills"}
         >
-          <AdminSection
-            title="Skill definitions"
-            description="Create and edit gathering and crafting skills. Stable skill IDs are immutable after creation."
-            columns={[
-              "Skill ID",
-              "Name",
-              "Category",
-              "Paired skill",
-              "Max level",
-              "Enabled",
-              "Description",
-            ]}
-          >
-            <SkillDefinitionEditor
-              playerId={playerId}
-              skills={config.data.skillDefinitions}
-            />
-            {config.data.skillDefinitions.map((row) => (
-              <SkillDefinitionEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                skills={config.data.skillDefinitions}
-              />
-            ))}
-          </AdminSection>
-
-          <AdminSection
-            title="Skill tiers"
-            description="Configure level gates for each skill tier. Skill ID and tier are immutable on existing rows."
-            columns={[
-              "Skill",
-              "Tier",
-              "Name",
-              "Required level",
-              "Enabled",
-              "Description",
-            ]}
-          >
-            <SkillTierDefinitionEditor
-              playerId={playerId}
-              skills={config.data.skillDefinitions}
-            />
-            {config.data.skillTierDefinitions.map((row) => (
-              <SkillTierDefinitionEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                skills={config.data.skillDefinitions}
-              />
-            ))}
-          </AdminSection>
-
-          <AdminSection
-            title="Gathering activities"
-            description="Edit timed gathering actions, item yields, XP rewards, and output items."
-            columns={[
-              "Activity ID",
-              "Skill",
-              "Tier",
-              "Name",
-              "Output item",
-              "Yield",
-              "Duration",
-              "XP",
-              "Enabled",
-              "Description",
-            ]}
-          >
-            <GatheringActivityEditor
-              playerId={playerId}
-              skills={config.data.skillDefinitions}
-              items={config.data.items}
-            />
-            {config.data.gatheringActivities.map((row) => (
-              <GatheringActivityEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                skills={config.data.skillDefinitions}
-                items={config.data.items}
-              />
-            ))}
-          </AdminSection>
-
-          <AdminSection
-            title="Recipes"
-            description="Edit crafting recipes, inputs, outputs, XP, and output families."
-            columns={[
-              "Recipe ID",
-              "Skill",
-              "Tier",
-              "Name",
-              "Duration",
-              "XP",
-              "Output family",
-              "Enabled",
-              "Ingredients",
-              "Outputs",
-              "Description",
-            ]}
-          >
-            <RecipeEditor
-              playerId={playerId}
-              skills={config.data.skillDefinitions}
-              items={config.data.items}
-              ingredients={[]}
-              outputs={[]}
-            />
-            {config.data.recipes.map((row) => (
-              <RecipeEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                skills={config.data.skillDefinitions}
-                items={config.data.items}
-                ingredients={config.data.recipeIngredients.filter(
-                  (ingredient) => ingredient.recipeId === row.recipeId
-                )}
-                outputs={config.data.recipeOutputs.filter(
-                  (output) => output.recipeId === row.recipeId
-                )}
-              />
-            ))}
-          </AdminSection>
-
-          <AdminSection
-            title="Augmentations"
-            description="Edit equipment augmentation materials, catalysts, slot restrictions, and effects."
-            columns={[
-              "Augmentation ID",
-              "Skill",
-              "Tier",
-              "Name",
-              "Base family",
-              "Slots",
-              "Material",
-              "Qty",
-              "Catalyst",
-              "Catalyst qty",
-              "Effect type",
-              "Effect stat",
-              "Amount",
-              "Enabled",
-              "Description",
-            ]}
-          >
-            <AugmentationDefinitionEditor
-              playerId={playerId}
-              skills={config.data.skillDefinitions}
-              items={config.data.items}
-            />
-            {config.data.augmentationDefinitions.map((row) => (
-              <AugmentationDefinitionEditor
-                key={row._id}
-                playerId={playerId}
-                row={row}
-                skills={config.data.skillDefinitions}
-                items={config.data.items}
-              />
-            ))}
-          </AdminSection>
-        </TabsContent>
-
-        <TabsContent
-          value="tree"
-          keepMounted
-          className="space-y-6 outline-none"
-        >
-          <SeedPassiveTreeButton playerId={playerId} />
-          <AdminSection
-            title="Passive skill web"
-            description="Edit PoE-like passive nodes: modest weapon-branch bonuses, skilling XP/speed, and automation unlocks. Point pacing (passivePointInterval) lives under Global balance."
-            columns={[
-              "Node ID",
-              "Branch",
-              "Name",
-              "Effect type",
-              "Effect stat",
-              "Effect scope",
-              "Effect amount",
-              "Requires",
-              "Position",
-              "Enabled",
-              "Description",
-            ]}
-          >
-            <PassiveNodeEditor playerId={playerId} />
-            {[...(config.data.passiveNodes ?? [])]
-              .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
-              .map((row) => (
-                <PassiveNodeEditor
-                  key={row._id}
+          {(config) => (
+            <>
+              <AdminSection
+                title="Skill definitions"
+                description="Create and edit gathering and crafting skills. Stable skill IDs are immutable after creation."
+                columns={[
+                  "Skill ID",
+                  "Name",
+                  "Category",
+                  "Paired skill",
+                  "Max level",
+                  "Enabled",
+                  "Description",
+                ]}
+              >
+                <SkillDefinitionEditor
                   playerId={playerId}
-                  row={row}
+                  skills={config.data.skillDefinitions}
                 />
-              ))}
-          </AdminSection>
-        </TabsContent>
+                {config.data.skillDefinitions.map((row) => (
+                  <SkillDefinitionEditor
+                    key={row._id}
+                    playerId={playerId}
+                    row={row}
+                    skills={config.data.skillDefinitions}
+                  />
+                ))}
+              </AdminSection>
 
-        <TabsContent
-          value="general"
-          keepMounted
-          className="space-y-6 outline-none"
+              <AdminSection
+                title="Skill tiers"
+                description="Configure level gates for each skill tier. Skill ID and tier are immutable on existing rows."
+                columns={[
+                  "Skill",
+                  "Tier",
+                  "Name",
+                  "Required level",
+                  "Enabled",
+                  "Description",
+                ]}
+              >
+                <SkillTierDefinitionEditor
+                  playerId={playerId}
+                  skills={config.data.skillDefinitions}
+                />
+                {config.data.skillTierDefinitions.map((row) => (
+                  <SkillTierDefinitionEditor
+                    key={row._id}
+                    playerId={playerId}
+                    row={row}
+                    skills={config.data.skillDefinitions}
+                  />
+                ))}
+              </AdminSection>
+
+              <AdminSection
+                title="Gathering activities"
+                description="Edit timed gathering actions, item yields, XP rewards, and output items."
+                columns={[
+                  "Activity ID",
+                  "Skill",
+                  "Tier",
+                  "Name",
+                  "Output item",
+                  "Yield",
+                  "Duration",
+                  "XP",
+                  "Enabled",
+                  "Description",
+                ]}
+              >
+                <GatheringActivityEditor
+                  playerId={playerId}
+                  skills={config.data.skillDefinitions}
+                  items={config.data.items}
+                />
+                {config.data.gatheringActivities.map((row) => (
+                  <GatheringActivityEditor
+                    key={row._id}
+                    playerId={playerId}
+                    row={row}
+                    skills={config.data.skillDefinitions}
+                    items={config.data.items}
+                  />
+                ))}
+              </AdminSection>
+
+              <AdminSection
+                title="Recipes"
+                description="Edit crafting recipes, inputs, outputs, XP, and output families."
+                columns={[
+                  "Recipe ID",
+                  "Skill",
+                  "Tier",
+                  "Name",
+                  "Duration",
+                  "XP",
+                  "Output family",
+                  "Enabled",
+                  "Ingredients",
+                  "Outputs",
+                  "Description",
+                ]}
+              >
+                <RecipeEditor
+                  playerId={playerId}
+                  skills={config.data.skillDefinitions}
+                  items={config.data.items}
+                  ingredients={[]}
+                  outputs={[]}
+                />
+                {config.data.recipes.map((row) => (
+                  <RecipeEditor
+                    key={row._id}
+                    playerId={playerId}
+                    row={row}
+                    skills={config.data.skillDefinitions}
+                    items={config.data.items}
+                    ingredients={config.data.recipeIngredients.filter(
+                      (ingredient) => ingredient.recipeId === row.recipeId
+                    )}
+                    outputs={config.data.recipeOutputs.filter(
+                      (output) => output.recipeId === row.recipeId
+                    )}
+                  />
+                ))}
+              </AdminSection>
+
+              <AdminSection
+                title="Augmentations"
+                description="Edit equipment augmentation materials, catalysts, slot restrictions, and effects."
+                columns={[
+                  "Augmentation ID",
+                  "Skill",
+                  "Tier",
+                  "Name",
+                  "Base family",
+                  "Slots",
+                  "Material",
+                  "Qty",
+                  "Catalyst",
+                  "Catalyst qty",
+                  "Effect type",
+                  "Effect stat",
+                  "Amount",
+                  "Enabled",
+                  "Description",
+                ]}
+              >
+                <AugmentationDefinitionEditor
+                  playerId={playerId}
+                  skills={config.data.skillDefinitions}
+                  items={config.data.items}
+                />
+                {config.data.augmentationDefinitions.map((row) => (
+                  <AugmentationDefinitionEditor
+                    key={row._id}
+                    playerId={playerId}
+                    row={row}
+                    skills={config.data.skillDefinitions}
+                    items={config.data.items}
+                  />
+                ))}
+              </AdminSection>
+            </>
+          )}
+        </ConfigSection>
+
+        <ConfigSection
+          playerId={playerId}
+          section="tree"
+          active={activeTab === "tree"}
         >
-          <AdminSection
-            title="Global balance"
-            description="Edit numeric modifiers, progression thresholds, and starting values as JSON."
-            columns={["Value (JSON)", "Description"]}
-          >
-            {config.data.gameBalance.map((row) => (
-              <BalanceEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+          {(config) => (
+            <>
+              <SeedPassiveTreeButton playerId={playerId} />
+              <AdminSection
+                title="Passive skill web"
+                description="Edit PoE-like passive nodes: modest weapon-branch bonuses, skilling XP/speed, and automation unlocks. Point pacing (passivePointInterval) lives under Global balance."
+                columns={[
+                  "Node ID",
+                  "Branch",
+                  "Name",
+                  "Effect type",
+                  "Effect stat",
+                  "Effect scope",
+                  "Effect amount",
+                  "Requires",
+                  "Position",
+                  "Enabled",
+                  "Description",
+                ]}
+              >
+                <PassiveNodeEditor playerId={playerId} />
+                {[...(config.data.passiveNodes ?? [])]
+                  .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
+                  .map((row) => (
+                    <PassiveNodeEditor
+                      key={row._id}
+                      playerId={playerId}
+                      row={row}
+                    />
+                  ))}
+              </AdminSection>
+            </>
+          )}
+        </ConfigSection>
 
-          <AdminSection
-            title="Task definitions"
-            description="Configure universal timed-task metadata, offline eligibility, prerequisites, and rewards."
-            columns={[
-              "Task ID",
-              "Name",
-              "Category",
-              "Duration (ms)",
-              "Offline",
-              "Online only",
-              "Enabled",
-              "Prerequisites (JSON)",
-              "Rewards (JSON)",
-              "Description",
-            ]}
-          >
-            <TaskDefinitionEditor playerId={playerId} />
-            {config.data.taskDefinitions.map((row) => (
-              <TaskDefinitionEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+        <ConfigSection
+          playerId={playerId}
+          section="general"
+          active={activeTab === "general"}
+        >
+          {(config) => (
+            <>
+              <AdminSection
+                title="Global balance"
+                description="Edit numeric modifiers, progression thresholds, and starting values as JSON."
+                columns={["Value (JSON)", "Description"]}
+              >
+                {config.data.gameBalance.map((row) => (
+                  <BalanceEditor key={row._id} playerId={playerId} row={row} />
+                ))}
+              </AdminSection>
 
-          <AdminSection
-            title="Upgrades (legacy)"
-            description="Legacy NPC shop rows kept for hidden-spot and old automation records. The stat/auto shop is removed; new unlocks live in the passive tree."
-            columns={[
-              "Name",
-              "Category",
-              "Cost",
-              "Effect type",
-              "Effect stat",
-              "Effect amount",
-              "Minimum tier",
-              "Minimum level",
-              "Description",
-            ]}
-          >
-            {config.data.upgrades.map((row) => (
-              <UpgradeEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+              <AdminSection
+                title="Task definitions"
+                description="Configure universal timed-task metadata, offline eligibility, prerequisites, and rewards."
+                columns={[
+                  "Task ID",
+                  "Name",
+                  "Category",
+                  "Duration (ms)",
+                  "Offline",
+                  "Online only",
+                  "Enabled",
+                  "Prerequisites (JSON)",
+                  "Rewards (JSON)",
+                  "Description",
+                ]}
+              >
+                <TaskDefinitionEditor playerId={playerId} />
+                {config.data.taskDefinitions.map((row) => (
+                  <TaskDefinitionEditor key={row._id} playerId={playerId} row={row} />
+                ))}
+              </AdminSection>
 
-          <AdminSection
-            title="Hidden spots"
-            description="Move discoverable rewards and change their linked upgrade or click radius."
-            columns={["X (%)", "Y (%)", "Reward upgrade ID", "Radius (px)"]}
-          >
-            {config.data.hiddenSpots.map((row) => (
-              <HiddenSpotEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+              <AdminSection
+                title="Upgrades (legacy)"
+                description="Legacy NPC shop rows kept for hidden-spot and old automation records. The stat/auto shop is removed; new unlocks live in the passive tree."
+                columns={[
+                  "Name",
+                  "Category",
+                  "Cost",
+                  "Effect type",
+                  "Effect stat",
+                  "Effect amount",
+                  "Minimum tier",
+                  "Minimum level",
+                  "Description",
+                ]}
+              >
+                {config.data.upgrades.map((row) => (
+                  <UpgradeEditor key={row._id} playerId={playerId} row={row} />
+                ))}
+              </AdminSection>
 
-          <AdminSection
-            title="Achievements"
-            description="Edit achievement copy, icons, and condition identifiers."
-            columns={["Name", "Icon", "Condition", "Description"]}
-          >
-            {config.data.achievements.map((row) => (
-              <AchievementEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+              <AdminSection
+                title="Hidden spots"
+                description="Move discoverable rewards and change their linked upgrade or click radius."
+                columns={["X (%)", "Y (%)", "Reward upgrade ID", "Radius (px)"]}
+              >
+                {config.data.hiddenSpots.map((row) => (
+                  <HiddenSpotEditor key={row._id} playerId={playerId} row={row} />
+                ))}
+              </AdminSection>
 
-          <AdminSection
-            title="Rebirth rewards"
-            description="Adjust reward descriptions, effect values, and effect payloads."
-            columns={[
-              "Name",
-              "Effect type",
-              "Effect value",
-              "Description",
-              "Effect data (JSON)",
-            ]}
-          >
-            {config.data.rebirthRewards.map((row) => (
-              <RebirthRewardEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
+              <AdminSection
+                title="Achievements"
+                description="Edit achievement copy, icons, and condition identifiers."
+                columns={["Name", "Icon", "Condition", "Description"]}
+              >
+                {config.data.achievements.map((row) => (
+                  <AchievementEditor key={row._id} playerId={playerId} row={row} />
+                ))}
+              </AdminSection>
 
-          <AdminSection
-            title="Live events"
-            description="Create or update timed gold and experience modifiers."
-            columns={[
-              "Event ID",
-              "Name",
-              "Start",
-              "End",
-              "Effect type",
-              "Effect value",
-              "Description",
-              "Status",
-            ]}
-          >
-            <EventEditor playerId={playerId} />
-            {config.data.gameEvents.map((row) => (
-              <EventEditor key={row._id} playerId={playerId} row={row} />
-            ))}
-          </AdminSection>
-        </TabsContent>
+              <AdminSection
+                title="Rebirth rewards"
+                description="Adjust reward descriptions, effect values, and effect payloads."
+                columns={[
+                  "Name",
+                  "Effect type",
+                  "Effect value",
+                  "Description",
+                  "Effect data (JSON)",
+                ]}
+              >
+                {config.data.rebirthRewards.map((row) => (
+                  <RebirthRewardEditor key={row._id} playerId={playerId} row={row} />
+                ))}
+              </AdminSection>
+
+              <AdminSection
+                title="Live events"
+                description="Create or update timed gold and experience modifiers."
+                columns={[
+                  "Event ID",
+                  "Name",
+                  "Start",
+                  "End",
+                  "Effect type",
+                  "Effect value",
+                  "Description",
+                  "Status",
+                ]}
+              >
+                <EventEditor playerId={playerId} />
+                {config.data.gameEvents.map((row) => (
+                  <EventEditor key={row._id} playerId={playerId} row={row} />
+                ))}
+              </AdminSection>
+            </>
+          )}
+        </ConfigSection>
       </Tabs>
     </div>
   );

@@ -230,11 +230,13 @@ function ItemGrid({
 
 function ItemDetails({
   ownedItem,
+  attackSpeedMultiplier,
   emptyMessage,
   error,
   actions,
 }: {
   ownedItem: OwnedItem | null;
+  attackSpeedMultiplier: number;
   emptyMessage: string;
   error: string | null;
   actions?: ReactNode;
@@ -295,7 +297,7 @@ function ItemDetails({
               {ownedItem.item.baseDamage !== undefined &&
                 `Damage ${ownedItem.item.baseDamage}`}
               {ownedItem.item.attackSpeed !== undefined &&
-                ` · ${ownedItem.item.attackSpeed}/s`}
+                ` · Base speed ${Number((ownedItem.item.attackSpeed * attackSpeedMultiplier).toFixed(3))}/s`}
               {ownedItem.item.damageStat !== undefined &&
                 ` · scales ${statLabel(ownedItem.item.damageStat) ?? ownedItem.item.damageStat}`}
               {ownedItem.item.damageType === "magical" && " · magical"}
@@ -303,7 +305,7 @@ function ItemDetails({
                 `Defense ${ownedItem.item.baseDefense}`}
               {ownedItem.item.speedPenalty !== undefined &&
                 ownedItem.item.speedPenalty > 0 &&
-                ` · −${ownedItem.item.speedPenalty}/s`}
+                ` · −${Number((ownedItem.item.speedPenalty * attackSpeedMultiplier).toFixed(3))}/s`}
             </p>
           )}
           {ownedItem.item.effectType &&
@@ -936,6 +938,7 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
             />
             <ItemDetails
               ownedItem={selectedCraftingItem}
+              attackSpeedMultiplier={inventory.data.attackSpeedMultiplier}
               emptyMessage="Select a crafting item to view its description and available actions."
               error={actionError}
               actions={
@@ -1022,6 +1025,7 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
               <div className="mt-3 shrink-0">
                 <ItemDetails
                   ownedItem={selectedEquipmentItem}
+                  attackSpeedMultiplier={inventory.data.attackSpeedMultiplier}
                   emptyMessage="Select an equipment item to view its description and available actions."
                   error={actionError}
                   actions={

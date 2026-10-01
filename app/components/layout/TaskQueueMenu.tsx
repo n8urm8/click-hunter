@@ -1,6 +1,7 @@
 import { Popover } from "@base-ui/react/popover";
 import { ClipboardList, ChevronDown } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useTaskClock } from "~/hooks/useTaskClock";
 import { Button } from "~/components/ui/button";
 import { useCancelTask, useTaskQueue } from "~/hooks/useTasks";
 import { COMBAT_ZONE_LABELS } from "~/lib/combatZones";
@@ -39,11 +40,12 @@ function getTaskProgress(
 ) {
   const elapsedSinceSnapshot =
     task.taskType === "timed" &&
-    task.status === "active" &&
-    task.canProgressOffline
+    task.status === "active"
       ? Math.min(
           Math.max(0, now - serverTime),
-          offlineWindowMs
+          task.canProgressOffline
+            ? Math.max(0, offlineWindowMs - Math.max(0, serverTime - task.lastResolvedAt))
+            : Infinity
         )
       : 0;
   const projectedProgressMs =
@@ -52,7 +54,16 @@ function getTaskProgress(
           task.durationMs ?? task.progressMs,
           task.projectedProgressMs + elapsedSinceSnapshot
         )
-      : task.projectedProgressMs;
+      : task.status === "active" && task.battleMode === "duration"
+        ? Math.min(
+            task.targetDurationMs ?? Infinity,
+            task.progressMs + Math.min(
+              task.battleEncounter?.durationMs ?? task.onlineCreditMs,
+              task.onlineCreditMs +
+                Math.max(0, now - Math.max(task.updatedAt, task.respawnUntil ?? 0))
+            )
+          )
+        : task.projectedProgressMs;
 
   if (task.taskType === "battle") {
     if (task.battleMode === "count") {
@@ -74,14 +85,14 @@ function getTaskProgress(
     if (task.payload.actionType === "gathering") {
       const targetActionCount = readActionCount(task.payload.targetActionCount);
       if (targetActionCount > 0) {
-        return `${completedActions} / ${targetActionCount} actions`;
+        return `${completedActions} / ${targetActionCount} settled actions`;
       }
-      return `${completedActions} actions · ${formatDuration(
+      return `${completedActions} settled actions · ${formatDuration(
         projectedProgressMs
       )} / ${formatDuration(task.durationMs)}`;
     }
     const targetActionCount = readActionCount(task.payload.targetActionCount);
-    return `${completedActions} / ${targetActionCount} actions`;
+    return `${completedActions} / ${targetActionCount} settled actions`;
   }
 
   return `${formatDuration(projectedProgressMs)} / ${formatDuration(
@@ -143,19 +154,14 @@ function TaskRow({
 
 export function TaskQueueMenu({ playerId }: { playerId: Id<"players"> }) {
   const [open, setOpen] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
   const [cancellingTaskId, setCancellingTaskId] =
     useState<Id<"playerTasks"> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const queue = useTaskQueue(playerId);
+  const now = useTaskClock(open, 1_000, Boolean(
+    queue.data?.active && !queue.data.active.canProgressOffline
+  ));
   const cancelTask = useCancelTask();
-
-  useEffect(() => {
-    if (!open) return;
-    setNow(Date.now());
-    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(interval);
-  }, [open]);
 
   const queueData = queue.data;
   const activeCount = queueData?.active ? 1 : 0;

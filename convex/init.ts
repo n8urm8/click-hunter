@@ -13,6 +13,7 @@ import {
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
+import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 import {
   PASSIVE_POINT_BALANCE_DEFAULT,
   seedPassiveContent,
@@ -147,6 +148,7 @@ async function seedTaskDefinitions(ctx: MutationCtx) {
 
 async function seedTaskQueueConfig(ctx: MutationCtx) {
   const entries = [
+    ...TASK_SYNC_BALANCE_DEFAULTS,
     {
       key: "taskQueueCapacity",
       value: 5,

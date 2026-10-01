@@ -38,6 +38,16 @@ export type DamageStat = (typeof DAMAGE_STAT_VALUES)[number];
 export const DAMAGE_TYPE_VALUES = ["physical", "magical"] as const;
 export type DamageType = (typeof DAMAGE_TYPE_VALUES)[number];
 
+export const ELEMENT_VALUES = [
+  "light",
+  "dark",
+  "water",
+  "fire",
+  "wind",
+  "earth",
+] as const;
+export type ElementKind = (typeof ELEMENT_VALUES)[number];
+
 export const BUFF_VARIANT_VALUES = ["base", "advanced"] as const;
 export type BuffVariant = (typeof BUFF_VARIANT_VALUES)[number];
 

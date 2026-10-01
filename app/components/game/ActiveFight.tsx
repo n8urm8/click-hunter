@@ -1,11 +1,9 @@
-import { Card } from "~/components/ui/card";
 import { Progress } from "~/components/ui/progress";
 import { useAtom } from "jotai";
 import { currentFightAtom, clickAnimationsAtom, playerHpAtom } from "~/store/gameStore";
 import { AttackButton } from "./AttackButton";
 import { DamageFloater } from "./DamageFloater";
 import { HiddenSpots } from "./HiddenSpots";
-import { AutomationControls } from "./AutomationControls";
 import { COMBAT_ZONE_LABELS } from "~/lib/combatZones";
 import { useCombat } from "~/hooks/useCombat";
 import { useRef } from "react";
@@ -13,9 +11,10 @@ import { convexQuery } from "@convex-dev/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../../convex/_generated/api";
 import { convexQueryCacheOptions } from "~/lib/queryCache";
+import type { PlayerWithDerivedStats } from "~/hooks/usePlayer";
 
 interface ActiveFightProps {
-  player: any;
+  player: PlayerWithDerivedStats;
   respawnTimeMs: number;
   onStartNextFight: (fightWasBoss: boolean) => boolean;
 }
@@ -49,7 +48,7 @@ export function ActiveFight({
   const playerHpPercent = (playerHp / player.health) * 100;
 
   return (
-    <Card ref={containerRef} className="forest-card box-glow-red p-6 relative overflow-hidden min-h-[400px]">
+    <div ref={containerRef} className="relative overflow-hidden">
       {/* Hidden spots for discovery */}
       <HiddenSpots containerRef={containerRef} player={player} />
 
@@ -107,8 +106,7 @@ export function ActiveFight({
           player={player}
           onStartNextFight={onStartNextFight}
         />
-        <AutomationControls player={player} />
       </div>
-    </Card>
+    </div>
   );
 }

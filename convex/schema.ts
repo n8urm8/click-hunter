@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { combatZoneValidator } from "./zones";
+import { battleEncounterValidator } from "./taskTiming";
 import {
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
@@ -62,7 +63,8 @@ const passiveBranchValidator = v.union(
   v.literal("mace"),
   v.literal("bow"),
   v.literal("staff"),
-  v.literal("skilling")
+  v.literal("skilling"),
+  v.literal("elemental")
 );
 
 export default defineSchema({
@@ -147,6 +149,9 @@ export default defineSchema({
     attackSpeed: v.optional(v.number()),
     damageStat: v.optional(damageStatValidator),
     damageType: v.optional(damageTypeValidator),
+    // Elemental damage tag (mainHand weapons only). Tags the weapon's base
+    // damage with an element so elemental passive bonuses can scale it.
+    element: v.optional(v.string()),
     // Armor combat fields (head/chest/legs/feet equipment only).
     baseDefense: v.optional(v.number()),
     speedPenalty: v.optional(v.number()),
@@ -501,6 +506,7 @@ export default defineSchema({
     // zones existed, which fall back to the full monster pool.
     zone: v.optional(combatZoneValidator),
     onlineCreditMs: v.number(),
+    battleEncounter: v.optional(battleEncounterValidator),
     lastResolvedAt: v.number(),
     lastHeartbeatAt: v.number(),
     respawnUntil: v.optional(v.number()),
@@ -517,6 +523,13 @@ export default defineSchema({
       "status",
       "queueOrder",
     ]),
+
+  taskPresence: defineTable({
+    playerId: v.id("players"),
+    taskId: v.id("playerTasks"),
+    segmentStartedAt: v.number(),
+    lastSeenAt: v.number(),
+  }).index("by_playerId", ["playerId"]),
 
   taskBattleStats: defineTable({
     playerId: v.id("players"),
@@ -825,8 +838,14 @@ export default defineSchema({
     effectType: v.string(),
     effectStat: v.optional(v.string()),
     effectScope: v.optional(skillBonusScopeValidator),
+    // Element for elemental-damage-percent nodes (light/dark/water/fire/wind/earth).
+    element: v.optional(v.string()),
     effectAmount: v.number(),
     requires: v.array(v.string()),
+    // Alternative prerequisites: unlock when every `requires` is met AND at
+    // least one `requiresAny` is met (when non-empty). Elemental bridge nodes
+    // use this to hang off two weapon arms at once.
+    requiresAny: v.optional(v.array(v.string())),
     positionX: v.number(),
     positionY: v.number(),
     enabled: v.boolean(),

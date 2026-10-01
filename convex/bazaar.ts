@@ -24,6 +24,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
+import { settleTasksBeforeInteraction } from "./taskSettlement";
 import {
   canGrantItemToInventory,
   grantItemToInventory,
@@ -707,6 +708,7 @@ export const placeSellOrder = mutation({
     unitPrice: v.number(),
   },
   handler: async (ctx, { playerId, playerItemId, quantity, unitPrice }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
@@ -776,6 +778,7 @@ export const placeBuyOrder = mutation({
     unitPrice: v.number(),
   },
   handler: async (ctx, { playerId, itemId, quantity, unitPrice }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
@@ -848,6 +851,7 @@ export const fulfillOrder = mutation({
     playerItemId: v.optional(v.id("playerItems")),
   },
   handler: async (ctx, { orderId, playerId, quantity, playerItemId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
     const order = await ctx.db.get(orderId);
     if (!order) throw new Error("Order not found");

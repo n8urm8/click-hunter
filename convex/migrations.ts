@@ -20,6 +20,8 @@ import {
   DEFAULT_TASK_QUEUE_CAPACITY,
 } from "./tasks";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
+import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
+import { COMBAT_BALANCE_DEFAULTS } from "./items";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
   DEFAULT_ITEM_RARITIES,
@@ -30,6 +32,7 @@ import {
   DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS,
   DEFAULT_BAZAAR_TAX_PERCENT,
 } from "./bazaar";
+import { DEFAULT_MONSTER_POWER_MULTIPLIER } from "./combat";
 
 /**
  * Migration: add item rarity definitions and assign existing items to Common.
@@ -140,6 +143,7 @@ export const backfillTaskQueueConfig = internalMutation({
   args: {},
   handler: async (ctx) => {
     const entries = [
+      ...TASK_SYNC_BALANCE_DEFAULTS,
       {
         key: "taskQueueCapacity",
         value: DEFAULT_TASK_QUEUE_CAPACITY,
@@ -202,6 +206,65 @@ export const backfillTaskQueueConfig = internalMutation({
     }
 
     return { created };
+  },
+});
+
+/**
+ * Add missing combat settings without rewriting weapon records or live tuning.
+ * Run: npx convex run migrations:backfillCombatBalance
+ */
+export const backfillCombatBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let created = 0;
+    for (const entry of COMBAT_BALANCE_DEFAULTS) {
+      const existing = await ctx.db.query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key)).first();
+      if (existing) continue;
+      await ctx.db.insert("gameBalance", { ...entry, lastUpdated: Date.now() });
+      created += 1;
+    }
+    return { created };
+  },
+});
+
+/**
+ * Restore regular enemies to their original unscaled strength. Only replaces
+ * the previous 0.5 default, leaving any other admin-tuned value untouched.
+ *
+ * Run: npx convex run migrations:restoreMonsterPowerMultiplier
+ */
+export const restoreMonsterPowerMultiplier = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const key = "monsterPowerMultiplier";
+    const description =
+      "Multiplier for regular-monster HP and damage (1 = original strength)";
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", key))
+      .first();
+
+    if (!existing) {
+      await ctx.db.insert("gameBalance", {
+        key,
+        value: DEFAULT_MONSTER_POWER_MULTIPLIER,
+        description,
+        lastUpdated: Date.now(),
+      });
+      return { created: true, updated: false };
+    }
+
+    if (existing.value !== 0.5) {
+      return { created: false, updated: false };
+    }
+
+    await ctx.db.patch(existing._id, {
+      value: DEFAULT_MONSTER_POWER_MULTIPLIER,
+      description,
+      lastUpdated: Date.now(),
+    });
+    return { created: false, updated: true };
   },
 });
 

@@ -1,13 +1,11 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
-import { getPassiveBonuses } from "./passiveTree";
 import {
   settleRegularFight,
   simulateRegularBattle,
-  type AutoBattleResult,
 } from "./combat";
 import type { LootSummary } from "./loot";
 import { getEquippedStatBonuses } from "./items";
@@ -22,6 +20,7 @@ import {
   refundSkillTaskReservation,
   resolveSkillTask,
 } from "./skills";
+import { projectBattleHealth, readTaskSyncSettings } from "./taskTiming";
 
 export const DEFAULT_TASK_QUEUE_CAPACITY = 5;
 export const DEFAULT_OFFLINE_TASK_WINDOW_MS = 4 * 60 * 60 * 1000;
@@ -39,34 +38,6 @@ type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
 type PlayerTask = Doc<"playerTasks">;
 type BattleStat = Doc<"taskBattleStats">;
-
-function projectBattleHealth(
-  result: AutoBattleResult,
-  elapsedMs: number
-) {
-  const elapsed = Math.min(
-    Math.max(0, elapsedMs),
-    result.durationMs
-  );
-  return {
-    currentMonsterHealth: Math.max(
-      0,
-      Math.ceil(
-        result.monsterMaxHealth -
-          (result.playerDamagePerSecond * elapsed) / 1000
-      )
-    ),
-    currentMonsterMaxHealth: result.monsterMaxHealth,
-    currentPlayerHealth: Math.max(
-      0,
-      Math.ceil(
-        result.playerMaxHealth -
-          (result.monsterDamagePerSecond * elapsed) / 1000
-      )
-    ),
-    currentPlayerMaxHealth: result.playerMaxHealth,
-  };
-}
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
   const row = await ctx.db
@@ -110,10 +81,10 @@ async function getOfflineTaskWindow(ctx: DatabaseCtx) {
 }
 
 async function getHeartbeatGrace(ctx: DatabaseCtx) {
-  return readNonNegativeBalance(
-    await getBalanceValue(ctx, "taskHeartbeatGraceMs"),
-    DEFAULT_TASK_HEARTBEAT_GRACE_MS
-  );
+  const value = await getBalanceValue(ctx, "taskHeartbeatGraceMs");
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1_500
+    ? value
+    : DEFAULT_TASK_HEARTBEAT_GRACE_MS;
 }
 
 async function getAutoBattleBatchLimit(ctx: DatabaseCtx) {
@@ -167,6 +138,46 @@ async function getActiveTask(ctx: DatabaseCtx, playerId: PlayerId) {
       q.eq("playerId", playerId).eq("status", "active")
     )
     .first();
+}
+
+async function getPresence(ctx: DatabaseCtx, playerId: PlayerId) {
+  return await ctx.db.query("taskPresence")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId)).unique();
+}
+
+async function startTaskPresence(ctx: MutationCtx, task: PlayerTask, now: number) {
+  if (task.taskType !== "battle" && task.canProgressOffline) return;
+  const presence = await getPresence(ctx, task.playerId);
+  const value = { taskId: task._id, segmentStartedAt: now, lastSeenAt: now };
+  if (presence) {
+    await ctx.db.patch(presence._id, value);
+  } else {
+    await ctx.db.insert("taskPresence", { playerId: task.playerId, ...value });
+  }
+}
+
+async function consumeOnlineProgress(
+  ctx: MutationCtx,
+  task: PlayerTask,
+  now: number
+): Promise<ProgressSegment[]> {
+  if (task.taskType !== "battle" && task.canProgressOffline) return [];
+  const presence = await getPresence(ctx, task.playerId);
+  const graceMs = await getHeartbeatGrace(ctx);
+  // Older tasks have no isolated presence record. Credit only their last
+  // short, confirmed interval, then switch to the new clock.
+  const startAt = presence?.taskId === task._id
+    ? presence.segmentStartedAt
+    : task.taskType === "battle" ? task.lastHeartbeatAt : task.lastResolvedAt;
+  const lastSeenAt = presence?.taskId === task._id
+    ? presence.lastSeenAt
+    : startAt;
+  const endAt = now - lastSeenAt <= graceMs ? now : lastSeenAt;
+  await startTaskPresence(ctx, task, now);
+  const progressStartAt = Math.max(startAt, task.respawnUntil ?? startAt);
+  return endAt > progressStartAt
+    ? [{ startAt: progressStartAt, remainingMs: endAt - progressStartAt }]
+    : [];
 }
 
 async function getQueuedTasks(
@@ -240,7 +251,9 @@ async function activateNextTask(
     offlineCapped: false,
     updatedAt: now,
   });
-  return await ctx.db.get(nextTask._id);
+  const activated = await ctx.db.get(nextTask._id);
+  if (activated) await startTaskPresence(ctx, activated, now);
+  return activated;
 }
 
 function validateTimedDefinition(definition: Doc<"taskDefinitions">) {
@@ -351,24 +364,6 @@ async function assertTaskPrerequisites(
   }
 }
 
-async function ownsAutoBattleUpgrade(
-  ctx: MutationCtx,
-  playerId: PlayerId
-) {
-  const [passives, upgrades] = await Promise.all([
-    getPassiveBonuses(ctx, playerId),
-    ctx.db
-      .query("playerUpgrades")
-      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-      .collect(),
-  ]);
-  if (passives.autoBattle) return true;
-  return upgrades.some(
-    (upgrade) =>
-      upgrade.upgradeId === "auto_start_fight" && upgrade.quantity > 0
-  );
-}
-
 async function validateAutoBattleRequest(
   ctx: MutationCtx,
   playerId: PlayerId,
@@ -378,10 +373,8 @@ async function validateAutoBattleRequest(
   targetDurationMs: number | undefined,
   zone?: CombatZone
 ) {
+  // Battle automation is available to everyone, no unlock required.
   const player = await getPlayer(ctx, playerId);
-  if (!(await ownsAutoBattleUpgrade(ctx, playerId))) {
-    throw new Error("Unlock Battle Automation in the passive skill tree before queueing auto-battle");
-  }
   if (!Number.isSafeInteger(tier) || tier < 1) {
     throw new Error("Battle tier must be a positive integer");
   }
@@ -493,7 +486,9 @@ async function insertTask(
     createdAt: now,
     updatedAt: now,
   });
-  return await ctx.db.get(taskId);
+  const task = await ctx.db.get(taskId);
+  if (task?.status === "active") await startTaskPresence(ctx, task, now);
+  return task;
 }
 
 async function completeTask(
@@ -539,6 +534,10 @@ async function completeTask(
     completedAt: now,
   });
   await ctx.db.delete(task._id);
+  if (task.taskType === "battle" || !task.canProgressOffline) {
+    const presence = await getPresence(ctx, task.playerId);
+    if (presence?.taskId === task._id) await ctx.db.delete(presence._id);
+  }
   return await ctx.db.get(historyId);
 }
 
@@ -582,8 +581,7 @@ async function resolveTimedQueue(
   ctx: MutationCtx,
   playerId: PlayerId,
   now: number,
-  resetBattleHeartbeat: boolean,
-  onlineHeartbeat: boolean
+  onlineSegments: ProgressSegment[] = []
 ) {
   let activeTask = await getActiveTask(ctx, playerId);
   if (!activeTask) {
@@ -592,34 +590,23 @@ async function resolveTimedQueue(
   if (!activeTask) return null;
 
   if (activeTask.taskType === "battle") {
-    if (resetBattleHeartbeat) {
-      await ctx.db.patch(activeTask._id, {
-        lastHeartbeatAt: now,
-        updatedAt: now,
-      });
-      return await ctx.db.get(activeTask._id);
-    }
     return activeTask;
   }
 
   const offlineWindowMs = await getOfflineTaskWindow(ctx);
-  const heartbeatGraceMs = await getHeartbeatGrace(ctx);
   const elapsedMs = Math.max(0, now - activeTask.lastResolvedAt);
-  const onlineProgressAvailable =
-    onlineHeartbeat && elapsedMs <= heartbeatGraceMs;
+  const onlineProgressAvailable = onlineSegments.length > 0;
   const availableMs = activeTask.canProgressOffline
     ? Math.min(elapsedMs, offlineWindowMs)
-    : onlineProgressAvailable
-      ? elapsedMs
-      : 0;
+    : onlineSegments.reduce((total, segment) => total + segment.remainingMs, 0);
   const timeSegments = [
     ...(isRecord(activeTask.payload) &&
     activeTask.payload.skillTaskVersion === 1
       ? readProgressSegments(activeTask.payload.progressSegments)
       : []),
-    ...(availableMs > 0
+    ...(activeTask.canProgressOffline && availableMs > 0
       ? [{ startAt: activeTask.lastResolvedAt, remainingMs: availableMs }]
-      : []),
+      : onlineSegments),
   ];
   let segmentIndex = 0;
   let currentTask: PlayerTask | null = activeTask;
@@ -646,8 +633,8 @@ async function resolveTimedQueue(
       elapsedMs > availableMs;
     if (
       !currentTask.canProgressOffline &&
-      !onlineProgressAvailable &&
-      timeSegments.length === 0
+      (activeTask.canProgressOffline ||
+        (!onlineProgressAvailable && getDeferredProgressMs(currentTask) === 0))
     ) {
       const payload = isRecord(currentTask.payload)
         ? { ...currentTask.payload }
@@ -878,31 +865,19 @@ async function resolveTimedQueue(
 
 async function processAutoBattle(
   ctx: MutationCtx,
-  playerId: PlayerId,
-  now: number
+  task: PlayerTask,
+  now: number,
+  onlineSegments: ProgressSegment[]
 ) {
-  const task = await getActiveTask(ctx, playerId);
-  if (!task || task.taskType !== "battle") return task;
-
-  const respawnUntil =
-    typeof task.respawnUntil === "number" ? task.respawnUntil : undefined;
-  if (respawnUntil !== undefined && now < respawnUntil) {
-    return task;
-  }
-
-  const player = await getPlayer(ctx, playerId);
-  const equipmentBonuses = await getEquippedStatBonuses(ctx, playerId);
-  const heartbeatGraceMs = await getHeartbeatGrace(ctx);
-  const elapsedSinceHeartbeat = Math.max(
-    0,
-    now - Math.max(task.lastHeartbeatAt, respawnUntil ?? 0)
+  const playerId = task.playerId;
+  if (task.respawnUntil !== undefined && now < task.respawnUntil) return task;
+  const onlineDeltaMs = onlineSegments.reduce(
+    (total, segment) => total + segment.remainingMs, 0
   );
-  const onlineDeltaMs =
-    elapsedSinceHeartbeat <= heartbeatGraceMs ? elapsedSinceHeartbeat : 0;
   const autoBattleCreditCapMs = await getAutoBattleCreditCap(ctx);
   const autoBattleRespawnMs = await getAutoBattleRespawnMs(ctx);
   let onlineCreditMs = Math.min(
-    autoBattleCreditCapMs,
+    Math.max(autoBattleCreditCapMs, task.battleEncounter?.durationMs ?? 0),
     task.onlineCreditMs + onlineDeltaMs
   );
   let progressMs = task.progressMs;
@@ -910,12 +885,7 @@ async function processAutoBattle(
   let totalGoldEarned = task.totalGoldEarned ?? 0;
   let totalExperienceEarned = task.totalExperienceEarned ?? 0;
   const lootSummary = readLootSummary(task.lootSummary);
-  let currentMonsterName = task.currentMonsterName;
-  let currentMonsterType = task.currentMonsterType;
-  let currentMonsterHealth = task.currentMonsterHealth;
-  let currentMonsterMaxHealth = task.currentMonsterMaxHealth;
-  let currentPlayerHealth = task.currentPlayerHealth;
-  let currentPlayerMaxHealth = task.currentPlayerMaxHealth;
+  let encounter = task.battleEncounter;
   let nextRespawnUntil: number | undefined;
   let wins = 0;
   let losses = 0;
@@ -948,15 +918,12 @@ async function processAutoBattle(
       break;
     }
 
-    const result = await simulateRegularBattle(
-      ctx,
-      player,
-      tier,
-      equipmentBonuses,
-      task.zone
-    );
-    currentMonsterName = result.monsterName;
-    currentMonsterType = result.monsterType;
+    if (!encounter) {
+      const player = await getPlayer(ctx, playerId);
+      const equipmentBonuses = await getEquippedStatBonuses(ctx, playerId);
+      encounter = await simulateRegularBattle(ctx, player, tier, equipmentBonuses, task.zone);
+    }
+    const result = encounter;
     const durationToConsume =
       task.battleMode === "duration" && task.targetDurationMs !== undefined
         ? Math.min(
@@ -964,21 +931,19 @@ async function processAutoBattle(
             Math.max(1, task.targetDurationMs - progressMs)
           )
         : result.durationMs;
-    const healthSnapshot = projectBattleHealth(
-      result,
-      Math.min(onlineCreditMs, durationToConsume)
-    );
-    currentMonsterHealth = healthSnapshot.currentMonsterHealth;
-    currentMonsterMaxHealth = healthSnapshot.currentMonsterMaxHealth;
-    currentPlayerHealth = healthSnapshot.currentPlayerHealth;
-    currentPlayerMaxHealth = healthSnapshot.currentPlayerMaxHealth;
     if (onlineCreditMs < durationToConsume) {
       break;
     }
 
     onlineCreditMs -= durationToConsume;
     progressMs += durationToConsume;
+    // A duration-limited run ending halfway through a fight has not won it.
+    if (durationToConsume < result.durationMs) {
+      completed = true;
+      break;
+    }
     completedBattles += 1;
+    encounter = undefined;
     if (result.won) {
       wins += 1;
       await recordDefeatedMonster(ctx, task, result, now);
@@ -1018,30 +983,25 @@ async function processAutoBattle(
     }
     if (!result.won && autoBattleRespawnMs > 0) {
       nextRespawnUntil = now + autoBattleRespawnMs;
+      onlineCreditMs = 0;
       break;
     }
   }
 
+  const encounterFields = encounter
+    ? {
+        currentMonsterName: encounter.monsterName,
+        currentMonsterType: encounter.monsterType,
+        ...projectBattleHealth(encounter, onlineCreditMs),
+      }
+    : {};
   if (completed) {
     const resolvedTask = {
       ...task,
       progressMs,
       completedBattles,
       onlineCreditMs,
-      ...(currentMonsterName === undefined ? {} : { currentMonsterName }),
-      ...(currentMonsterType === undefined ? {} : { currentMonsterType }),
-      ...(currentMonsterHealth === undefined
-        ? {}
-        : { currentMonsterHealth }),
-      ...(currentMonsterMaxHealth === undefined
-        ? {}
-        : { currentMonsterMaxHealth }),
-      ...(currentPlayerHealth === undefined
-        ? {}
-        : { currentPlayerHealth }),
-      ...(currentPlayerMaxHealth === undefined
-        ? {}
-        : { currentPlayerMaxHealth }),
+      ...encounterFields,
       totalGoldEarned,
       totalExperienceEarned,
       lootSummary,
@@ -1062,28 +1022,40 @@ async function processAutoBattle(
     progressMs,
     completedBattles,
     onlineCreditMs,
-    ...(currentMonsterName === undefined ? {} : { currentMonsterName }),
-    ...(currentMonsterType === undefined ? {} : { currentMonsterType }),
-    ...(currentMonsterHealth === undefined
-      ? {}
-      : { currentMonsterHealth }),
-    ...(currentMonsterMaxHealth === undefined
-      ? {}
-      : { currentMonsterMaxHealth }),
-    ...(currentPlayerHealth === undefined
-      ? {}
-      : { currentPlayerHealth }),
-    ...(currentPlayerMaxHealth === undefined
-      ? {}
-      : { currentPlayerMaxHealth }),
+    ...encounterFields,
+    battleEncounter: encounter,
     totalGoldEarned,
     totalExperienceEarned,
     lootSummary,
     respawnUntil: nextRespawnUntil,
     lastHeartbeatAt: now,
+    lastResolvedAt: now,
     updatedAt: now,
   });
   return await ctx.db.get(task._id);
+}
+
+async function settleTaskQueue(ctx: MutationCtx, playerId: PlayerId, now: number) {
+  const before = await getActiveTask(ctx, playerId);
+  const onlineSegments = before
+    ? await consumeOnlineProgress(ctx, before, now)
+    : [];
+  const active = await resolveTimedQueue(ctx, playerId, now, onlineSegments);
+  if (active?.taskType === "battle") {
+    await processAutoBattle(ctx, active, now, before?._id === active._id ? onlineSegments : []);
+  }
+}
+
+async function settleTaskQueueForInteraction(ctx: MutationCtx, playerId: PlayerId, now: number) {
+  await settleTaskQueue(ctx, playerId, now);
+  const active = await getActiveTask(ctx, playerId);
+  if (active && (
+    getDeferredProgressMs(active) > 0 ||
+    (active.taskType === "battle" && active.onlineCreditMs > 0 &&
+      (!active.battleEncounter || active.onlineCreditMs >= active.battleEncounter.durationMs))
+  )) {
+    throw new Error("Task catch-up is still running. Wait for it to finish before making this change.");
+  }
 }
 
 type ProgressSegment = {
@@ -1176,12 +1148,41 @@ function calculateOfflineWorkAheadMs(
   }, 0);
 }
 
+function getNextSettlementAt(
+  task: PlayerTask | null,
+  settlementIntervalMs: number,
+  offlineWindowMs: number
+): number | null {
+  if (!task || task.status !== "active") return null;
+  if (task.taskType === "battle") {
+    if (task.respawnUntil !== undefined && task.respawnUntil > task.updatedAt) {
+      return task.respawnUntil;
+    }
+    if (!task.battleEncounter) return task.updatedAt;
+    const remainingMs = Math.max(0, Math.min(
+      task.battleEncounter.durationMs,
+      task.battleMode === "duration"
+        ? Math.max(0, (task.targetDurationMs ?? 0) - task.progressMs)
+        : task.battleEncounter.durationMs
+    ) - task.onlineCreditMs);
+    return task.updatedAt + Math.min(settlementIntervalMs, remainingMs);
+  }
+  if (getDeferredProgressMs(task) > 0) return task.updatedAt;
+  if (task.canProgressOffline && offlineWindowMs === 0) return null;
+  return task.lastResolvedAt + Math.min(
+    Math.max(0, (task.durationMs ?? task.progressMs) - task.progressMs),
+    task.definitionId === "skill_action" || !task.canProgressOffline
+      ? settlementIntervalMs
+      : offlineWindowMs
+  );
+}
+
 async function getQueueSnapshot(
   ctx: DatabaseCtx,
   playerId: PlayerId,
-  now: number
+  snapshotTime?: number
 ) {
-  const [activeTask, queuedTasks, history, capacity, offlineWindowMs] =
+  const [activeTask, queuedTasks, history, capacity, offlineWindowMs, syncSettings] =
     await Promise.all([
       getActiveTask(ctx, playerId),
       getQueueCapacity(ctx).then((queueCapacity) =>
@@ -1196,7 +1197,13 @@ async function getQueueSnapshot(
         .take(HISTORY_QUERY_LIMIT),
       getQueueCapacity(ctx),
       getOfflineTaskWindow(ctx),
+      getHeartbeatGrace(ctx).then((graceMs) => readTaskSyncSettings(ctx, graceMs)),
     ]);
+  const now = snapshotTime ?? Math.max(
+    activeTask?.updatedAt ?? 0,
+    ...queuedTasks.map((task) => task.updatedAt),
+    history[0]?.completedAt ?? 0
+  );
 
   const offlineWorkAheadMs = calculateOfflineWorkAheadMs(
     [activeTask, ...queuedTasks],
@@ -1231,8 +1238,12 @@ async function getQueueSnapshot(
       now,
       offlineWindowMs
     );
+    const nextSettlementAt = getNextSettlementAt(
+      task, syncSettings.settlementIntervalMs, offlineWindowMs
+    );
     return {
       ...task,
+      nextSettlementAt,
       projectedProgressMs,
       remainingMs:
         task.durationMs === undefined
@@ -1261,6 +1272,7 @@ async function getQueueSnapshot(
       offlineWindowMs - offlineWorkAheadMs
     ),
     serverTime: now,
+    ...syncSettings,
   };
 }
 
@@ -1271,11 +1283,10 @@ export const getQueue = query({
   },
   handler: async (ctx, { playerId, now }) => {
     await getPlayer(ctx, playerId);
-    const snapshotTime = now ?? Date.now();
-    if (!Number.isFinite(snapshotTime)) {
+    if (now !== undefined && !Number.isFinite(now)) {
       throw new Error("Queue timestamp must be finite");
     }
-    return await getQueueSnapshot(ctx, playerId, snapshotTime);
+    return await getQueueSnapshot(ctx, playerId, now);
   },
 });
 
@@ -1286,21 +1297,70 @@ export const sync = mutation({
   handler: async (ctx, { playerId }) => {
     await getPlayer(ctx, playerId);
     const now = Date.now();
-    await resolveTimedQueue(ctx, playerId, now, true, false);
-    return await getQueueSnapshot(ctx, playerId, now);
+    await settleTaskQueue(ctx, playerId, now);
+    const [active, settings, offlineWindowMs] = await Promise.all([
+      getActiveTask(ctx, playerId),
+      getHeartbeatGrace(ctx).then((graceMs) => readTaskSyncSettings(ctx, graceMs)),
+      getOfflineTaskWindow(ctx),
+    ]);
+    return {
+      serverTime: now,
+      nextSettlementAt: getNextSettlementAt(active, settings.settlementIntervalMs, offlineWindowMs),
+      requiresPresence: Boolean(active && (active.taskType === "battle" || !active.canProgressOffline)),
+      ...settings,
+    };
   },
 });
 
 export const heartbeat = mutation({
   args: {
     playerId: v.id("players"),
+    presenceOnly: v.optional(v.boolean()),
   },
-  handler: async (ctx, { playerId }) => {
+  handler: async (ctx, { playerId, presenceOnly }) => {
     await getPlayer(ctx, playerId);
     const now = Date.now();
-    await resolveTimedQueue(ctx, playerId, now, false, true);
-    await processAutoBattle(ctx, playerId, now);
-    return await getQueueSnapshot(ctx, playerId, now);
+    // Keep previously deployed clients progressing until they reload.
+    if (!presenceOnly) {
+      await settleTaskQueue(ctx, playerId, now);
+      return null;
+    }
+    const presence = await getPresence(ctx, playerId);
+    if (!presence) return null;
+    const graceMs = await getHeartbeatGrace(ctx);
+    if (now - presence.lastSeenAt > graceMs) {
+      await settleTaskQueue(ctx, playerId, now);
+    } else if (now > presence.lastSeenAt) {
+      await ctx.db.patch(presence._id, { lastSeenAt: now });
+    }
+    return null;
+  },
+});
+
+export const settleForInteraction = internalMutation({
+  args: { playerId: v.id("players") },
+  handler: async (ctx, { playerId }) => {
+    await settleTaskQueueForInteraction(ctx, playerId, Date.now());
+    return null;
+  },
+});
+
+export const prepareRebirth = internalMutation({
+  args: { playerId: v.id("players") },
+  handler: async (ctx, { playerId }) => {
+    const now = Date.now();
+    await settleTaskQueueForInteraction(ctx, playerId, now);
+    const [active, capacity] = await Promise.all([
+      getActiveTask(ctx, playerId), getQueueCapacity(ctx),
+    ]);
+    const queued = await getQueuedTasks(ctx, playerId, capacity);
+    for (const task of [active, ...queued]) {
+      if (task?.taskType === "battle") {
+        await completeTask(ctx, task, "cancelled", now, { reason: "Rebirth" });
+      }
+    }
+    await activateNextTask(ctx, playerId, now);
+    return null;
   },
 });
 
@@ -1311,6 +1371,7 @@ export const enqueueTimedTask = mutation({
     payload: v.optional(v.any()),
   },
   handler: async (ctx, { playerId, definitionId, payload }) => {
+    await settleTaskQueueForInteraction(ctx, playerId, Date.now());
     const player = await getPlayer(ctx, playerId);
     const definition = await getTaskDefinition(ctx, definitionId);
     if (!definition) {
@@ -1360,6 +1421,7 @@ export const enqueueSkillAction = mutation({
       targetPlayerItemId,
     }
   ) => {
+    await settleTaskQueueForInteraction(ctx, playerId, Date.now());
     await assertQueueHasCapacity(ctx, playerId);
     const definition = await getTaskDefinition(ctx, "skill_action");
     if (!definition || !definition.enabled) {
@@ -1537,6 +1599,7 @@ export const enqueueAutoBattle = mutation({
     targetDurationMs: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    await settleTaskQueueForInteraction(ctx, args.playerId, Date.now());
     await validateAutoBattleRequest(
       ctx,
       args.playerId,
@@ -1578,8 +1641,8 @@ export const cancel = mutation({
 
     const now = Date.now();
     const activeTask = await getActiveTask(ctx, playerId);
-    if (activeTask?._id === task._id && task.taskType === "timed") {
-      await resolveTimedQueue(ctx, playerId, now, false, true);
+    if (activeTask?._id === task._id) {
+      await settleTaskQueueForInteraction(ctx, playerId, now);
     }
 
     const currentTask = await ctx.db.get(taskId);

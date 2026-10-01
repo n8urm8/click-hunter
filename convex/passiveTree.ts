@@ -4,6 +4,8 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./adminAuth";
 import { calculateCharacterLevel } from "./characterLevel";
+import { settleTasksBeforeInteraction } from "./taskSettlement";
+import { ELEMENT_VALUES, type ElementKind } from "./itemTypes";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
@@ -15,6 +17,7 @@ export const PASSIVE_BRANCHES = [
   "bow",
   "staff",
   "skilling",
+  "elemental",
 ] as const;
 export type PassiveBranch = (typeof PASSIVE_BRANCHES)[number];
 
@@ -29,10 +32,15 @@ export const PASSIVE_EFFECT_TYPES = [
   "xp-multiplier",
   "skill-xp-multiplier",
   "skill-speed-multiplier",
-  "unlock-auto-attack",
-  "unlock-auto-battle",
+  "elemental-damage-percent",
 ] as const;
 export type PassiveEffectType = (typeof PASSIVE_EFFECT_TYPES)[number];
+
+export function readElementKind(value: unknown): ElementKind | null {
+  return (ELEMENT_VALUES as readonly string[]).includes(value as string)
+    ? (value as ElementKind)
+    : null;
+}
 
 export const PASSIVE_POINT_BALANCE_DEFAULT = {
   key: "passivePointInterval",
@@ -134,8 +142,7 @@ export type PassiveBonuses = {
   xpMultiplier: number;
   skillXpMultipliers: { all: number; gathering: number; crafting: number };
   skillSpeedMultipliers: { all: number; gathering: number; crafting: number };
-  autoAttack: boolean;
-  autoBattle: boolean;
+  elements: Record<ElementKind, number>;
 };
 
 export const EMPTY_PASSIVE_BONUSES: PassiveBonuses = {
@@ -149,8 +156,7 @@ export const EMPTY_PASSIVE_BONUSES: PassiveBonuses = {
   xpMultiplier: 1,
   skillXpMultipliers: { all: 1, gathering: 1, crafting: 1 },
   skillSpeedMultipliers: { all: 1, gathering: 1, crafting: 1 },
-  autoAttack: false,
-  autoBattle: false,
+  elements: { light: 0, dark: 0, water: 0, fire: 0, wind: 0, earth: 0 },
 };
 
 function isStatKey(value: unknown): value is keyof PassiveBonuses["stats"] {
@@ -214,12 +220,13 @@ function applyNodeToBonuses(
         bonuses.skillSpeedMultipliers[scope] *= amount;
       }
       break;
-    case "unlock-auto-attack":
-      bonuses.autoAttack = true;
+    case "elemental-damage-percent": {
+      const element = readElementKind(node.element);
+      if (element && Number.isFinite(amount)) {
+        bonuses.elements[element] += amount;
+      }
       break;
-    case "unlock-auto-battle":
-      bonuses.autoBattle = true;
-      break;
+    }
     default:
       break;
   }
@@ -246,26 +253,6 @@ export async function getPassiveBonuses(
   return bonuses;
 }
 
-export async function hasPassiveUnlock(
-  ctx: DatabaseCtx,
-  playerId: PlayerId,
-  effectType: "unlock-auto-attack" | "unlock-auto-battle"
-) {
-  const unlocks = await ctx.db
-    .query("playerPassives")
-    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-    .take(MAX_PASSIVE_ROWS);
-  if (unlocks.length === 0) return false;
-  const nodeIds = new Set(unlocks.map((row) => row.nodeId));
-  for (const node of await ctx.db
-    .query("passiveNodes")
-    .withIndex("by_enabled", (q) => q.eq("enabled", true))
-    .take(MAX_PASSIVE_ROWS)) {
-    if (nodeIds.has(node.nodeId) && node.effectType === effectType) return true;
-  }
-  return false;
-}
-
 // ─── Seed data (PoE-like web: 5 weapon arms + skilling arm) ──────────────────
 
 type SeedNode = {
@@ -276,29 +263,136 @@ type SeedNode = {
   effectType: PassiveEffectType;
   effectStat?: "str" | "dex" | "int" | "luk" | "con";
   effectScope?: "all" | "gathering" | "crafting";
+  element?: ElementKind;
   effectAmount: number;
   requires: string[];
+  requiresAny?: string[];
+  // Grid cell override for nodes that sit off the arm paths (elementals).
+  cell?: readonly [number, number];
 };
 
-const BRANCH_ANGLES: Record<PassiveBranch, number> = {
-  sword: 270,
-  dagger: 330,
-  bow: 30,
-  mace: 90,
-  staff: 150,
-  skilling: 210,
+type ArmBranch = Exclude<PassiveBranch, "elemental">;
+
+// Grid layout canvas: 21 x 21 cells, hub at (10, 10). Each arm is an explicit
+// cell path (root first) so nodes can never overlap — one node per cell.
+export const TREE_GRID_SIZE = 21;
+const TREE_HUB: readonly [number, number] = [10, 10];
+
+const GRID_PATHS: Record<ArmBranch, Array<readonly [number, number]>> = {
+  sword: [
+    [10, 9], [10, 8], [10, 7], [10, 6],
+    [10, 5], [10, 4], [10, 3], [10, 2],
+  ],
+  dagger: [
+    [11, 9], [12, 8], [13, 7], [14, 6],
+    [15, 6], [16, 6], [17, 6], [18, 6],
+  ],
+  bow: [
+    [11, 11], [12, 12], [13, 13], [14, 14],
+    [15, 14], [16, 14], [17, 14], [18, 14],
+  ],
+  mace: [
+    [10, 11], [10, 12], [10, 13], [10, 14],
+    [10, 15], [10, 16], [10, 17], [10, 18],
+  ],
+  staff: [
+    [9, 11], [8, 12], [7, 13], [6, 14],
+    [5, 14], [4, 14], [3, 14], [2, 14],
+  ],
+  skilling: [
+    [9, 9], [8, 8], [7, 7], [6, 6],
+    [5, 6], [4, 6], [3, 6], [2, 6],
+  ],
 };
 
-const RADII = [10, 14.5, 19, 23.5, 28, 32.5, 37, 41.5];
+function branchPosition(branch: ArmBranch, index: number) {
+  const path = GRID_PATHS[branch];
+  const [col, row] = path[Math.min(index, path.length - 1)];
+  // Cell centers in grid units.
+  return { positionX: col + 0.5, positionY: row + 0.5 };
+}
 
-function branchPosition(branch: PassiveBranch, index: number) {
-  const baseAngle = BRANCH_ANGLES[branch];
-  const fan = index % 2 === 0 ? 4 : -4;
-  const angle = ((baseAngle + fan * Math.floor(index / 2)) * Math.PI) / 180;
-  const radius = RADII[Math.min(index, RADII.length - 1)];
-  const positionX = Math.round((50 + radius * Math.cos(angle)) * 10) / 10;
-  const positionY = Math.round((50 + radius * Math.sin(angle)) * 10) / 10;
-  return { positionX, positionY };
+// Elemental bridge nodes sit in the gaps between arms, each reachable from
+// either neighboring arm's 5th node. Unlocking needs just one side, so the
+// bridges let builds cross between branches: fire (sword/dagger), wind
+// (dagger/bow), light (bow/mace), water (mace/staff), earth (staff/skilling),
+// dark (skilling/sword). Opposing elements sit across from each other:
+// fire/water, wind/earth, light/dark.
+const ELEMENT_CELLS: Record<ElementKind, readonly [number, number]> = {
+  fire: [12, 5],
+  water: [7, 15],
+  wind: [15, 10],
+  earth: [5, 10],
+  light: [13, 15],
+  dark: [8, 5],
+};
+
+export function requirementsMetFor(
+  unlocked: Set<string>,
+  requires: string[],
+  requiresAny?: string[]
+): boolean {
+  if (!requires.every((parent) => unlocked.has(parent))) return false;
+  if (requiresAny !== undefined && requiresAny.length > 0) {
+    return requiresAny.some((parent) => unlocked.has(parent));
+  }
+  return true;
+}
+
+function missingRequirements(
+  unlocked: Set<string>,
+  requires: string[],
+  requiresAny?: string[]
+): string[] {
+  const missing = requires.filter((parent) => !unlocked.has(parent));
+  if (missing.length > 0) return missing;
+  if (
+    requiresAny !== undefined &&
+    requiresAny.length > 0 &&
+    !requiresAny.some((parent) => unlocked.has(parent))
+  ) {
+    return [...requiresAny];
+  }
+  return [];
+}
+
+function assertGridPathsValid() {
+  const seen = new Set<string>();
+  const claim = (key: string, label: string) => {
+    if (key === `${TREE_HUB[0]},${TREE_HUB[1]}` || seen.has(key)) {
+      throw new Error(`Passive tree cells overlap at ${key} (${label})`);
+    }
+    seen.add(key);
+  };
+  (Object.keys(GRID_PATHS) as ArmBranch[]).forEach((branch) => {
+    const path = GRID_PATHS[branch];
+    if (path.length !== 8) {
+      throw new Error(`Passive tree arm ${branch} must have 8 cells`);
+    }
+    path.forEach(([col, row], index) => {
+      if (
+        !Number.isInteger(col) ||
+        !Number.isInteger(row) ||
+        col < 0 ||
+        col >= TREE_GRID_SIZE ||
+        row < 0 ||
+        row >= TREE_GRID_SIZE
+      ) {
+        throw new Error(
+          `Passive tree arm ${branch} cell ${index} is outside the grid`
+        );
+      }
+      claim(`${col},${row}`, `arm ${branch}`);
+    });
+  });
+  (Object.entries(ELEMENT_CELLS) as Array<[ElementKind, readonly [number, number]]>).forEach(
+    ([element, [col, row]]) => {
+      if (col < 0 || col >= TREE_GRID_SIZE || row < 0 || row >= TREE_GRID_SIZE) {
+        throw new Error(`Elemental node ${element} is outside the grid`);
+      }
+      claim(`${col},${row}`, `element ${element}`);
+    }
+  );
 }
 
 function chain(branch: PassiveBranch, nodes: SeedNode[]): SeedNode[] {
@@ -315,50 +409,50 @@ function seedNodes(): SeedNode[] {
       { nodeId: "sword-1", branch: "sword", name: "Sword Apprentice", description: "+2 STR. The way of the blade begins.", effectType: "stat-boost", effectStat: "str", effectAmount: 2, requires: [] },
       { nodeId: "sword-2", branch: "sword", name: "Heavy Edge", description: "+3% damage.", effectType: "damage-percent", effectAmount: 0.03, requires: [] },
       { nodeId: "sword-3", branch: "sword", name: "Swordsman Strength", description: "+2 STR.", effectType: "stat-boost", effectStat: "str", effectAmount: 2, requires: [] },
-      { nodeId: "sword-4", branch: "sword", name: "Battle Rhythm", description: "Unlock automatic attacks at your attack speed.", effectType: "unlock-auto-attack", effectAmount: 1, requires: [] },
+      { nodeId: "sword-4", branch: "sword", name: "Squire's Strength", description: "+1 STR.", effectType: "stat-boost", effectStat: "str", effectAmount: 1, requires: [] },
       { nodeId: "sword-5", branch: "sword", name: "Veteran Vitality", description: "+4% maximum health.", effectType: "health-percent", effectAmount: 0.04, requires: [] },
       { nodeId: "sword-6", branch: "sword", name: "Keen Edge", description: "+3% damage.", effectType: "damage-percent", effectAmount: 0.03, requires: [] },
-      { nodeId: "sword-7", branch: "sword", name: "War Campaign", description: "Unlock battle automation (queued auto-battle).", effectType: "unlock-auto-battle", effectAmount: 1, requires: [] },
+      { nodeId: "sword-7", branch: "sword", name: "Sharpened Edge", description: "+2% damage.", effectType: "damage-percent", effectAmount: 0.02, requires: [] },
       { nodeId: "sword-8", branch: "sword", name: "Iron Constitution", description: "+2 CON.", effectType: "stat-boost", effectStat: "con", effectAmount: 2, requires: [] },
     ]),
     ...chain("dagger", [
       { nodeId: "dagger-1", branch: "dagger", name: "Dagger Apprentice", description: "+2 DEX. Strike first, strike often.", effectType: "stat-boost", effectStat: "dex", effectAmount: 2, requires: [] },
       { nodeId: "dagger-2", branch: "dagger", name: "Quick Hands", description: "+3% attack speed.", effectType: "attack-speed-percent", effectAmount: 0.03, requires: [] },
       { nodeId: "dagger-3", branch: "dagger", name: "Rogue Agility", description: "+1 DEX.", effectType: "stat-boost", effectStat: "dex", effectAmount: 1, requires: [] },
-      { nodeId: "dagger-4", branch: "dagger", name: "Assassin Rhythm", description: "Unlock automatic attacks at your attack speed.", effectType: "unlock-auto-attack", effectAmount: 1, requires: [] },
+      { nodeId: "dagger-4", branch: "dagger", name: "Cutpurse Agility", description: "+1 DEX.", effectType: "stat-boost", effectStat: "dex", effectAmount: 1, requires: [] },
       { nodeId: "dagger-5", branch: "dagger", name: "Vital Strike", description: "+0.5% critical chance.", effectType: "crit-chance", effectAmount: 0.005, requires: [] },
       { nodeId: "dagger-6", branch: "dagger", name: "Blur of Blades", description: "+3% attack speed.", effectType: "attack-speed-percent", effectAmount: 0.03, requires: [] },
-      { nodeId: "dagger-7", branch: "dagger", name: "Silent Campaign", description: "Unlock battle automation (queued auto-battle).", effectType: "unlock-auto-battle", effectAmount: 1, requires: [] },
+      { nodeId: "dagger-7", branch: "dagger", name: "Fleet Footwork", description: "+2% attack speed.", effectType: "attack-speed-percent", effectAmount: 0.02, requires: [] },
       { nodeId: "dagger-8", branch: "dagger", name: "Sharpened Point", description: "+3% damage.", effectType: "damage-percent", effectAmount: 0.03, requires: [] },
     ]),
     ...chain("mace", [
       { nodeId: "mace-1", branch: "mace", name: "Mace Apprentice", description: "+2 CON. Endure and crush.", effectType: "stat-boost", effectStat: "con", effectAmount: 2, requires: [] },
       { nodeId: "mace-2", branch: "mace", name: "Stone Guard", description: "+4% defense.", effectType: "defense-percent", effectAmount: 0.04, requires: [] },
       { nodeId: "mace-3", branch: "mace", name: "Juggernaut Frame", description: "+2 CON.", effectType: "stat-boost", effectStat: "con", effectAmount: 2, requires: [] },
-      { nodeId: "mace-4", branch: "mace", name: "Relentless Swing", description: "Unlock automatic attacks at your attack speed.", effectType: "unlock-auto-attack", effectAmount: 1, requires: [] },
+      { nodeId: "mace-4", branch: "mace", name: "Sturdy Frame", description: "+1 CON.", effectType: "stat-boost", effectStat: "con", effectAmount: 1, requires: [] },
       { nodeId: "mace-5", branch: "mace", name: "Thick Blood", description: "+4% maximum health.", effectType: "health-percent", effectAmount: 0.04, requires: [] },
       { nodeId: "mace-6", branch: "mace", name: "Iron Wall", description: "+4% defense.", effectType: "defense-percent", effectAmount: 0.04, requires: [] },
-      { nodeId: "mace-7", branch: "mace", name: "Siege Campaign", description: "Unlock battle automation (queued auto-battle).", effectType: "unlock-auto-battle", effectAmount: 1, requires: [] },
+      { nodeId: "mace-7", branch: "mace", name: "Reinforced Guard", description: "+3% defense.", effectType: "defense-percent", effectAmount: 0.03, requires: [] },
       { nodeId: "mace-8", branch: "mace", name: "Crushing Force", description: "+3% damage.", effectType: "damage-percent", effectAmount: 0.03, requires: [] },
     ]),
     ...chain("bow", [
       { nodeId: "bow-1", branch: "bow", name: "Bow Apprentice", description: "+2 DEX. One shot, one kill.", effectType: "stat-boost", effectStat: "dex", effectAmount: 2, requires: [] },
       { nodeId: "bow-2", branch: "bow", name: "True Aim", description: "+3% damage.", effectType: "damage-percent", effectAmount: 0.03, requires: [] },
       { nodeId: "bow-3", branch: "bow", name: "Hunter Eye", description: "+0.5% critical chance.", effectType: "crit-chance", effectAmount: 0.005, requires: [] },
-      { nodeId: "bow-4", branch: "bow", name: "Rapid Volley", description: "Unlock automatic attacks at your attack speed.", effectType: "unlock-auto-attack", effectAmount: 1, requires: [] },
+      { nodeId: "bow-4", branch: "bow", name: "Straight Arrow", description: "+2% damage.", effectType: "damage-percent", effectAmount: 0.02, requires: [] },
       { nodeId: "bow-5", branch: "bow", name: "Swift Draw", description: "+3% attack speed.", effectType: "attack-speed-percent", effectAmount: 0.03, requires: [] },
       { nodeId: "bow-6", branch: "bow", name: "Ranger Agility", description: "+1 DEX.", effectType: "stat-boost", effectStat: "dex", effectAmount: 1, requires: [] },
-      { nodeId: "bow-7", branch: "bow", name: "Long Hunt", description: "Unlock battle automation (queued auto-battle).", effectType: "unlock-auto-battle", effectAmount: 1, requires: [] },
+      { nodeId: "bow-7", branch: "bow", name: "Tracker's Poise", description: "+1 DEX.", effectType: "stat-boost", effectStat: "dex", effectAmount: 1, requires: [] },
       { nodeId: "bow-8", branch: "bow", name: "Deadeye", description: "+0.5% critical chance.", effectType: "crit-chance", effectAmount: 0.005, requires: [] },
     ]),
     ...chain("staff", [
       { nodeId: "staff-1", branch: "staff", name: "Staff Apprentice", description: "+2 INT. The old magic listens.", effectType: "stat-boost", effectStat: "int", effectAmount: 2, requires: [] },
       { nodeId: "staff-2", branch: "staff", name: "Arcane Channel", description: "+3% damage.", effectType: "damage-percent", effectAmount: 0.03, requires: [] },
       { nodeId: "staff-3", branch: "staff", name: "Deep Study", description: "+2 INT.", effectType: "stat-boost", effectStat: "int", effectAmount: 2, requires: [] },
-      { nodeId: "staff-4", branch: "staff", name: "Resonant Cast", description: "Unlock automatic attacks at your attack speed.", effectType: "unlock-auto-attack", effectAmount: 1, requires: [] },
+      { nodeId: "staff-4", branch: "staff", name: "Apprentice Lore", description: "+1 INT.", effectType: "stat-boost", effectStat: "int", effectAmount: 1, requires: [] },
       { nodeId: "staff-5", branch: "staff", name: "Warded Robes", description: "+4% defense.", effectType: "defense-percent", effectAmount: 0.04, requires: [] },
       { nodeId: "staff-6", branch: "staff", name: "Overchannel", description: "+3% damage.", effectType: "damage-percent", effectAmount: 0.03, requires: [] },
-      { nodeId: "staff-7", branch: "staff", name: "Ritual Campaign", description: "Unlock battle automation (queued auto-battle).", effectType: "unlock-auto-battle", effectAmount: 1, requires: [] },
+      { nodeId: "staff-7", branch: "staff", name: "Focused Will", description: "+2% damage.", effectType: "damage-percent", effectAmount: 0.02, requires: [] },
       { nodeId: "staff-8", branch: "staff", name: "Sage Wisdom", description: "+2% combat experience.", effectType: "xp-multiplier", effectAmount: 1.02, requires: [] },
     ]),
     ...chain("skilling", [
@@ -371,7 +465,43 @@ function seedNodes(): SeedNode[] {
       { nodeId: "skilling-7", branch: "skilling", name: "Flow State", description: "All skill actions complete ~2% faster.", effectType: "skill-speed-multiplier", effectScope: "all", effectAmount: 1.02, requires: [] },
       { nodeId: "skilling-8", branch: "skilling", name: "Battle Wisdom", description: "+3% combat experience.", effectType: "xp-multiplier", effectAmount: 1.03, requires: [] },
     ]),
+    ...elementalNodes(),
   ];
+}
+
+/**
+ * Elemental bridge nodes. Each hangs off two neighboring arms' 5th nodes and
+ * grants a small damage bonus for one element — applied only while wielding
+ * a weapon tagged with that element. Either neighbor unlocks the bridge, so
+ * builds can cross between branches. Opposing elements sit across the hub
+ * from each other (fire/water, wind/earth, light/dark).
+ */
+function elementalNodes(): SeedNode[] {
+  const definitions: Array<{
+    nodeId: string;
+    name: string;
+    element: ElementKind;
+    from: [string, string];
+  }> = [
+    { nodeId: "element-fire", name: "Cinder Attunement", element: "fire", from: ["sword-5", "dagger-5"] },
+    { nodeId: "element-water", name: "Tide Attunement", element: "water", from: ["mace-5", "staff-5"] },
+    { nodeId: "element-wind", name: "Gale Attunement", element: "wind", from: ["dagger-5", "bow-5"] },
+    { nodeId: "element-earth", name: "Stone Attunement", element: "earth", from: ["staff-5", "skilling-5"] },
+    { nodeId: "element-light", name: "Dawn Attunement", element: "light", from: ["bow-5", "mace-5"] },
+    { nodeId: "element-dark", name: "Dusk Attunement", element: "dark", from: ["skilling-5", "sword-5"] },
+  ];
+  return definitions.map(({ nodeId, name, element, from }) => ({
+    nodeId,
+    branch: "elemental" as const,
+    name,
+    description: `+4% ${element} damage while wielding a ${element} weapon. Reachable from ${from.join(" or ")}.`,
+    effectType: "elemental-damage-percent" as const,
+    element,
+    effectAmount: 0.04,
+    requires: [],
+    requiresAny: [...from],
+    cell: ELEMENT_CELLS[element],
+  }));
 }
 
 export async function seedPassiveContent(ctx: MutationCtx) {
@@ -387,8 +517,24 @@ export async function seedPassiveContent(ctx: MutationCtx) {
     });
   }
 
-  for (const [index, seed] of seedNodes().entries()) {
-    const { positionX, positionY } = branchPosition(seed.branch, index % 8);
+  assertGridPathsValid();
+  const branchIndex: Record<ArmBranch, number> = {
+    sword: 0,
+    dagger: 0,
+    mace: 0,
+    bow: 0,
+    staff: 0,
+    skilling: 0,
+  };
+
+  for (const seed of seedNodes()) {
+    const { positionX, positionY } =
+      seed.cell !== undefined
+        ? { positionX: seed.cell[0] + 0.5, positionY: seed.cell[1] + 0.5 }
+        : branchPosition(
+            seed.branch as ArmBranch,
+            branchIndex[seed.branch as ArmBranch]++
+          );
     const existing = await ctx.db
       .query("passiveNodes")
       .withIndex("by_nodeId", (q) => q.eq("nodeId", seed.nodeId))
@@ -403,8 +549,10 @@ export async function seedPassiveContent(ctx: MutationCtx) {
       ...(seed.effectScope === undefined
         ? {}
         : { effectScope: seed.effectScope }),
+      ...(seed.element === undefined ? {} : { element: seed.element }),
       effectAmount: seed.effectAmount,
       requires: seed.requires,
+      requiresAny: seed.requiresAny ?? [],
       positionX,
       positionY,
       enabled: true,
@@ -437,13 +585,19 @@ export const getTree = query({
     return {
       nodes: nodes
         .filter((node) => node.enabled)
-        .map((node) => ({
-          ...node,
-          unlocked: unlocked.has(node.nodeId),
-          requirementsMet: node.requires.every((parent) =>
-            unlocked.has(parent)
-          ),
-        })),
+        .map((node) => {
+          const requiresAny = node.requiresAny ?? [];
+          return {
+            ...node,
+            requiresAny,
+            unlocked: unlocked.has(node.nodeId),
+            requirementsMet: requirementsMetFor(
+              unlocked,
+              node.requires,
+              requiresAny
+            ),
+          };
+        }),
       unlocked: unlocks.map((row) => row.nodeId),
       points,
       bonuses: await getPassiveBonuses(ctx, playerId),
@@ -454,6 +608,7 @@ export const getTree = query({
 export const unlockNode = mutation({
   args: { playerId: v.id("players"), nodeId: v.string() },
   handler: async (ctx, { playerId, nodeId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
     const node = await ctx.db
@@ -473,9 +628,14 @@ export const unlockNode = mutation({
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
       .collect();
     const unlocked = new Set(unlocks.map((row) => row.nodeId));
-    const missing = node.requires.filter((parent) => !unlocked.has(parent));
+    const requiresAny = node.requiresAny ?? [];
+    const missing = missingRequirements(unlocked, node.requires, requiresAny);
     if (missing.length > 0) {
-      throw new Error(`Requires ${missing.join(", ")} first`);
+      const needsAll = node.requires.filter((parent) => !unlocked.has(parent));
+      if (needsAll.length > 0) {
+        throw new Error(`Requires ${needsAll.join(", ")} first`);
+      }
+      throw new Error(`Requires ${requiresAny.join(" or ")} first`);
     }
     const points = await getPassivePoints(ctx, player);
     if (points.available < 1) {
@@ -504,7 +664,7 @@ export async function clearPlayerPassives(
 }
 
 /**
- * Admin-only: (re)seed the default 48-node web and point interval.
+ * Admin-only: (re)seed the default 54-node web and point interval.
  * Idempotent — safe to run multiple times. Needed on existing deployments
  * where the passive tables did not exist at first deploy.
  */

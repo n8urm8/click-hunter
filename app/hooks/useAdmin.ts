@@ -1,156 +1,229 @@
-import { convexQuery } from "@convex-dev/react-query";
-import { useQuery } from "@tanstack/react-query";
-import { useMutation } from "convex/react";
+import { useCallback } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useConvex, useMutation } from "convex/react";
+import type {
+  FunctionReference, FunctionReturnType, OptionalRestArgs,
+} from "convex/server";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { convexQueryCacheOptions } from "../lib/queryCache";
+import {
+  adminSectionsForTables,
+  type AdminConfigSection,
+  type AdminConfigTable,
+  type AdminSection,
+} from "../../convex/adminConfig";
 
-export function useAdminConfig(playerId: Id<"players"> | null) {
+// These keys deliberately bypass ConvexQueryClient's live subscription adapter.
+export const adminSnapshotKey = (
+  playerId: Id<"players"> | null,
+  section?: AdminSection
+) => section
+  ? ["adminSnapshot", playerId, section] as const
+  : ["adminSnapshot", playerId] as const;
+
+const snapshotOptions = {
+  staleTime: Infinity,
+  gcTime: 5 * 60 * 1_000,
+  retry: false,
+  refetchOnMount: "always",
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+} as const;
+
+export function useAdminConfig(
+  playerId: Id<"players">,
+  section: AdminConfigSection,
+  enabled: boolean
+) {
+  const convex = useConvex();
   return useQuery({
-    ...convexQuery(api.admin.getConfig, playerId ? { playerId } : "skip"),
-    ...convexQueryCacheOptions,
+    ...snapshotOptions,
+    queryKey: adminSnapshotKey(playerId, section),
+    queryFn: () => convex.query(api.admin.getConfig, { playerId, section }),
+    enabled,
   });
 }
 
-export function useAdminPlayers(playerId: Id<"players"> | null) {
+export function useAdminPlayers(playerId: Id<"players">, enabled: boolean) {
+  const convex = useConvex();
   return useQuery({
-    ...convexQuery(api.admin.getPlayers, playerId ? { playerId } : "skip"),
-    ...convexQueryCacheOptions,
+    ...snapshotOptions,
+    queryKey: adminSnapshotKey(playerId, "players"),
+    queryFn: () => convex.query(api.admin.getPlayers, { playerId }),
+    enabled,
   });
+}
+
+function useAdminMutation<Mutation extends FunctionReference<"mutation">>(
+  reference: Mutation,
+  sections: readonly AdminSection[]
+) {
+  const mutate = useMutation(reference);
+  const queryClient = useQueryClient();
+  return useCallback(async (
+    ...args: OptionalRestArgs<Mutation>
+  ): Promise<FunctionReturnType<Mutation>> => {
+    const input: { playerId?: Id<"players">; adminPlayerId?: Id<"players"> } = args[0] ?? {};
+    const playerId = input.adminPlayerId ?? input.playerId;
+    if (!playerId) throw new Error("Admin mutation is missing its player ID");
+    const result = await mutate(...args);
+    // Disabled, kept-mounted tabs become stale without fetching. Refresh errors
+    // stay on the query so a successful save is not reported as a failed write.
+    await Promise.all(sections.map((section) =>
+      queryClient.invalidateQueries({
+        queryKey: adminSnapshotKey(playerId, section),
+        refetchType: "active",
+      })
+    ));
+    return result;
+  }, [mutate, queryClient, sections]);
+}
+
+function useConfigMutation<Mutation extends FunctionReference<"mutation">>(
+  reference: Mutation,
+  tables: readonly AdminConfigTable[]
+) {
+  return useAdminMutation(reference, adminSectionsForTables(tables));
 }
 
 export function useUpdatePlayer() {
-  return useMutation(api.admin.updatePlayer);
+  return useAdminMutation(api.admin.updatePlayer, ["players"]);
 }
 
 export function useUpdateGameBalance() {
-  return useMutation(api.admin.updateGameBalance);
+  return useConfigMutation(api.admin.updateGameBalance, ["gameBalance"]);
 }
 
 export function useCreateTaskDefinition() {
-  return useMutation(api.admin.createTaskDefinition);
+  return useConfigMutation(api.admin.createTaskDefinition, ["taskDefinitions"]);
 }
 
 export function useUpdateTaskDefinition() {
-  return useMutation(api.admin.updateTaskDefinition);
+  return useConfigMutation(api.admin.updateTaskDefinition, ["taskDefinitions"]);
 }
 
 export function useCreateSkillDefinition() {
-  return useMutation(api.admin.createSkillDefinition);
+  return useConfigMutation(api.admin.createSkillDefinition, ["skillDefinitions"]);
 }
 
 export function useUpdateSkillDefinition() {
-  return useMutation(api.admin.updateSkillDefinition);
+  return useConfigMutation(api.admin.updateSkillDefinition, ["skillDefinitions"]);
 }
 
 export function useCreateSkillTierDefinition() {
-  return useMutation(api.admin.createSkillTierDefinition);
+  return useConfigMutation(api.admin.createSkillTierDefinition, ["skillTierDefinitions"]);
 }
 
 export function useUpdateSkillTierDefinition() {
-  return useMutation(api.admin.updateSkillTierDefinition);
+  return useConfigMutation(api.admin.updateSkillTierDefinition, ["skillTierDefinitions"]);
 }
 
 export function useCreateGatheringActivity() {
-  return useMutation(api.admin.createGatheringActivity);
+  return useConfigMutation(api.admin.createGatheringActivity, ["gatheringActivities"]);
 }
 
 export function useUpdateGatheringActivity() {
-  return useMutation(api.admin.updateGatheringActivity);
+  return useConfigMutation(api.admin.updateGatheringActivity, ["gatheringActivities"]);
 }
 
 export function useCreateRecipe() {
-  return useMutation(api.admin.createRecipe);
+  return useConfigMutation(api.admin.createRecipe, ["recipes", "recipeIngredients", "recipeOutputs"]);
 }
 
 export function useUpdateRecipe() {
-  return useMutation(api.admin.updateRecipe);
+  return useConfigMutation(api.admin.updateRecipe, ["recipes", "recipeIngredients", "recipeOutputs"]);
 }
 
 export function useCreateAugmentationDefinition() {
-  return useMutation(api.admin.createAugmentationDefinition);
+  return useConfigMutation(api.admin.createAugmentationDefinition, ["augmentationDefinitions"]);
 }
 
 export function useUpdateAugmentationDefinition() {
-  return useMutation(api.admin.updateAugmentationDefinition);
+  return useConfigMutation(api.admin.updateAugmentationDefinition, ["augmentationDefinitions"]);
 }
 
 export function useCreateLootTable() {
-  return useMutation(api.admin.createLootTable);
+  return useConfigMutation(api.admin.createLootTable, ["lootTables"]);
 }
 
 export function useUpdateLootTable() {
-  return useMutation(api.admin.updateLootTable);
+  return useConfigMutation(api.admin.updateLootTable, ["lootTables"]);
 }
 
 export function useCreateLootTableEntry() {
-  return useMutation(api.admin.createLootTableEntry);
+  return useConfigMutation(api.admin.createLootTableEntry, ["lootTableEntries"]);
 }
 
 export function useUpdateLootTableEntry() {
-  return useMutation(api.admin.updateLootTableEntry);
+  return useConfigMutation(api.admin.updateLootTableEntry, ["lootTableEntries"]);
 }
 
 export function useCreateLootSource() {
-  return useMutation(api.admin.createLootSource);
+  return useConfigMutation(api.admin.createLootSource, ["lootSources"]);
 }
 
 export function useUpdateLootSource() {
-  return useMutation(api.admin.updateLootSource);
+  return useConfigMutation(api.admin.updateLootSource, ["lootSources"]);
 }
 
 export function useUpdateUpgrade() {
-  return useMutation(api.admin.updateUpgrade);
+  return useConfigMutation(api.admin.updateUpgrade, ["upgrades"]);
 }
 
 export function useCreatePassiveNode() {
-  return useMutation(api.admin.createPassiveNode);
+  return useConfigMutation(api.admin.createPassiveNode, ["passiveNodes"]);
 }
 
 export function useUpdatePassiveNode() {
-  return useMutation(api.admin.updatePassiveNode);
+  return useConfigMutation(api.admin.updatePassiveNode, ["passiveNodes"]);
+}
+
+export function useSeedAdminPassiveTree() {
+  return useConfigMutation(api.passiveTree.seedDefaultTree, ["passiveNodes", "gameBalance"]);
 }
 
 export function useCreateItemRarity() {
-  return useMutation(api.admin.createItemRarity);
+  return useConfigMutation(api.admin.createItemRarity, ["itemRarities"]);
 }
 
 export function useUpdateItemRarity() {
-  return useMutation(api.admin.updateItemRarity);
+  return useConfigMutation(api.admin.updateItemRarity, ["itemRarities", "items"]);
 }
 
 export function useCreateItem() {
-  return useMutation(api.admin.createItem);
+  return useConfigMutation(api.admin.createItem, ["items"]);
 }
 
 export function useUpdateItem() {
-  return useMutation(api.admin.updateItem);
+  return useConfigMutation(api.admin.updateItem, ["items"]);
 }
 
 export function useResetForestCrafting() {
-  return useMutation(api.seed.resetForestCrafting);
+  return useAdminMutation(api.seed.resetForestCrafting, [
+    "players", "monsters", "items", "skills", "tree", "general",
+  ]);
 }
 
 export function useUpdateMonster() {
-  return useMutation(api.admin.updateMonster);
+  return useConfigMutation(api.admin.updateMonster, ["monsters"]);
 }
 
 export function useUpdateBoss() {
-  return useMutation(api.admin.updateBoss);
+  return useConfigMutation(api.admin.updateBoss, ["bosses"]);
 }
 
 export function useUpdateHiddenSpot() {
-  return useMutation(api.admin.updateHiddenSpot);
+  return useConfigMutation(api.admin.updateHiddenSpot, ["hiddenSpots"]);
 }
 
 export function useUpdateAchievement() {
-  return useMutation(api.admin.updateAchievement);
+  return useConfigMutation(api.admin.updateAchievement, ["achievements"]);
 }
 
 export function useUpdateRebirthReward() {
-  return useMutation(api.admin.updateRebirthReward);
+  return useConfigMutation(api.admin.updateRebirthReward, ["rebirthRewards"]);
 }
 
 export function useSaveEvent() {
-  return useMutation(api.events.createEvent);
+  return useConfigMutation(api.events.createEvent, ["gameEvents"]);
 }

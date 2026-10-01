@@ -3,9 +3,9 @@ import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
-import { settleRegularFight } from "./combat";
 import { settleCombatFight } from "./loot";
 import { combatZoneValidator } from "./zones";
+import { settleTasksBeforeInteraction } from "./taskSettlement";
 
 const ONE_TIME_AUTOMATION_EFFECTS = new Set([
   "enable-auto-attack",
@@ -240,6 +240,7 @@ export const purchaseUpgrade = mutation({
     upgradeId: v.string(),
   },
   handler: async (ctx, { playerId, upgradeId }) => {
+    await settleTasksBeforeInteraction(ctx, playerId);
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
 
@@ -394,22 +395,14 @@ export const recordFight = mutation({
     monsterType,
     isBoss,
     won,
-    monsterZone,
     settlementKey,
   }) => {
+    if (!isBoss) {
+      throw new Error("Regular fights must use the auto-battle queue");
+    }
     const key =
       settlementKey?.trim() ||
-      `${playerId}:${isBoss ? "boss" : "monster"}:${monsterType}:${monsterTier}:${Date.now()}`;
-    if (!isBoss) {
-      return await settleRegularFight(ctx, {
-        playerId,
-        monsterTier,
-        monsterType,
-        won,
-        settlementKey: key,
-        ...(monsterZone === undefined ? {} : { monsterZone }),
-      });
-    }
+      `${playerId}:boss:${monsterType}:${monsterTier}:${Date.now()}`;
 
     const boss = await ctx.db
       .query("bosses")

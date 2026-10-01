@@ -10,11 +10,9 @@ import { TaskQueueManager } from "./TaskQueueManager";
 
 function PlayerDataPrefetch({
   playerId,
-  role,
   currentTier,
 }: {
   playerId: Id<"players">;
-  role?: string;
   currentTier: number;
 }) {
   const queryClient = useQueryClient();
@@ -152,16 +150,6 @@ function PlayerDataPrefetch({
       },
     ];
 
-    if (role === "admin") {
-      prefetches.push({
-        label: "admin configuration",
-        promise: queryClient.prefetchQuery({
-          ...convexQuery(api.admin.getConfig, { playerId }),
-          ...convexQueryCacheOptions,
-        }),
-      });
-    }
-
     void Promise.allSettled(prefetches.map(({ promise }) => promise)).then((results) => {
       results.forEach((result, index) => {
         if (result.status === "rejected") {
@@ -172,7 +160,7 @@ function PlayerDataPrefetch({
         }
       });
     });
-  }, [currentTier, playerId, queryClient, role]);
+  }, [currentTier, playerId, queryClient]);
 
   return null;
 }
@@ -184,7 +172,6 @@ export function GameRoot() {
         <>
           <PlayerDataPrefetch
             playerId={player._id}
-            role={player.role}
             currentTier={player.currentTier}
           />
           <TaskQueueManager playerId={player._id} />

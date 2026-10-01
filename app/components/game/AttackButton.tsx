@@ -1,4 +1,3 @@
-import { Button } from "~/components/ui/button";
 import { useAtom } from "jotai";
 import {
   currentFightAtom,
@@ -13,12 +12,13 @@ import {
   useAttemptAttack,
   useRecordFight,
   useAdvanceTierProgression,
+  type PlayerWithDerivedStats,
 } from "~/hooks/usePlayer";
 import { logInfo } from "~/lib/logger";
 import { useEffect, useRef, useState } from "react";
 
 interface AttackButtonProps {
-  player: any;
+  player: PlayerWithDerivedStats;
   onStartNextFight: (fightWasBoss: boolean) => boolean;
 }
 
@@ -32,12 +32,10 @@ export function AttackButton({
   const [, setEventTracker] = useAtom(eventTrackerAtom);
   const [playerHp] = useAtom(playerHpAtom);
   const [isProcessingVictory, setIsProcessingVictory] = useState(false);
-  const [isAttackPending, setIsAttackPending] = useState(false);
-  const [isAttackOnCooldown, setIsAttackOnCooldown] = useState(false);
+  const [attackError, setAttackError] = useState<string | null>(null);
   const victoryInProgressRef = useRef(false);
   const attackInProgressRef = useRef(false);
-  const cooldownTimerRef = useRef<number | null>(null);
-  const handleAttackRef = useRef<() => Promise<void>>(async () => {});
+  const handleAttackRef = useRef<() => Promise<number | null>>(async () => null);
   const currentFightRef = useRef(currentFight);
   const fightPhaseRef = useRef(fightPhase);
   const onStartNextFightRef = useRef(onStartNextFight);
@@ -50,35 +48,7 @@ export function AttackButton({
   const hasActiveFight = Boolean(
     currentFight && currentFight.monsterHp > 0 && fightPhase === "fighting"
   );
-  const isAutoAttackEnabled = Boolean(player.autoAttackEnabled);
-  const playerAttackSpeed = Math.max(0.5, player.attackSpeed || 0.5);
-
-  useEffect(() => {
-    return () => {
-      if (cooldownTimerRef.current !== null) {
-        window.clearTimeout(cooldownTimerRef.current);
-      }
-    };
-  }, []);
-
-  const startAttackCooldown = (delayMs: number) => {
-    if (cooldownTimerRef.current !== null) {
-      window.clearTimeout(cooldownTimerRef.current);
-    }
-
-    const safeDelayMs = Math.max(0, delayMs);
-    if (safeDelayMs === 0) {
-      setIsAttackOnCooldown(false);
-      cooldownTimerRef.current = null;
-      return;
-    }
-
-    setIsAttackOnCooldown(true);
-    cooldownTimerRef.current = window.setTimeout(() => {
-      cooldownTimerRef.current = null;
-      setIsAttackOnCooldown(false);
-    }, safeDelayMs);
-  };
+  const attackInterval = Math.ceil(1000 / player.attackSpeed);
 
   const handleVictory = async (fight: CurrentFight) => {
     if (victoryInProgressRef.current) return;
@@ -146,38 +116,36 @@ export function AttackButton({
   };
 
   const handleAttack = async () => {
+    if (attackInProgressRef.current) return attackInterval;
     const fight = currentFightRef.current;
     if (
       !fight ||
       fight.monsterHp <= 0 ||
       fightPhaseRef.current !== "fighting" ||
-      attackInProgressRef.current ||
-      isAttackOnCooldown ||
       victoryInProgressRef.current
     ) {
-      return;
+      return null;
     }
 
     attackInProgressRef.current = true;
-    setIsAttackPending(true);
 
     try {
       const result = await attemptAttack({ playerId: player._id });
-      startAttackCooldown(result.retryAfterMs);
-
-      if (!result.allowed) return;
+      setAttackError(null);
+      if (!result.allowed) return result.retryAfterMs;
 
       const activeFight = currentFightRef.current;
       if (
         !activeFight ||
+        activeFight.settlementKey !== fight.settlementKey ||
         activeFight.monsterHp <= 0 ||
         fightPhaseRef.current !== "fighting"
       ) {
-        return;
+        return null;
       }
 
       // Calculate damage only after the server accepts the attack.
-      const damage = calculateDamage(player.attack, player.critChance);
+      const damage = calculateDamage(player.attack, player.critChance, player.critDamageMultiplier);
       const newMonsterHp = Math.max(0, activeFight.monsterHp - damage);
       const updatedFight = {
         ...activeFight,
@@ -208,51 +176,45 @@ export function AttackButton({
       if (newMonsterHp <= 0) {
         void handleVictory(updatedFight);
       }
+      return result.retryAfterMs;
     } catch (error) {
       console.error("Failed to process attack:", error);
+      setAttackError(error instanceof Error ? error.message : "Unable to attack. Retrying...");
+      return attackInterval;
     } finally {
       attackInProgressRef.current = false;
-      setIsAttackPending(false);
     }
   };
 
   handleAttackRef.current = handleAttack;
 
   useEffect(() => {
-    if (!player.autoAttackEnabled || !hasActiveFight) return;
-
-    const attackInterval = Math.ceil(1000 / playerAttackSpeed);
-    void handleAttackRef.current();
-    const timer = window.setInterval(() => {
-      void handleAttackRef.current();
-    }, attackInterval);
-
-    return () => window.clearInterval(timer);
-  }, [hasActiveFight, player.autoAttackEnabled, playerAttackSpeed]);
+    if (!hasActiveFight) return;
+    let cancelled = false;
+    let timer: number;
+    const attack = async () => {
+      const delay = await handleAttackRef.current();
+      if (!cancelled && delay !== null) {
+        timer = window.setTimeout(() => void attack(), delay);
+      }
+    };
+    timer = window.setTimeout(() => void attack(), attackInterval);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [hasActiveFight, currentFight?.settlementKey, attackInterval]);
 
   return (
-    <Button
-      onClick={handleAttack}
-      size="lg"
-      disabled={
-        isAutoAttackEnabled ||
-        !currentFight ||
-        currentFight.monsterHp <= 0 ||
-        isProcessingVictory ||
-        isAttackPending ||
-        isAttackOnCooldown
-      }
-      className="w-full bg-blood hover:bg-blood-light text-gold-light text-xl py-8 border border-blood-light/30 box-glow-red disabled:bg-forest-dark/50 disabled:text-muted-foreground disabled:border-forest-light/10 disabled:shadow-none"
-    >
-      {isAutoAttackEnabled
-        ? "Auto Attacking"
-        : isProcessingVictory
-          ? "✨ Victory!"
-          : isAttackPending
-            ? "⏳ Striking..."
-            : isAttackOnCooldown
-              ? "⏱️ Attack cooldown"
-              : "⚔️ ATTACK!"}
-    </Button>
+    <div className="flex flex-col gap-2 text-center">
+      <p role="status" className="text-sm text-muted-foreground">
+        {isProcessingVictory
+          ? "Victory!"
+          : hasActiveFight
+            ? "Fighting"
+            : "Waiting for battle"}
+      </p>
+      {attackError && <p role="alert" className="text-sm text-destructive">{attackError}</p>}
+    </div>
   );
 }

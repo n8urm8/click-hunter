@@ -23,7 +23,7 @@ export default defineConfig({
   },
   server: {
     middlewareMode: false,
-    port: 5173,
+    port: 5175,
     strictPort: false,
     open: true,
   },

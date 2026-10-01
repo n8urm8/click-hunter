@@ -16,7 +16,7 @@ export type CombatZone = (typeof COMBAT_ZONE_VALUES)[number];
  * entry is missing or malformed. Must match DEFAULT_MONSTER_POWER_MULTIPLIER
  * in convex/combat.ts (server auto-battle fallback).
  */
-export const DEFAULT_MONSTER_POWER_MULTIPLIER = 0.5;
+export const DEFAULT_MONSTER_POWER_MULTIPLIER = 1;
 
 export function isCombatZone(value: unknown): value is CombatZone {
   return value === "easy" || value === "medium" || value === "hard";

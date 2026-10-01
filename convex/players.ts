@@ -1,20 +1,16 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { api, components } from "./_generated/api";
+import { api, components, internal } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ensureBossForTier } from "./bossData";
 import { calculateCharacterLevel } from "./characterLevel";
 import {
-  getEquippedStatBonuses,
-  getEquippedWeapon,
-  getEquippedArmorTotals,
-  computeAttackSpeed,
-  readCombatBalance,
   grantItemToInventory,
 } from "./items";
-import { getPassiveBonuses, clearPlayerPassives } from "./passiveTree";
+import { clearPlayerPassives } from "./passiveTree";
+import { readPlayerCombatProfile } from "./combat";
 import { STARTER_KITS } from "./forestCraftingSeed";
 
 // Default balance constants — must match gameBalance seeds in seed.ts
@@ -67,14 +63,16 @@ async function withEquipmentStats(
   ctx: DatabaseCtx,
   player: Doc<"players">
 ) {
-  const [bonuses, passives] = await Promise.all([
-    getEquippedStatBonuses(ctx, player._id),
-    getPassiveBonuses(ctx, player._id),
-  ]);
+  const { bonuses, passives, weapon, combatStats, effectiveStats } =
+    await readPlayerCombatProfile(ctx, player);
   return {
     ...player,
+    autoAttackEnabled: true,
     equipmentStatBonuses: bonuses,
     passiveBonuses: passives,
+    equippedWeaponElement: weapon?.element ?? null,
+    combatStats,
+    effectiveStats,
   };
 }
 
@@ -210,7 +208,7 @@ export const getOrCreatePlayer = mutation({
       rebirthTierThreshold: rebirthThresholds[0],
       currentTier: 1,
       maxTierReached: 1,
-      autoAttackEnabled: false,
+      autoAttackEnabled: true,
       autoStartFightEnabled: false,
       createdAt: now,
       lastUpdated: now,
@@ -296,23 +294,8 @@ export const attemptAttack = mutation({
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
 
-    const [bonuses, passives] = await Promise.all([
-      getEquippedStatBonuses(ctx, playerId),
-      getPassiveBonuses(ctx, playerId),
-    ]);
-    const [weapon, armor, balance] = await Promise.all([
-      getEquippedWeapon(ctx, playerId),
-      getEquippedArmorTotals(ctx, playerId),
-      readCombatBalance(ctx),
-    ]);
-    const attackSpeed =
-      computeAttackSpeed(
-        weapon?.attackSpeed ?? 1,
-        player.dex + bonuses.dex + passives.stats.dex,
-        armor.speedPenalty,
-        balance
-      ) * (1 + passives.attackSpeedPercent);
-    const cooldownMs = Math.ceil(1000 / attackSpeed);
+    const { combatStats } = await readPlayerCombatProfile(ctx, player, Date.now());
+    const cooldownMs = Math.ceil(1000 / combatStats.attackSpeed);
     const status = await rateLimiter.limit(ctx, "manualAttack", {
       key: playerId,
       config: {
@@ -463,6 +446,7 @@ export const rebirth = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await ctx.runMutation(internal.tasks.prepareRebirth, { playerId });
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
 
@@ -507,7 +491,7 @@ export const rebirth = mutation({
       rebirthTierThreshold: nextThreshold,
       currentTier: 1,
       maxTierReached: 1,
-      autoAttackEnabled: false,
+      autoAttackEnabled: true,
       autoStartFightEnabled: false,
       lastUpdated: Date.now(),
     });
@@ -522,7 +506,7 @@ export const rebirth = mutation({
 });
 
 /**
- * Set auto attack state
+ * Compatibility endpoint for older clients; automatic attacks cannot be disabled.
  */
 export const setAutoAttack = mutation({
   args: {
@@ -532,32 +516,17 @@ export const setAutoAttack = mutation({
   handler: async (ctx, { playerId, enabled }) => {
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
-    if (enabled) {
-      const [passives, upgrades] = await Promise.all([
-        getPassiveBonuses(ctx, playerId),
-        ctx.db
-          .query("playerUpgrades")
-          .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-          .collect(),
-      ]);
-      const hasPassive = passives.autoAttack;
-      const hasLegacy = upgrades.some(
-        (upgrade) => upgrade.upgradeId === "auto_attack" && upgrade.quantity > 0
-      );
-      if (!hasPassive && !hasLegacy) {
-        throw new Error("Unlock automatic attacks in the passive skill tree first");
-      }
-    }
+    if (!enabled) throw new Error("Auto attack is always enabled");
 
     await ctx.db.patch(playerId, {
-      autoAttackEnabled: enabled,
+      autoAttackEnabled: true,
       lastUpdated: Date.now(),
     });
   },
 });
 
 /**
- * Set auto start fight state
+ * Set auto start fight state. Battle automation is available to everyone.
  */
 export const setAutoStartFight = mutation({
   args: {
@@ -567,23 +536,6 @@ export const setAutoStartFight = mutation({
   handler: async (ctx, { playerId, enabled }) => {
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Player not found");
-    if (enabled) {
-      const [passives, upgrades] = await Promise.all([
-        getPassiveBonuses(ctx, playerId),
-        ctx.db
-          .query("playerUpgrades")
-          .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-          .collect(),
-      ]);
-      const hasPassive = passives.autoBattle;
-      const hasLegacy = upgrades.some(
-        (upgrade) =>
-          upgrade.upgradeId === "auto_start_fight" && upgrade.quantity > 0
-      );
-      if (!hasPassive && !hasLegacy) {
-        throw new Error("Unlock battle automation in the passive skill tree first");
-      }
-    }
 
     await ctx.db.patch(playerId, {
       autoStartFightEnabled: enabled,
