@@ -374,7 +374,8 @@ async function validateAutoBattleRequest(
   zone?: CombatZone
 ) {
   // Battle automation is available to everyone, no unlock required.
-  const player = await getPlayer(ctx, playerId);
+  // Any tier up to the content cap can be battled at any character level.
+  await getPlayer(ctx, playerId);
   if (!Number.isSafeInteger(tier) || tier < 1) {
     throw new Error("Battle tier must be a positive integer");
   }
@@ -387,9 +388,8 @@ async function validateAutoBattleRequest(
     20,
     1
   );
-  const reachedTier = player.maxTierReached ?? player.currentTier;
-  if (tier > maxTier || tier > reachedTier) {
-    throw new Error("You have not unlocked that regular battle tier");
+  if (tier > maxTier) {
+    throw new Error("That battle tier does not exist yet");
   }
 
   if (mode === "count") {

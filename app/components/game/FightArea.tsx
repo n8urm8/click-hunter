@@ -504,13 +504,19 @@ export function FightArea({ player }: FightAreaProps) {
       : 20;
 
   // Tier and hunting zone live in the URL (/combat?tier=3&zone=easy) so every
-  // tier/zone combination is a shareable route.
+  // tier/zone combination is a shareable route. Only three tiers past the
+  // player's best are listed; the grid shows two rows with a scrollbar.
+  const reachedTier = Math.max(
+    1,
+    player.maxTierReached ?? player.currentTier ?? 1
+  );
+  const visibleTierCount = Math.min(maxTier, reachedTier + 3);
   const requestedTier = Number(searchParams.get("tier"));
   const selectedTier = Math.min(
     Number.isSafeInteger(requestedTier) && requestedTier >= 1
       ? requestedTier
       : player.currentTier,
-    maxTier
+    visibleTierCount
   );
   const rawZone = searchParams.get("zone");
   const selectedZone: CombatZone = isCombatZone(rawZone) ? rawZone : "easy";
@@ -575,16 +581,6 @@ export function FightArea({ player }: FightAreaProps) {
       balance.respawnTimeMs >= 0
       ? balance.respawnTimeMs
       : 5_000;
-  const bossUnlockLevelPerTier =
-    typeof balance.bossUnlockLevelPerTier === "number" &&
-      Number.isSafeInteger(balance.bossUnlockLevelPerTier) &&
-      balance.bossUnlockLevelPerTier >= 1
-      ? balance.bossUnlockLevelPerTier
-      : 20;
-  const playerLevel =
-    typeof player.level === "number" ? player.level : 0;
-  const bossRequiredLevel = selectedTier * bossUnlockLevelPerTier;
-  const bossLevelLocked = playerLevel < bossRequiredLevel;
   const isTaskQueueFull =
     taskQueueData !== undefined &&
     taskQueueData.usedSlots >= taskQueueData.capacity;
@@ -688,7 +684,6 @@ export function FightArea({ player }: FightAreaProps) {
     if (
       !boss ||
       boss.tier !== tier ||
-      playerLevel < tier * bossUnlockLevelPerTier ||
       currentFightRef.current ||
       isStartingRef.current ||
       respawnTimerRef.current > 0 ||
@@ -771,8 +766,8 @@ export function FightArea({ player }: FightAreaProps) {
       <div className="grid gap-6 lg:grid-cols-2 lg:gap-8">
         <fieldset disabled={isStarting || isRespawning} className="min-w-0">
           <legend className="mb-3 font-heading text-lg">Hunting tier</legend>
-          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
-            {Array.from({ length: Math.min(12, maxTier) }, (_, i) => i + 1).map((tier) => (
+          <div className="grid max-h-[6rem] grid-cols-4 gap-2 overflow-y-auto pr-1 sm:grid-cols-6">
+            {Array.from({ length: visibleTierCount }, (_, i) => i + 1).map((tier) => (
               <label key={tier} className="combat-choice">
                 <input
                   type="radio"
@@ -849,14 +844,12 @@ export function FightArea({ player }: FightAreaProps) {
               size="lg"
               variant="outline"
               onClick={() => handleStartBossFight()}
-              disabled={isStarting || isRespawning || bossQuery.isPending || !boss || bossLevelLocked || hasQueuedTasks}
+              disabled={isStarting || isRespawning || bossQuery.isPending || !boss || hasQueuedTasks}
             >
               <Crown data-icon="inline-start" />
               {bossQuery.isPending
                 ? "Loading boss..."
-                : bossLevelLocked
-                  ? `Boss · Level ${bossRequiredLevel}`
-                  : boss ? "Challenge Boss" : "Boss unavailable"}
+                : boss ? "Challenge Boss" : "Boss unavailable"}
             </Button>
           </div>
           {hasQueuedTasks && !isRespawning && (

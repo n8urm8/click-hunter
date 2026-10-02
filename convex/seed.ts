@@ -14,12 +14,10 @@ import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
 import {
   DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
   ensureBossForTier,
-  getBossUnlockLevelPerTier,
   getTierScale,
   getTierScaleMultiplier,
   scaleBossStat,
 } from "./bossData";
-import { calculateCharacterLevel } from "./characterLevel";
 import { DEFAULT_MONSTER_POWER_MULTIPLIER } from "./combat";
 import { combatZoneValidator, monstersInZone } from "./zones";
 import {
@@ -265,11 +263,6 @@ export const getScaledBoss = query({
     const player = await ctx.db.get(args.playerId);
     if (!player) {
       throw new Error("Player not found");
-    }
-
-    const unlockLevel = args.tier * (await getBossUnlockLevelPerTier(ctx));
-    if ((await calculateCharacterLevel(ctx, player)) < unlockLevel) {
-      return null;
     }
 
     const boss = await ctx.db

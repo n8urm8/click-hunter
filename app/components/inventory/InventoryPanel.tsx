@@ -615,18 +615,20 @@ function EquipmentSlotCard({
   slot,
   ownedItem,
   draggingItem,
+  selected,
   onDrop,
   onDragStart,
   onDragEnd,
-  onUnequip,
+  onSelect,
 }: {
   slot: EquipmentSlot;
   ownedItem: OwnedItem | null;
   draggingItem: OwnedItem | null;
+  selected: boolean;
   onDrop: (event: DragEvent<HTMLButtonElement>, slot: EquipmentSlot) => void;
   onDragStart: ItemDragHandler;
   onDragEnd: () => void;
-  onUnequip: (ownedItem: OwnedItem) => void;
+  onSelect: (ownedItem: OwnedItem) => void;
 }) {
   const canAcceptDrop = draggingItem ? isCompatible(draggingItem, slot) : false;
   const rarityLabel = ownedItem?.rarity
@@ -644,14 +646,15 @@ function EquipmentSlotCard({
         canAcceptDrop
           ? "border-gold bg-gold/10 shadow-[0_0_14px_rgba(212,175,55,0.18)]"
           : ""
-      }`}
+      } ${selected && ownedItem ? "ring-2 ring-gold/70" : ""}`}
       aria-label={
         ownedItem
-          ? `${SLOT_LABELS[slot]} equipped with ${ownedItem.item.name}${rarityLabel}. Click to unequip.`
+          ? `${ownedItem.item.name}${rarityLabel}, equipped in ${SLOT_LABELS[slot]}. Activate to view details.`
           : `${SLOT_LABELS[slot]} equipment slot`
       }
+      aria-pressed={ownedItem ? selected : undefined}
       onClick={() => {
-        if (ownedItem) onUnequip(ownedItem);
+        if (ownedItem) onSelect(ownedItem);
       }}
       onDragOver={(event) => {
         if (canAcceptDrop) {
@@ -661,40 +664,30 @@ function EquipmentSlotCard({
       }}
       onDrop={(event) => onDrop(event, slot)}
     >
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {SLOT_LABELS[slot]}
-      </span>
       {ownedItem ? (
         <div
           draggable
-          onClick={(event) => event.stopPropagation()}
           onDragStart={(event) => onDragStart(event, ownedItem)}
           onDragEnd={onDragEnd}
-          className="mt-1 flex max-w-full cursor-grab flex-col items-center gap-1 active:cursor-grabbing"
-          title="Drag to another compatible slot"
+          className="flex cursor-grab items-center justify-center active:cursor-grabbing"
+          title={`${ownedItem.item.name} — drag to another compatible slot`}
         >
-          <ItemIcon item={ownedItem.item} alt="" className="size-8" />
-          <span
-            className="max-w-full truncate text-[10px] font-semibold leading-tight text-gold-light"
-            style={ownedItem.rarity ? { color: ownedItem.rarity.color } : undefined}
-          >
-            {ownedItem.item.name}
-          </span>
+          <ItemIcon item={ownedItem.item} alt="" className="size-12" />
         </div>
       ) : (
-        <span className="mt-1 flex flex-col items-center gap-1">
-          <ItemIcon
-            item={{ category: "equipment", allowedEquipmentSlots: [slot] }}
-            alt=""
-            className="size-8 opacity-30"
-          />
-          <span className="text-xs text-muted-foreground/60">Empty</span>
-        </span>
-      )}
-      {ownedItem && (
-        <span className="mt-1 text-[9px] text-muted-foreground group-hover:text-foreground/80">
-          Click to unequip
-        </span>
+        <>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {SLOT_LABELS[slot]}
+          </span>
+          <span className="mt-1 flex flex-col items-center gap-1">
+            <ItemIcon
+              item={{ category: "equipment", allowedEquipmentSlots: [slot] }}
+              alt=""
+              className="size-8 opacity-30"
+            />
+            <span className="text-xs text-muted-foreground/60">Empty</span>
+          </span>
+        </>
       )}
     </button>
   );
@@ -898,7 +891,14 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
   const selectedCraftingItem =
     craftingItems.find((item) => item._id === selectedCraftingItemId) ?? null;
   const selectedEquipmentItem =
-    equipmentItems.find((item) => item._id === selectedEquipmentItemId) ?? null;
+    equipmentItems.find((item) => item._id === selectedEquipmentItemId) ??
+    equippedItems.find((item) => item._id === selectedEquipmentItemId) ??
+    null;
+  const selectedEquipmentIsEquipped = selectedEquipmentItem
+    ? inventory.data.equipment.some(
+        (entry) => entry.item?._id === selectedEquipmentItem._id
+      )
+    : false;
 
   return (
     <Card className="forest-card box-glow-green min-h-[400px] rounded-none gap-0 p-0">
@@ -984,8 +984,9 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
           <div className="grid min-h-[368px] items-stretch gap-5 p-3 lg:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)]">
             <div className="border border-forest-light/20 bg-forest-dark/25 p-3">
               <p className="mb-3 text-xs text-muted-foreground">
-                Drag equipment onto a compatible slot. Dropping onto an
-                occupied slot swaps the old item back into your inventory.
+                Click an equipped item to view it. Drag equipment onto a
+                compatible slot. Dropping onto an occupied slot swaps the old
+                item back into your inventory.
               </p>
               <div className="mx-auto grid w-fit grid-cols-[repeat(3,80px)] grid-rows-[repeat(4,80px)] gap-2">
                 {EQUIPMENT_SLOT_VALUES.map((slot) => {
@@ -998,10 +999,16 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
                         slot={slot}
                         ownedItem={equipped}
                         draggingItem={draggingItem}
+                        selected={
+                          equipped?._id === selectedEquipmentItemId
+                        }
                         onDrop={handleDrop}
                         onDragStart={handleDragStart}
                         onDragEnd={handleDragEnd}
-                        onUnequip={handleUnequip}
+                        onSelect={(ownedItem) => {
+                          setSelectedEquipmentItemId(ownedItem._id);
+                          setActionError(null);
+                        }}
                       />
                     </div>
                   );
@@ -1030,24 +1037,38 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
                   error={actionError}
                   actions={
                     selectedEquipmentItem ? (
-                      <>
-                        {selectedEquipmentItem.item.allowedEquipmentSlots.map(
-                          (slot) => (
-                            <Button
-                              key={slot}
-                              type="button"
-                              size="xs"
-                              variant="outline"
-                              disabled={isUpdating}
-                              onClick={() =>
-                                void handleEquip(selectedEquipmentItem, slot)
-                              }
-                            >
-                              Equip {SLOT_LABELS[slot]}
-                            </Button>
-                          )
-                        )}
-                      </>
+                      selectedEquipmentIsEquipped ? (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          disabled={isUpdating}
+                          onClick={() =>
+                            void handleUnequip(selectedEquipmentItem)
+                          }
+                        >
+                          Unequip
+                        </Button>
+                      ) : (
+                        <>
+                          {selectedEquipmentItem.item.allowedEquipmentSlots.map(
+                            (slot) => (
+                              <Button
+                                key={slot}
+                                type="button"
+                                size="xs"
+                                variant="outline"
+                                disabled={isUpdating}
+                                onClick={() =>
+                                  void handleEquip(selectedEquipmentItem, slot)
+                                }
+                              >
+                                Equip {SLOT_LABELS[slot]}
+                              </Button>
+                            )
+                          )}
+                        </>
+                      )
                     ) : undefined
                   }
                 />

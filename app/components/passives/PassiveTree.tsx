@@ -583,38 +583,6 @@ export function PassiveTree({ playerId, isAdmin = false }: PassiveTreeProps) {
             {points.available} point{points.available === 1 ? "" : "s"} available
           </div>
         </div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {Object.entries(BRANCH_LABELS)
-            .filter(([branch]) => branch !== "elemental")
-            .map(([branch, label]) => (
-              <span
-                key={branch}
-                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
-              >
-                <span
-                  className="inline-block size-3 rounded-full"
-                  style={{ backgroundColor: BRANCH_COLORS[branch] }}
-                  aria-hidden="true"
-                />
-                {label}
-              </span>
-            ))}
-        </div>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {Object.entries(ELEMENT_LABELS).map(([element, label]) => (
-            <span
-              key={element}
-              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
-            >
-              <span
-                className="inline-block size-3 rounded-full"
-                style={{ backgroundColor: ELEMENT_COLORS[element] }}
-                aria-hidden="true"
-              />
-              {label}
-            </span>
-          ))}
-        </div>
       </Card>
 
       {(() => {
@@ -1034,9 +1002,9 @@ export function PassiveTree({ playerId, isAdmin = false }: PassiveTreeProps) {
       <Card className="forest-card p-4">
         <p className="text-xs text-muted-foreground">
           Drag empty space to pan · scroll or use +/− to zoom · click a node
-          for details. Green-glow rings are ready to unlock. Elemental nodes
-          only boost damage while wielding a weapon of that element. All
-          bonuses are modest and global. The web fully resets on rebirth.
+          for details. Elemental nodes only boost damage while wielding a
+          weapon of that element. All bonuses are modest and global. The web
+          fully resets on rebirth.
         </p>
       </Card>
 

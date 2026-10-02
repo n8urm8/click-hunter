@@ -9,6 +9,7 @@ import {
 } from "~/hooks/usePlayer";
 import { NameEntry } from "./NameEntry";
 import { StarterPicker, type StarterId } from "./StarterPicker";
+import { Fireflies } from "../ui/fireflies";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 
@@ -27,6 +28,41 @@ function hasDerivedStats(
 
 interface PlayerGateProps {
   children: (player: Player) => ReactNode;
+}
+
+/**
+ * Loading/error shell that mirrors GameFrame (same forest background,
+ * fireflies, navbar height, and main container) so first paint already has
+ * the normal layout and there is no black-background flash before the
+ * character query resolves.
+ */
+function GateShell({ message, isError = false }: { message: string; isError?: boolean }) {
+  return (
+    <div className="forest-bg relative min-h-screen">
+      <Fireflies count={20} />
+      <header className="game-navbar" aria-hidden="true">
+        <div className="game-navbar-row">
+          <div className="game-navbar-player">
+            <div className="h-5 w-32 animate-pulse rounded bg-forest-light/20" />
+          </div>
+          <div className="size-8 animate-pulse rounded-md bg-forest-light/20" />
+          <div className="hidden h-8 w-64 animate-pulse rounded-md bg-forest-light/20 md:block" />
+        </div>
+      </header>
+      <main className="relative z-10 mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-4 p-3 sm:p-4">
+        <Card className="forest-card mx-auto min-h-[240px] w-full max-w-xl p-6">
+          <div className="flex min-h-[180px] items-center justify-center">
+            <p
+              className={`text-sm ${isError ? "text-blood-light" : "text-muted-foreground"}`}
+              role={isError ? "alert" : "status"}
+            >
+              {message}
+            </p>
+          </div>
+        </Card>
+      </main>
+    </div>
+  );
 }
 
 export function PlayerGate({ children }: PlayerGateProps) {
@@ -70,25 +106,11 @@ export function PlayerGate({ children }: PlayerGateProps) {
   };
 
   if (player.isPending) {
-    return (
-      <Card className="forest-card mx-auto min-h-[240px] max-w-xl p-6">
-        <div className="flex min-h-[180px] items-center justify-center">
-          <p className="text-sm text-muted-foreground">Loading your character...</p>
-        </div>
-      </Card>
-    );
+    return <GateShell message="Loading your character..." />;
   }
 
   if (player.isError && !player.data) {
-    return (
-      <Card className="forest-card mx-auto min-h-[240px] max-w-xl p-6">
-        <div className="flex min-h-[180px] items-center justify-center">
-          <p className="text-sm text-blood-light" role="alert">
-            Unable to load your character.
-          </p>
-        </div>
-      </Card>
-    );
+    return <GateShell message="Unable to load your character." isError />;
   }
 
   if (!player.data) {
@@ -96,13 +118,7 @@ export function PlayerGate({ children }: PlayerGateProps) {
   }
 
   if (!hasDerivedStats(player.data)) {
-    return (
-      <Card className="forest-card mx-auto min-h-[240px] max-w-xl p-6">
-        <div className="flex min-h-[180px] items-center justify-center">
-          <p className="text-sm text-muted-foreground">Preparing your character...</p>
-        </div>
-      </Card>
-    );
+    return <GateShell message="Preparing your character..." />;
   }
 
   if (player.data.pendingStarterPick) {

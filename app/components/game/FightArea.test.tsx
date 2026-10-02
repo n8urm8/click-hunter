@@ -173,7 +173,7 @@ test("idle combat shows equipped stats with labeled tier and zone radios", () =>
   expect(markup).toContain("Equipped combat stats");
   expect(markup).toContain("Hunting tier");
   expect(markup).toContain("Hunting zone");
-  expect(markup.match(/type="radio"/g)).toHaveLength(15);
+  expect(markup.match(/type="radio"/g)).toHaveLength(7);
   expect(markup.match(/checked=""/g)).toHaveLength(2);
   expect(markup).not.toContain("Attacks are automatic");
   expect(markup).not.toContain("Run mode");

@@ -1,7 +1,6 @@
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { getBossUnlockLevelPerTier } from "./bossData";
-import { calculateCharacterLevel } from "./characterLevel";
+import { ensureBossForTier } from "./bossData";
 import type { CombatZone } from "./zones";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
 import { getPassiveBonuses } from "./passiveTree";
@@ -273,6 +272,29 @@ async function resolveLoot(
   return summary;
 }
 
+/**
+ * Record tier progress on any combat victory (regular or boss). Queue
+ * victories settle server-side, so this is what keeps Best tier / Tier in
+ * the stats card current. Idempotent per tier — only provisions a boss
+ * record when the best actually increases.
+ */
+async function recordTierProgress(
+  ctx: MutationCtx,
+  player: Doc<"players">,
+  tier: number
+) {
+  const previousBest = player.maxTierReached ?? player.currentTier ?? 1;
+  const newMaxTier = Math.max(previousBest, tier);
+  await ctx.db.patch(player._id, {
+    maxTierReached: newMaxTier,
+    currentTier: tier,
+    lastUpdated: Date.now(),
+  });
+  if (newMaxTier > previousBest) {
+    await ensureBossForTier(ctx, newMaxTier);
+  }
+}
+
 export async function settleCombatFight(
   ctx: MutationCtx,
   args: CombatSettlementArgs
@@ -389,6 +411,7 @@ export async function settleCombatFight(
         lastUpdated: Date.now(),
       });
       await awardCombatStatXp(ctx, args.playerId, experienceEarned);
+      await recordTierProgress(ctx, player, args.tier);
     }
     const loot = await resolveLoot(ctx, args);
     await ctx.db.insert("fightHistory", {
@@ -420,13 +443,6 @@ export async function settleCombatFight(
     .first();
   if (!boss || boss.tier !== args.tier) {
     throw new Error("Boss is not configured for this tier");
-  }
-  {
-    const requiredLevel =
-      args.tier * (await getBossUnlockLevelPerTier(ctx));
-    if ((await calculateCharacterLevel(ctx, player)) < requiredLevel) {
-      throw new Error(`Boss requires character level ${requiredLevel}`);
-    }
   }
 
   const baseGold =
@@ -470,6 +486,7 @@ export async function settleCombatFight(
       lastUpdated: Date.now(),
     });
     await awardCombatStatXp(ctx, args.playerId, experienceEarned);
+    await recordTierProgress(ctx, player, args.tier);
   }
 
   const loot = await resolveLoot(ctx, args);
