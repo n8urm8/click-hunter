@@ -5,12 +5,17 @@
   "scripts": {
     "build": "vite build",
     "dev": "convex dev --start 'vite'",
+    "dev:selfhosted": "test -f ./docker/.env.selfhosted || (echo 'Missing docker/.env.selfhosted - copy docker/.env.selfhosted.example (see docs/self-hosting.md)' && exit 1); set -a; . ./docker/.env.selfhosted; set +a; convex dev --env-file ./docker/.env.selfhosted --start 'vite'",
+    "backend:push": "convex deploy --env-file ./docker/.env.selfhosted",
+    "deploy:selfhosted": "set -a; . ./docker/.env.selfhosted; set +a; convex deploy --env-file ./docker/.env.selfhosted --cmd 'vite build'",
     "test": "vitest run",
     "typecheck": "tsc"
   },
   "dependencies": {
+    "@auth/core": "^0.41.3",
     "@base-ui/react": "^1.6.0",
     "@convex-dev/aggregate": "^0.2.2",
+    "@convex-dev/auth": "^0.0.96",
     "@convex-dev/rate-limiter": "^0.3.2",
     "@convex-dev/react-query": "^0.1.0",
     "@fontsource-variable/noto-sans": "^5.2.10",
@@ -32,6 +37,7 @@
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
     "@tailwindcss/vite": "^4.2.2",
+    "@types/node": "^26.6.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",

@@ -4,36 +4,42 @@ import {
   clickAnimationsAtom,
   inFightPhaseAtom,
   playerHpAtom,
+  playerMaxHpAtom,
+  respawnTimerAtom,
   eventTrackerAtom,
   type CurrentFight,
 } from "~/store/gameStore";
-import { calculateDamage } from "~/lib/statCalculations";
 import {
-  useAttemptAttack,
-  useRecordFight,
   useAdvanceTierProgression,
   type PlayerWithDerivedStats,
 } from "~/hooks/usePlayer";
+import { useStrikeBoss } from "~/hooks/useBossFight";
 import { logInfo } from "~/lib/logger";
 import { useEffect, useRef, useState } from "react";
+import type { Id } from "../../../convex/_generated/dataModel";
 
 interface AttackButtonProps {
   player: PlayerWithDerivedStats;
+  respawnTimeMs?: number;
   onStartNextFight: (fightWasBoss: boolean) => boolean;
 }
 
 export function AttackButton({
   player,
+  respawnTimeMs = 5000,
   onStartNextFight,
 }: AttackButtonProps) {
   const [currentFight, setCurrentFight] = useAtom(currentFightAtom);
   const [floaters, setFloaters] = useAtom(clickAnimationsAtom);
   const [fightPhase, setFightPhase] = useAtom(inFightPhaseAtom);
   const [, setEventTracker] = useAtom(eventTrackerAtom);
-  const [playerHp] = useAtom(playerHpAtom);
+  const [playerHp, setPlayerHp] = useAtom(playerHpAtom);
+  const [, setPlayerMaxHp] = useAtom(playerMaxHpAtom);
+  const [, setRespawnTimer] = useAtom(respawnTimerAtom);
   const [isProcessingVictory, setIsProcessingVictory] = useState(false);
   const [attackError, setAttackError] = useState<string | null>(null);
   const victoryInProgressRef = useRef(false);
+  const defeatInProgressRef = useRef(false);
   const attackInProgressRef = useRef(false);
   const handleAttackRef = useRef<() => Promise<number | null>>(async () => null);
   const currentFightRef = useRef(currentFight);
@@ -42,15 +48,17 @@ export function AttackButton({
   currentFightRef.current = currentFight;
   fightPhaseRef.current = fightPhase;
   onStartNextFightRef.current = onStartNextFight;
-  const attemptAttack = useAttemptAttack();
-  const recordFight = useRecordFight();
+  const strikeBoss = useStrikeBoss();
   const advanceTierProgression = useAdvanceTierProgression();
   const hasActiveFight = Boolean(
     currentFight && currentFight.monsterHp > 0 && fightPhase === "fighting"
   );
   const attackInterval = Math.ceil(1000 / player.attackSpeed);
 
-  const handleVictory = async (fight: CurrentFight) => {
+  const handleVictory = async (
+    fight: CurrentFight,
+    rewards: { gold: number; experience: number; loot: Array<{ itemName: string; quantity: number; pending: number }> }
+  ) => {
     if (victoryInProgressRef.current) return;
 
     victoryInProgressRef.current = true;
@@ -58,33 +66,21 @@ export function AttackButton({
     setFightPhase("victory");
 
     try {
-      // Server-authoritative rewards (passive tree multipliers applied
-      // server-side in loot.ts). No client-calculated gold/XP is sent.
-      const reward = await recordFight({
-        playerId: player._id,
-        monsterTier: fight.monsterTier,
-        monsterType: fight.monsterType,
-        isBoss: fight.isBoss,
-        won: true,
-        ...(fight.monsterZone === undefined
-          ? {}
-          : { monsterZone: fight.monsterZone }),
-        settlementKey: fight.settlementKey,
-      });
-
+      // Rewards were already settled server-side by strikeBoss; this call
+      // only advances tier progression (proof-gated on the recorded win).
       logInfo(
-        `Victory! Earned ${reward.goldEarned} gold and ${reward.experienceEarned} experience`
+        `Victory! Earned ${rewards.gold} gold and ${rewards.experience} experience`
       );
 
       await advanceTierProgression({ playerId: player._id, tierJustBeaten: fight.monsterTier });
 
       // Update event tracker
-      setEventTracker({ 
-        type: "victory", 
+      setEventTracker({
+        type: "victory",
         reward: {
-          gold: reward.goldEarned,
-          exp: reward.experienceEarned,
-          loot: reward.loot.map((drop) => ({
+          gold: rewards.gold,
+          exp: rewards.experience,
+          loot: rewards.loot.map((drop) => ({
             itemName: drop.itemName,
             quantity: drop.quantity,
             pending: drop.pending,
@@ -115,6 +111,23 @@ export function AttackButton({
     }
   };
 
+  const handleDefeat = (fight: CurrentFight) => {
+    // The loss was already recorded server-side by strikeBoss/checkBossFight.
+    if (defeatInProgressRef.current) return;
+    defeatInProgressRef.current = true;
+    setFightPhase("defeat");
+    setEventTracker({
+      type: "defeat",
+      monsterName: fight.monsterName,
+    });
+    setRespawnTimer(respawnTimeMs);
+    setTimeout(() => {
+      setCurrentFight(null);
+      setEventTracker({ type: "idle" });
+      defeatInProgressRef.current = false;
+    }, 500);
+  };
+
   const handleAttack = async () => {
     if (attackInProgressRef.current) return attackInterval;
     const fight = currentFightRef.current;
@@ -122,45 +135,49 @@ export function AttackButton({
       !fight ||
       fight.monsterHp <= 0 ||
       fightPhaseRef.current !== "fighting" ||
-      victoryInProgressRef.current
+      victoryInProgressRef.current ||
+      defeatInProgressRef.current
     ) {
       return null;
+    }
+    if (!fight.sessionId) {
+      setAttackError("Boss session missing. Restart the fight.");
+      return attackInterval;
     }
 
     attackInProgressRef.current = true;
 
     try {
-      const result = await attemptAttack({ playerId: player._id });
+      // Server-authoritative strike: cooldown gate, damage roll, and the
+      // win/loss verdict all come from convex/bossFights. The client only
+      // renders the returned HP.
+      const result = await strikeBoss({
+        playerId: player._id,
+        sessionId: fight.sessionId as Id<"bossSessions">,
+      });
       setAttackError(null);
-      if (!result.allowed) return result.retryAfterMs;
+      if ("retryAfterMs" in result) return result.retryAfterMs;
 
       const activeFight = currentFightRef.current;
       if (
         !activeFight ||
         activeFight.settlementKey !== fight.settlementKey ||
-        activeFight.monsterHp <= 0 ||
         fightPhaseRef.current !== "fighting"
       ) {
         return null;
       }
 
-      // Calculate damage only after the server accepts the attack.
-      const damage = calculateDamage(player.attack, player.critChance, player.critDamageMultiplier);
-      const newMonsterHp = Math.max(0, activeFight.monsterHp - damage);
-      const updatedFight = {
-        ...activeFight,
-        monsterHp: newMonsterHp,
-      };
+      setCurrentFight({ ...activeFight, monsterHp: result.monsterHp });
+      setPlayerHp(result.playerHp);
+      setPlayerMaxHp(result.playerMaxHp);
 
-      setCurrentFight(updatedFight);
-
-      // Add floater animation
+      // Add floater animation for the server-rolled damage.
       const floaterId = `float_${Date.now()}_${Math.random()}`;
       setFloaters((prev) => [
         ...prev,
         {
           id: floaterId,
-          damage,
+          damage: result.damage,
           x: 50,
           y: 50,
           timestamp: Date.now(),
@@ -172,11 +189,23 @@ export function AttackButton({
         setFloaters((prev) => prev.filter((f) => f.id !== floaterId));
       }, 1000);
 
-      // Check if monster is defeated
-      if (newMonsterHp <= 0) {
-        void handleVictory(updatedFight);
+      if (result.status === "won" && result.rewards) {
+        void handleVictory(
+          { ...activeFight, monsterHp: result.monsterHp },
+          {
+            gold: result.rewards.gold,
+            experience: result.rewards.experience,
+            loot: result.rewards.loot.map((drop: { itemName: string; quantity: number; pending: number }) => ({
+              itemName: drop.itemName,
+              quantity: drop.quantity,
+              pending: drop.pending,
+            })),
+          }
+        );
+      } else if (result.status === "lost") {
+        handleDefeat(activeFight);
       }
-      return result.retryAfterMs;
+      return attackInterval;
     } catch (error) {
       console.error("Failed to process attack:", error);
       setAttackError(error instanceof Error ? error.message : "Unable to attack. Retrying...");

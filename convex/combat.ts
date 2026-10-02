@@ -1,11 +1,11 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { readBalanceMap } from "./balance";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
 import {
   computeAttackSpeed,
   getActiveCombatBoosts,
-  getEquippedArmorTotals,
-  getEquippedStatBonuses,
+  getEquippedProfile,
   getEquippedWeapon,
   readCombatBalance,
   type EquipmentStatBonuses,
@@ -39,14 +39,6 @@ export const DEFAULT_AUTO_BATTLE_REWARDS = {
 export const DEFAULT_MONSTER_POWER_MULTIPLIER = 1;
 
 type AutoBattleRewards = typeof DEFAULT_AUTO_BATTLE_REWARDS;
-
-async function getBalanceValue(ctx: MutationCtx, key: string) {
-  const row = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", key))
-    .first();
-  return row?.value;
-}
 
 function readNonNegativeNumber(
   value: unknown,
@@ -174,15 +166,21 @@ export async function readPlayerCombatProfile(
   ctx: QueryCtx | MutationCtx,
   player: Player,
   now?: number,
-  equipmentBonuses?: EquipmentStatBonuses
+  equipmentBonuses?: EquipmentStatBonuses,
+  armorTotals?: { defense: number; speedPenalty: number }
 ) {
-  const [bonuses, weapon, armor, passives, balance] = await Promise.all([
-    equipmentBonuses ?? getEquippedStatBonuses(ctx, player._id),
+  const [equipped, weapon, passives, balance] = await Promise.all([
+    equipmentBonuses !== undefined && armorTotals !== undefined
+      ? null
+      : getEquippedProfile(ctx, player._id),
     getEquippedWeapon(ctx, player._id),
-    getEquippedArmorTotals(ctx, player._id),
     getPassiveBonuses(ctx, player._id),
     readCombatBalance(ctx),
   ]);
+  const bonuses = equipmentBonuses ?? equipped?.bonuses ?? {
+    str: 0, dex: 0, int: 0, luk: 0, con: 0,
+  };
+  const armor = armorTotals ?? equipped?.armor ?? { defense: 0, speedPenalty: 0 };
   // Character queries show permanent/equipped stats without a wall-clock dependency.
   const boosts = now === undefined
     ? null
@@ -225,9 +223,13 @@ export async function simulateRegularBattle(
   player: Player,
   tier: number,
   equipmentBonuses?: EquipmentStatBonuses,
-  zone?: CombatZone
+  zone?: CombatZone,
+  armorTotals?: { defense: number; speedPenalty: number }
 ): Promise<AutoBattleResult> {
-  const allMonsters = await ctx.db.query("monsters").collect();
+  // Bounded catalog read: monster pool is small content (~9 rows); take()
+  // keeps a hard cap so future content growth can't turn encounter rolls
+  // into an unbounded scan.
+  const allMonsters = await ctx.db.query("monsters").take(500);
   if (allMonsters.length === 0) {
     throw new Error("Regular monsters are not configured");
   }
@@ -237,19 +239,18 @@ export async function simulateRegularBattle(
       ? monstersInZone(allMonsters, zone)
       : allMonsters;
 
-  const [
-    tierMultiplierValue,
-    tierMsReductionValue,
-    minimumAttackMsValue,
-    rewardsValue,
-    monsterPowerValue,
-  ] = await Promise.all([
-    getBalanceValue(ctx, "tierScaleMultiplier"),
-    getBalanceValue(ctx, "tierScaleMsReduction"),
-    getBalanceValue(ctx, "minAttackMs"),
-    getBalanceValue(ctx, "autoBattleRewards"),
-    getBalanceValue(ctx, "monsterPowerMultiplier"),
+  const balanceMap = await readBalanceMap(ctx, [
+    "tierScaleMultiplier",
+    "tierScaleMsReduction",
+    "minAttackMs",
+    "autoBattleRewards",
+    "monsterPowerMultiplier",
   ]);
+  const tierMultiplierValue = balanceMap.get("tierScaleMultiplier");
+  const tierMsReductionValue = balanceMap.get("tierScaleMsReduction");
+  const minimumAttackMsValue = balanceMap.get("minAttackMs");
+  const rewardsValue = balanceMap.get("autoBattleRewards");
+  const monsterPowerValue = balanceMap.get("monsterPowerMultiplier");
   const monsterPower = readMonsterPowerMultiplier(monsterPowerValue);
 
   const monster = scaleMonster(
@@ -262,7 +263,7 @@ export async function simulateRegularBattle(
   const rewards = readAutoBattleRewards(rewardsValue);
   const now = Date.now();
   const eventMultipliers = await getActiveEventMultipliers(ctx, now);
-  const profile = await readPlayerCombatProfile(ctx, player, now, equipmentBonuses);
+  const profile = await readPlayerCombatProfile(ctx, player, now, equipmentBonuses, armorTotals);
   const { balance, passives, combatStats } = profile;
   const isMagical = combatStats.damageType === "magical";
   const monsterMagDef = Math.max(

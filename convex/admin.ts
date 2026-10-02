@@ -478,7 +478,9 @@ export const getConfig = query({
       table: Table
     ): Promise<Doc<Table>[]> =>
       tables === null || tables.has(table)
-        ? ctx.db.query(table).collect()
+        // Bounded editor fetch: content tables are small; take() caps the
+        // worst case so a legacy section-less call can't unbounded-scan.
+        ? ctx.db.query(table).take(2000)
         : [];
 
     const [
@@ -563,7 +565,7 @@ export const getPlayers = query({
   handler: async (ctx, { playerId }) => {
     await requireAdmin(ctx, playerId);
 
-    const players = await ctx.db.query("players").collect();
+    const players = await ctx.db.query("players").take(2000);
     const characterLevelFor = await createCharacterLevelLookup(ctx);
     return players
       .sort(

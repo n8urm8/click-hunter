@@ -71,8 +71,7 @@ export const createEvent = mutation({
 
     const existing = await ctx.db
       .query("gameEvents")
-      .withIndex("by_eventId")
-      .filter((q) => q.eq(q.field("eventId"), eventId))
+      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
       .first();
 
     if (existing) {
@@ -110,14 +109,11 @@ export const getActiveEvents = query({
   args: {},
   async handler(ctx) {
     const now = Date.now();
-    return await ctx.db
+    const candidates = await ctx.db
       .query("gameEvents")
-      .withIndex("by_isActive")
-      .filter((q) => {
-        const events = q.eq(q.field("isActive"), true);
-        return events;
-      })
-      .collect();
+      .withIndex("by_startTime", (q) => q.lte("startTime", now))
+      .take(100);
+    return candidates.filter((event) => event.endTime > now);
   },
 });
 
@@ -128,15 +124,12 @@ export const getActiveMultipliers = query({
   args: {},
   async handler(ctx) {
     const now = Date.now();
-    const activeEvents = await ctx.db
+    const candidates = await ctx.db
       .query("gameEvents")
-      .filter((q) => {
-        const allEvents = q.gte(q.field("endTime"), now);
-        return allEvents;
-      })
-      .collect();
+      .withIndex("by_startTime", (q) => q.lte("startTime", now))
+      .take(100);
 
-    const active = activeEvents.filter((e) => e.startTime <= now && e.endTime > now);
+    const active = candidates.filter((e) => e.endTime > now);
 
     let goldMultiplier = 1;
     let xpMultiplier = 1;

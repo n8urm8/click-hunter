@@ -11,6 +11,16 @@ import { FightArea } from "./FightArea";
 
 const mocks = vi.hoisted(() => ({
   enqueue: vi.fn(async () => ({ _id: "queued-battle" })),
+  startBoss: vi.fn(async () => ({
+    sessionId: "session-1",
+    settlementKey: "boss-session-1",
+    monsterHp: 100,
+    monsterMaxHp: 100,
+    playerHp: 30,
+    playerMaxHp: 30,
+    bossId: "boss",
+    bossName: "Boss",
+  })),
   setFight: vi.fn(),
   effects: [] as Array<() => void | (() => void)>,
   currentFight: null as CurrentFight | null,
@@ -69,6 +79,11 @@ vi.mock("~/hooks/useTasks", () => ({
   useTaskQueue: () => ({ data: {
     active: mocks.active, queued: [], usedSlots: mocks.usedSlots, capacity: 5,
   } }),
+}));
+vi.mock("~/hooks/useBossFight", () => ({
+  useStartBossFight: () => mocks.startBoss,
+  useStrikeBoss: () => vi.fn(),
+  useCheckBossFight: () => vi.fn(),
 }));
 vi.mock("~/hooks/useTaskClock", () => ({ useTaskClock: () => 0 }));
 vi.mock("./ActiveFight", () => ({ ActiveFight: () => null }));

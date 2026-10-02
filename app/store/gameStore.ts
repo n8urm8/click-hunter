@@ -8,6 +8,7 @@ import type { CombatZone } from "~/lib/combatZones";
 
 export interface CurrentFight {
   settlementKey: string;
+  sessionId?: string;
   monsterTier: number;
   monsterZone?: CombatZone;
   monsterType: string;

@@ -1,11 +1,16 @@
 import { mutation, query } from "./_generated/server";
+import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
+import { components } from "./_generated/api";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
 import { settleCombatFight } from "./loot";
 import { combatZoneValidator } from "./zones";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
+
+const rateLimiter = new RateLimiter(components.rateLimiter, {});
 
 const ONE_TIME_AUTOMATION_EFFECTS = new Set([
   "enable-auto-attack",
@@ -172,6 +177,7 @@ export const getPlayerUpgrades = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await requirePlayerRead(ctx, playerId);
     return await ctx.db
       .query("playerUpgrades")
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
@@ -187,6 +193,7 @@ export const getShopUpgrades = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await requirePlayerRead(ctx, playerId);
     const [upgrades, ownedUpgrades, rules] = await Promise.all([
       ctx.db.query("upgrades").collect(),
       ctx.db
@@ -222,6 +229,7 @@ export const hasUpgrade = query({
     upgradeId: v.string(),
   },
   handler: async (ctx, { playerId, upgradeId }) => {
+    await requirePlayerRead(ctx, playerId);
     const upgrades = await ctx.db
       .query("playerUpgrades")
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
@@ -240,9 +248,8 @@ export const purchaseUpgrade = mutation({
     upgradeId: v.string(),
   },
   handler: async (ctx, { playerId, upgradeId }) => {
+    const player = await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
 
     const upgrade = await ctx.db
       .query("upgrades")
@@ -388,6 +395,7 @@ export const recordFight = mutation({
     goldEarned: v.optional(v.number()),
     experienceEarned: v.optional(v.number()),
     settlementKey: v.optional(v.string()),
+    sessionId: v.optional(v.id("bossSessions")),
   },
   handler: async (ctx, {
     playerId,
@@ -396,10 +404,65 @@ export const recordFight = mutation({
     isBoss,
     won,
     settlementKey,
+    sessionId,
   }) => {
     if (!isBoss) {
       throw new Error("Regular fights must use the auto-battle queue");
     }
+    const player = await requirePlayer(ctx, playerId);
+    if (!Number.isSafeInteger(monsterTier) || monsterTier < 1) {
+      throw new Error("Fight tier must be a positive integer");
+    }
+    // No skipping ahead: boss tier N requires proven progress through N-1.
+    const provenMax = player.maxTierReached ?? player.currentTier ?? 1;
+    if (monsterTier > provenMax + 1) {
+      throw new Error("That boss tier is not unlocked yet");
+    }
+    if (settlementKey?.trim() && !settlementKey.startsWith(`${playerId}:`)) {
+      throw new Error("Fight settlement key must belong to the player");
+    }
+    const fightStatus = await rateLimiter.limit(ctx, "bossFight", {
+      key: playerId,
+      config: { kind: "token bucket", rate: 1, period: 10_000, capacity: 3 },
+    });
+    if (!fightStatus.ok) {
+      throw new Error("Boss challenges are settling too fast. Wait a moment.");
+    }
+
+    if (won) {
+      // Victories are minted only by server-run strikes. A forged won:true
+      // without a server-killed session settles nothing.
+      if (!sessionId) {
+        throw new Error("Boss victories must come from strikeBoss. Reload to update.");
+      }
+      const session = await ctx.db.get(sessionId);
+      if (!session || session.playerId !== playerId) {
+        throw new Error("Boss session not found");
+      }
+      if (session.status !== "won") {
+        throw new Error("That boss has not been defeated yet.");
+      }
+      if (session.bossId !== monsterType || session.tier !== monsterTier) {
+        throw new Error("Boss session does not match this fight.");
+      }
+      const recorded = await ctx.db
+        .query("fightHistory")
+        .withIndex("by_settlementKey", (q) =>
+          q.eq("settlementKey", session.settlementKey)
+        )
+        .first();
+      if (!recorded) {
+        throw new Error("Boss victory was not settled by the server.");
+      }
+      return {
+        recorded: true,
+        duplicate: true,
+        goldEarned: recorded.goldEarned,
+        experienceEarned: recorded.experienceEarned,
+        loot: [],
+      };
+    }
+
     const key =
       settlementKey?.trim() ||
       `${playerId}:boss:${monsterType}:${monsterTier}:${Date.now()}`;
@@ -433,8 +496,18 @@ export const claimHiddenSpotReward = mutation({
     spotId: v.string(),
   },
   handler: async (ctx, { playerId, upgradeId, spotId }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    await requirePlayer(ctx, playerId);
+
+    // The spot must exist and actually grant the claimed upgrade. Never trust
+    // the upgradeId alone: without this check any caller can mint any upgrade.
+    const spot = await ctx.db
+      .query("hiddenSpots")
+      .withIndex("by_spotId", (q) => q.eq("spotId", spotId))
+      .first();
+    if (!spot) throw new Error("Hidden spot not found");
+    if (spot.rewardUpgradeId !== upgradeId) {
+      throw new Error("That spot does not grant that reward");
+    }
 
     const upgrade = await ctx.db
       .query("upgrades")

@@ -15,14 +15,12 @@ export type PlayerWithDerivedStats = Doc<"players"> &
   };
 
 /**
- * Hook to fetch player data with derived stats
+ * Hook to fetch the caller's character with derived stats. Identity-derived
+ * server-side; takes no ID. Pass "skip" behavior via `enabled`.
  */
-export function usePlayer(anonymousId: string | null) {
+export function usePlayer(enabled: boolean = true) {
   const playerQuery = useQuery({
-    ...convexQuery(
-      api.players.getPlayerByAnonymousId,
-      anonymousId ? { anonymousId } : "skip"
-    ),
+    ...convexQuery(api.players.getCurrentPlayer, enabled ? {} : "skip"),
     ...convexQueryCacheOptions,
   });
 
@@ -55,27 +53,6 @@ export function useCreatePlayer() {
  */
 export function useAttemptAttack() {
   return useConvexMutation(api.players.attemptAttack);
-}
-
-/**
- * Hook for updating gold
- */
-export function useUpdateGold() {
-  return useConvexMutation(api.players.updateGold);
-}
-
-/**
- * Hook for adding experience
- */
-export function useAddExperience() {
-  return useConvexMutation(api.players.addExperience);
-}
-
-/**
- * Hook for increasing a stat
- */
-export function useIncreaseStat() {
-  return useConvexMutation(api.players.increaseStat);
 }
 
 /**

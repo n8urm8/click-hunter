@@ -1,4 +1,5 @@
 import { v, type Infer } from "convex/values";
+import { readBalanceMap } from "./balance";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
 export const TASK_SYNC_BALANCE_DEFAULTS = [
@@ -70,15 +71,16 @@ export async function readTaskSyncSettings(
   ctx: QueryCtx | MutationCtx,
   heartbeatGraceMs: number
 ) {
-  const values = await Promise.all(TASK_SYNC_BALANCE_DEFAULTS.map(async (entry) => {
-    const row = await ctx.db.query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", entry.key)).first();
-    return isTaskSyncInterval(row?.value)
-      ? row.value
-      : entry.value;
-  }));
+  const values = await readBalanceMap(
+    ctx,
+    TASK_SYNC_BALANCE_DEFAULTS.map((entry) => entry.key)
+  );
+  const parsed = TASK_SYNC_BALANCE_DEFAULTS.map((entry) => {
+    const value = values.get(entry.key);
+    return isTaskSyncInterval(value) ? value : entry.value;
+  });
   return {
-    settlementIntervalMs: values[0],
-    presenceIntervalMs: Math.max(1, Math.min(values[1], Math.floor(heartbeatGraceMs * 2 / 3))),
+    settlementIntervalMs: parsed[0],
+    presenceIntervalMs: Math.max(1, Math.min(parsed[1], Math.floor(heartbeatGraceMs * 2 / 3))),
   };
 }

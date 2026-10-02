@@ -21,7 +21,10 @@
  */
 
 import { mutation, query } from "./_generated/server";
+import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
+import { components } from "./_generated/api";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
@@ -30,6 +33,27 @@ import {
   grantItemToInventory,
   itemCategoryValidator,
 } from "./items";
+
+const rateLimiter = new RateLimiter(components.rateLimiter, {});
+
+/**
+ * Spam brake for marketplace writes. Escrow already makes order spam
+ * expensive (items/gold locked per order), but unbounded calls still burn
+ * database I/O and matching scans — hence a generous per-player bucket.
+ */
+async function checkBazaarRateLimit(
+  ctx: MutationCtx,
+  playerId: Id<"players">,
+  operation: string
+) {
+  const status = await rateLimiter.limit(ctx, "bazaarWrite", {
+    key: `${playerId}:${operation}`,
+    config: { kind: "token bucket", rate: 10, period: 60_000, capacity: 10 },
+  });
+  if (!status.ok) {
+    throw new Error("Bazaar activity is too frequent. Wait a moment.");
+  }
+}
 
 export const DEFAULT_BAZAAR_TAX_PERCENT = 5;
 export const DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS = 7;
@@ -708,6 +732,8 @@ export const placeSellOrder = mutation({
     unitPrice: v.number(),
   },
   handler: async (ctx, { playerId, playerItemId, quantity, unitPrice }) => {
+    await requirePlayer(ctx, playerId);
+    await checkBazaarRateLimit(ctx, playerId, "write");
     await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
     const player = await ctx.db.get(playerId);
@@ -778,6 +804,8 @@ export const placeBuyOrder = mutation({
     unitPrice: v.number(),
   },
   handler: async (ctx, { playerId, itemId, quantity, unitPrice }) => {
+    await requirePlayer(ctx, playerId);
+    await checkBazaarRateLimit(ctx, playerId, "write");
     await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
     const player = await ctx.db.get(playerId);
@@ -851,6 +879,8 @@ export const fulfillOrder = mutation({
     playerItemId: v.optional(v.id("playerItems")),
   },
   handler: async (ctx, { orderId, playerId, quantity, playerItemId }) => {
+    await requirePlayer(ctx, playerId);
+    await checkBazaarRateLimit(ctx, playerId, "write");
     await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
     const order = await ctx.db.get(orderId);
@@ -1015,6 +1045,8 @@ export const cancelOrder = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { orderId, playerId }) => {
+    await requirePlayer(ctx, playerId);
+    await checkBazaarRateLimit(ctx, playerId, "cancel");
     const now = Date.now();
     const order = await ctx.db.get(orderId);
     if (!order) throw new Error("Order not found");
@@ -1206,6 +1238,7 @@ export const getOpenOrders = query({
 export const getMyOrders = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
+    await requirePlayerRead(ctx, playerId);
     const now = Date.now();
     const orders = await ctx.db
       .query("marketOrders")

@@ -189,3 +189,65 @@ Actions:
 6. Fix `getTree` index + triple `playerPassives` collect.
 7. Batch inventory N+1; gate `pendingRewards` / `history` extras.
 8. Paginate `admin.getConfig` per section.
+
+## Self-host path (local Docker, then optional server)
+
+Goal: remove metered Database I/O billing. Trade-off: you own
+Postgres, disk, backups, upgrades, and tail latency. Fix the queries
+above first — self-hosting moves the cost from Convex billing to your
+CPU/RAM/disk, it does not make full scans free.
+
+1. Prerequisites: Docker + Docker Compose, Node 20+, `npx convex` CLI,
+   a `INSTANCE_SECRET` (32+ random bytes).
+2. Start local backend (SQLite volume for quick local dev):
+   ```bash
+   npx degit get-convex/convex-backend/self-hosted/docker/docker-compose.yml docker-compose.yml
+   docker compose pull
+   INSTANCE_SECRET=$(openssl rand -hex 32) docker compose up -d
+   ```
+   Backend: `http://127.0.0.1:3210`, site: `http://127.0.0.1:3211`,
+   dashboard: `http://127.0.0.1:6791` with
+   `NEXT_PUBLIC_DEPLOYMENT_URL=http://127.0.0.1:3210`.
+3. Point this repo at local: `npx convex dev --url http://127.0.0.1:3210`
+   (or set `CONVEX_SELF_HOSTED_URL`), run `npx convex run seed:populateAll`
+   after creating an admin player, verify `tasks.sync` / `getQueue` in the
+   local dashboard.
+4. Postgres for real data (instead of SQLite volume): set `POSTGRES_URL`,
+   `CONVEX_CLOUD_ORIGIN`, `CONVEX_SITE_ORIGIN` in `docker-compose.yml`,
+   keep the `postgres-data` volume, `DOCUMENT_RETENTION_DELAY` per docs.
+   Back up Postgres on a schedule before opening to testers.
+5. When leaving laptop: same compose file on a VPS (Fly/Railway/your host),
+   HTTPS origins, secret via env vault, dashboard behind auth. Keep Convex
+   Cloud project as rollback until local survives a full playtest + `pnpm test`.
+
+Status: query fixes below are backend-compatible (no frontend API change
+required). Light/heavy query splits are additive when added.
+
+## Implemented (verified: `pnpm typecheck` + 97 vitest tests pass)
+
+- `convex/balance.ts` (new): `readBalanceMap` — 1 `collect()` + lookup when
+  3+ keys needed, else indexed point reads. Used by `readCombatBalance`
+  (14 queries -> 1), `simulateRegularBattle` (5 -> 1), `readTaskSyncSettings`
+  (2 -> 1).
+- `convex/tasks.ts`: `settleTaskQueue` returns active (sync saves 1
+  `getActiveTask`); `getQueueSnapshot` single `getQueueCapacity`,
+  `taskBattleStats` `collect()` -> `take(100)`, optional
+  `includeHistory` / `includeBattleStats` (defaults preserve API);
+  `startTaskPresence` skips same-ms duplicate writes.
+- `convex/combat.ts`: monsters `collect()` -> `take(500)`; single
+  `getEquippedProfile` (1 collect) replaces dual stat/armor collects;
+  `simulateRegularBattle` accepts pre-fetched bonuses+armor.
+- `convex/items.ts`: `getEquippedProfile` shared reader with batched
+  item/augment fetch; inventory single `by_playerId` augments read +
+  deduped item defs, `itemRarities` bounded `take(100)`.
+- `convex/passiveTree.ts`: `getTree` single `by_enabled` nodes read + single
+  `playerPassives` collect (was unindexed scan + 3 collects).
+- `convex/loot.ts` + `convex/events.ts`: event lookups use `by_startTime <=
+  now` indexed range + `take(100)` instead of full-table `filter().collect()`.
+- `convex/admin.ts`: config reads bounded `take(2000)`; `convex/schema.ts`
+  unchanged (existing `by_isActive`/`by_startTime` indexes reused).
+
+Measured on an empty fixture (`convex-test` transaction metrics):
+`tasks.sync` 42 -> 23 queries (-45%), bytesRead 4607 -> 3488 (-24%);
+`tasks.getQueue` 11 -> 10; `passiveTree.getTree` 10 -> 8. Real-player
+savings scale with inventory/augment counts and balance rows.

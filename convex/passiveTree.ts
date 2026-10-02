@@ -1,4 +1,5 @@
 import { mutation, query } from "./_generated/server";
+import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -241,16 +242,48 @@ export async function getPassiveBonuses(
     .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
     .take(MAX_PASSIVE_ROWS);
   if (unlocks.length === 0) return structuredClone(EMPTY_PASSIVE_BONUSES);
-  const bonuses: PassiveBonuses = structuredClone(EMPTY_PASSIVE_BONUSES);
-  const nodeIds = new Set(unlocks.map((row) => row.nodeId));
   const nodes = await ctx.db
     .query("passiveNodes")
     .withIndex("by_enabled", (q) => q.eq("enabled", true))
     .take(MAX_PASSIVE_ROWS);
+  return bonusesForUnlocks(unlocks.map((row) => row.nodeId), nodes);
+}
+
+function bonusesForUnlocks(
+  unlockedNodeIds: string[],
+  nodes: Doc<"passiveNodes">[]
+): PassiveBonuses {
+  if (unlockedNodeIds.length === 0) return structuredClone(EMPTY_PASSIVE_BONUSES);
+  const bonuses: PassiveBonuses = structuredClone(EMPTY_PASSIVE_BONUSES);
+  const nodeIds = new Set(unlockedNodeIds);
   for (const node of nodes) {
     if (nodeIds.has(node.nodeId)) applyNodeToBonuses(bonuses, node);
   }
   return bonuses;
+}
+
+async function pointsForUnlocks(
+  ctx: DatabaseCtx,
+  player: Doc<"players">,
+  unlocks: Doc<"playerPassives">[]
+) {
+  const [level, baseLevel, interval] = await Promise.all([
+    calculateCharacterLevel(ctx, player),
+    getPassiveBaseLevel(ctx),
+    getPassivePointInterval(ctx),
+  ]);
+  const earned = Math.max(
+    0,
+    Math.floor(level / interval) - Math.floor(baseLevel / interval)
+  );
+  return {
+    level,
+    baseLevel,
+    interval,
+    earned,
+    spent: unlocks.length,
+    available: Math.max(0, earned - unlocks.length),
+  };
 }
 
 // ─── Seed data (PoE-like web: 5 weapon arms + skilling arm) ──────────────────
@@ -571,36 +604,39 @@ export async function seedPassiveContent(ctx: MutationCtx) {
 export const getTree = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
-    const [nodes, unlocks, points] = await Promise.all([
-      ctx.db.query("passiveNodes").take(MAX_PASSIVE_ROWS),
+    const player = await requirePlayerRead(ctx, playerId);
+    // Single indexed read per table: enabled nodes + this player's unlocks.
+    // Points and bonuses are derived from those rows without re-querying.
+    const [nodes, unlocks] = await Promise.all([
+      ctx.db
+        .query("passiveNodes")
+        .withIndex("by_enabled", (q) => q.eq("enabled", true))
+        .take(MAX_PASSIVE_ROWS),
       ctx.db
         .query("playerPassives")
         .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
         .take(MAX_PASSIVE_ROWS),
-      getPassivePoints(ctx, player),
     ]);
-    const unlocked = new Set(unlocks.map((row) => row.nodeId));
+    const unlockedIds = unlocks.map((row) => row.nodeId);
+    const unlocked = new Set(unlockedIds);
+    const points = await pointsForUnlocks(ctx, player, unlocks);
     return {
-      nodes: nodes
-        .filter((node) => node.enabled)
-        .map((node) => {
-          const requiresAny = node.requiresAny ?? [];
-          return {
-            ...node,
-            requiresAny,
-            unlocked: unlocked.has(node.nodeId),
-            requirementsMet: requirementsMetFor(
-              unlocked,
-              node.requires,
-              requiresAny
-            ),
-          };
-        }),
-      unlocked: unlocks.map((row) => row.nodeId),
+      nodes: nodes.map((node) => {
+        const requiresAny = node.requiresAny ?? [];
+        return {
+          ...node,
+          requiresAny,
+          unlocked: unlocked.has(node.nodeId),
+          requirementsMet: requirementsMetFor(
+            unlocked,
+            node.requires,
+            requiresAny
+          ),
+        };
+      }),
+      unlocked: unlockedIds,
       points,
-      bonuses: await getPassiveBonuses(ctx, playerId),
+      bonuses: bonusesForUnlocks(unlockedIds, nodes),
     };
   },
 });
@@ -608,9 +644,8 @@ export const getTree = query({
 export const unlockNode = mutation({
   args: { playerId: v.id("players"), nodeId: v.string() },
   handler: async (ctx, { playerId, nodeId }) => {
+    const player = await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
     const node = await ctx.db
       .query("passiveNodes")
       .withIndex("by_nodeId", (q) => q.eq("nodeId", nodeId.trim()))

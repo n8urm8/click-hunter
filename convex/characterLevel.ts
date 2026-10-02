@@ -87,9 +87,8 @@ export async function createCharacterLevelLookup(
       .query("skillDefinitions")
       .withIndex("by_enabled", (q) => q.eq("enabled", true))
       .take(MAX_SKILL_ROWS),
-    // Intentionally unbounded: levels must cover every player in the caller's
-    // full player list (mirrors getPlayers collecting all players).
-    ctx.db.query("playerSkills").collect(),
+    // Bounded to cover the admin player list (players take(2000) x skills).
+    ctx.db.query("playerSkills").take(10000),
   ]);
   const playerSkillsByPlayer = new Map<Id<"players">, Doc<"playerSkills">[]>();
   for (const playerSkill of playerSkills) {

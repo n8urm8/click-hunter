@@ -1,4 +1,6 @@
 import { internalMutation, mutation, query } from "./_generated/server";
+import { readBalanceMap } from "./balance";
+import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -90,38 +92,7 @@ export async function getEquippedStatBonuses(
   ctx: DatabaseCtx,
   playerId: Id<"players">
 ): Promise<EquipmentStatBonuses> {
-  const rows = await ctx.db
-    .query("playerItems")
-    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-    .collect();
-  const bonuses = { ...EMPTY_EQUIPMENT_STAT_BONUSES };
-
-  for (const row of rows.filter((entry) => entry.equippedSlot !== undefined)) {
-    const item = await ctx.db.get(row.itemId);
-    if (
-      item?.effectType === "stat-bonus" &&
-      item.effectStat !== undefined &&
-      typeof item.effectAmount === "number" &&
-      Number.isFinite(item.effectAmount)
-    ) {
-      bonuses[item.effectStat] += item.effectAmount;
-    }
-
-    const augments = await ctx.db
-      .query("playerItemAugments")
-      .withIndex("by_playerItemId", (q) => q.eq("playerItemId", row._id))
-      .collect();
-    for (const augment of augments) {
-      if (
-        augment.effectType === "stat-bonus" &&
-        augment.effectStat !== undefined &&
-        Number.isFinite(augment.effectAmount)
-      ) {
-        bonuses[augment.effectStat] += augment.effectAmount;
-      }
-    }
-  }
-
+  const { bonuses } = await getEquippedProfile(ctx, playerId);
   return bonuses;
 }
 
@@ -482,11 +453,18 @@ async function getCombatBalanceNumber(
 }
 
 export async function readCombatBalance(ctx: DatabaseCtx) {
-  const entries = await Promise.all(
-    COMBAT_BALANCE_DEFAULTS.map((entry) =>
-      getCombatBalanceNumber(ctx, entry.key, entry.value)
-    )
+  const values = await readBalanceMap(
+    ctx,
+    COMBAT_BALANCE_DEFAULTS.map((entry) => entry.key)
   );
+  const entries = COMBAT_BALANCE_DEFAULTS.map((entry) => {
+    const value = values.get(entry.key);
+    return typeof value === "number" &&
+      Number.isFinite(value) &&
+      (entry.key === "combatAttackSpeedMultiplier" ? value > 0 : value >= 0)
+      ? value
+      : entry.value;
+  });
   return {
     statAttackCoeff: entries[0],
     dexSpeedCoeff: entries[1],
@@ -511,6 +489,7 @@ export const useSkillBoost = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
+    await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
@@ -599,6 +578,7 @@ export const useCombatBoost = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
+    await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
@@ -724,21 +704,75 @@ export async function getEquippedArmorTotals(
   ctx: DatabaseCtx,
   playerId: Id<"players">
 ) {
+  const { armor } = await getEquippedProfile(ctx, playerId);
+  return armor;
+}
+
+/**
+ * Shared hot-path reader: one playerItems collect + batched item/augment
+ * fetch yields both stat bonuses and armor totals. Used by combat profiles
+ * (called on every sync/battle) instead of two separate collects.
+ */
+export async function getEquippedProfile(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">
+): Promise<{
+  bonuses: EquipmentStatBonuses;
+  armor: { defense: number; speedPenalty: number };
+}> {
   const rows = await ctx.db
     .query("playerItems")
     .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-    .collect();
+    .take(200);
+  const equipped = rows.filter((entry) => entry.equippedSlot !== undefined);
+  const bonuses = { ...EMPTY_EQUIPMENT_STAT_BONUSES };
   let defense = 0;
   let speedPenalty = 0;
-  for (const row of rows.filter((entry) => entry.equippedSlot !== undefined)) {
-    const item = await ctx.db.get(row.itemId);
+  if (equipped.length === 0) return { bonuses, armor: { defense, speedPenalty } };
+  const distinctIds = [...new Set(equipped.map((row) => row.itemId))];
+  const [defs, allAugments] = await Promise.all([
+    Promise.all(distinctIds.map((itemId) => ctx.db.get(itemId))),
+    ctx.db
+      .query("playerItemAugments")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .take(500),
+  ]);
+  const defById = new Map(
+    distinctIds.map((id, index) => [String(id), defs[index]])
+  );
+  const augmentsByRow = new Map<string, typeof allAugments>();
+  for (const augment of allAugments) {
+    const key = String(augment.playerItemId);
+    const list = augmentsByRow.get(key);
+    if (list) list.push(augment);
+    else augmentsByRow.set(key, [augment]);
+  }
+  for (const row of equipped) {
+    const item = defById.get(String(row.itemId));
     if (!item) continue;
+    if (
+      item.effectType === "stat-bonus" &&
+      item.effectStat !== undefined &&
+      typeof item.effectAmount === "number" &&
+      Number.isFinite(item.effectAmount)
+    ) {
+      bonuses[item.effectStat] += item.effectAmount;
+    }
     if (typeof item.baseDefense === "number") defense += item.baseDefense;
     if (typeof item.speedPenalty === "number") {
       speedPenalty += item.speedPenalty;
     }
+    for (const augment of augmentsByRow.get(String(row._id)) ?? []) {
+      if (
+        augment.effectType === "stat-bonus" &&
+        augment.effectStat !== undefined &&
+        Number.isFinite(augment.effectAmount)
+      ) {
+        bonuses[augment.effectStat] += augment.effectAmount;
+      }
+    }
   }
-  return { defense, speedPenalty };
+  return { bonuses, armor: { defense, speedPenalty } };
 }
 
 export function computeAttackSpeed(
@@ -831,10 +865,11 @@ export const getPlayerInventory = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await requirePlayerRead(ctx, playerId);
     const capacity = await getInventorySlotCapacity(ctx);
     const rows = await getOwnedItemRows(ctx, playerId, capacity);
-    const [rarities, pendingRewards, attackSpeedMultiplier] = await Promise.all([
-      ctx.db.query("itemRarities").collect(),
+    const [rarities, pendingRewards, attackSpeedMultiplier, allAugments] = await Promise.all([
+      ctx.db.query("itemRarities").take(100),
       ctx.db
         .query("pendingRewards")
         .withIndex("by_playerId_and_status", (q) =>
@@ -843,15 +878,45 @@ export const getPlayerInventory = query({
         .order("desc")
         .take(100),
       getCombatBalanceNumber(ctx, PLAYER_ATTACK_SPEED_BALANCE_DEFAULT.key, PLAYER_ATTACK_SPEED_BALANCE_DEFAULT.value),
+      // Single indexed read for all augments instead of N per-row collects.
+      // Skipped for empty inventories.
+      rows.length === 0
+        ? Promise.resolve([])
+        : ctx.db
+            .query("playerItemAugments")
+            .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+            .take(500),
     ]);
     const rarityByLevel = new Map(
       rarities.map((rarity) => [rarity.level, rarity])
     );
+    // Dedupe item definitions: stacks of the same item share one fetch.
+    const distinctItemIds = [...new Set(rows.map((row) => row.itemId))];
+    const distinctPendingItemIds = [
+      ...new Set(pendingRewards.map((reward) => reward.itemId)),
+    ].filter((itemId) => !distinctItemIds.includes(itemId));
+    const [itemDefs, pendingItemDefs] = await Promise.all([
+      Promise.all(distinctItemIds.map((itemId) => ctx.db.get(itemId))),
+      Promise.all(distinctPendingItemIds.map((itemId) => ctx.db.get(itemId))),
+    ]);
+    const itemById = new Map(
+      distinctItemIds.map((itemId, index) => [itemId, itemDefs[index]])
+    );
+    for (const [index, itemId] of distinctPendingItemIds.entries()) {
+      itemById.set(itemId, pendingItemDefs[index]);
+    }
+    const augmentsByRowId = new Map<string, Doc<"playerItemAugments">[]>();
+    for (const augment of allAugments) {
+      const key = String(augment.playerItemId);
+      const list = augmentsByRowId.get(key);
+      if (list) list.push(augment);
+      else augmentsByRowId.set(key, [augment]);
+    }
     const inventory: OwnedItem[] = [];
     const equippedBySlot = new Map<EquipmentSlot, OwnedItem>();
 
     for (const row of rows) {
-      const item = await ctx.db.get(row.itemId);
+      const item = itemById.get(row.itemId);
       if (!item) {
         throw new Error("Owned item references a missing item definition");
       }
@@ -866,10 +931,7 @@ export const getPlayerInventory = query({
         rarity:
           rarityByLevel.get(item.rarityLevel ?? DEFAULT_ITEM_RARITY_LEVEL) ??
           null,
-        augments: await ctx.db
-          .query("playerItemAugments")
-          .withIndex("by_playerItemId", (q) => q.eq("playerItemId", row._id))
-          .collect(),
+        augments: augmentsByRowId.get(String(row._id)) ?? [],
       };
 
       if (row.equippedSlot) {
@@ -892,12 +954,10 @@ export const getPlayerInventory = query({
         slot,
         item: equippedBySlot.get(slot) ?? null,
       })),
-      pendingRewards: await Promise.all(
-        pendingRewards.map(async (reward) => ({
-          ...reward,
-          item: await ctx.db.get(reward.itemId),
-        }))
-      ),
+      pendingRewards: pendingRewards.map((reward) => ({
+        ...reward,
+        item: itemById.get(reward.itemId) ?? null,
+      })),
     };
   },
 });
@@ -1153,6 +1213,7 @@ export const claimPendingReward = mutation({
     rewardId: v.id("pendingRewards"),
   },
   handler: async (ctx, { playerId, rewardId }) => {
+    await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const reward = await ctx.db.get(rewardId);
     if (
@@ -1191,6 +1252,7 @@ export const claimAllPendingRewards = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const rewards = await ctx.db
       .query("pendingRewards")
@@ -1227,6 +1289,7 @@ export const equipItem = mutation({
     slot: equipmentSlotValidator,
   },
   handler: async (ctx, { playerId, playerItemId, slot }) => {
+    await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
@@ -1293,6 +1356,7 @@ export const unequipItem = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
+    await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {

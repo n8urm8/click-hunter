@@ -14,10 +14,11 @@ afterEach(() => {
 });
 
 async function setup() {
-  const t = convexTest(schema, modules);
+  const t = convexTest(schema, modules).withIdentity({ subject: "perf-user" });
   const fixtures = await t.run(async (ctx) => {
     const playerId = await ctx.db.insert("players", {
       anonymousId: "test-player", name: "Test player",
+      authSubject: "perf-user",
       str: 1, dex: 1, int: 1, luk: 1, con: 1,
       gold: 0, totalExperience: 0, rebirthCount: 0,
       rebirthTierThreshold: 5, currentTier: 1,
@@ -110,8 +111,9 @@ test("split queries preserve the panel shape and keep progress reads small", asy
     await ctx.runQuery(api.skills.getPlayerSkills, { playerId });
     return await ctx.meta.getTransactionMetrics();
   });
-  expect(metrics.documentsRead.used).toBe(2);
-  expect(metrics.databaseQueries.used).toBe(2);
+  // Player row (ownership check) + playerSkills rows.
+  expect(metrics.documentsRead.used).toBe(3);
+  expect(metrics.databaseQueries.used).toBe(3);
 });
 
 test("progress, configuration edits, and missing item references remain correct", async () => {

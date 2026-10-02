@@ -1,4 +1,5 @@
 import { query } from "./_generated/server";
+import { requirePlayerRead } from "./playerAuth";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
@@ -1756,6 +1757,7 @@ export const getPlayerSkills = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await requirePlayerRead(ctx, playerId);
     return await getPlayerSkillRows(ctx, playerId);
   },
 });
@@ -1765,6 +1767,7 @@ export const getSkillPanel = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    await requirePlayerRead(ctx, playerId);
     const [catalog, playerSkills] = await Promise.all([
       getSkillCatalogData(ctx),
       getPlayerSkillRows(ctx, playerId),

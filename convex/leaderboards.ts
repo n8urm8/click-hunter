@@ -1,8 +1,10 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
 
-// Upsert player on leaderboards when stats change
-export const updateLeaderboards = mutation({
+// Server-only leaderboard writer. Internal: public self-asserted stats would
+// be trivial score forging. No live callers yet; kept for server settlement.
+export const updateLeaderboards = internalMutation({
   args: {
     playerId: v.id("players"),
     playerName: v.string(),
@@ -121,6 +123,7 @@ export const getTopByRebirth = query({
 export const getPlayerRanks = query({
   args: { playerId: v.id("players") },
   async handler(ctx, args) {
+    await requirePlayerRead(ctx, args.playerId);
     const expByPlayer = await ctx.db
       .query("leaderboardByExperience")
       .filter((q) => q.eq(q.field("playerId"), args.playerId))

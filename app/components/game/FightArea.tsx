@@ -41,6 +41,7 @@ import {
   useEnqueueAutoBattle,
   useTaskQueue,
 } from "~/hooks/useTasks";
+import { useStartBossFight } from "~/hooks/useBossFight";
 import { formatNumber } from "~/lib/utils";
 import type { PlayerWithDerivedStats } from "~/hooks/usePlayer";
 import { useTaskClock } from "~/hooks/useTaskClock";
@@ -90,6 +91,9 @@ type QueueTask = {
     quantity: number;
     pending: number;
     purpose: "augmentation" | "boss-catalyst";
+    itemSlug?: string;
+    itemFamily?: string;
+    category?: string;
   }>;
   battleStats?: Array<{
     monsterType: string;
@@ -387,7 +391,12 @@ function BattleStatus({
                 >
                   <span className="inline-flex min-w-0 items-center gap-2 text-foreground">
                     <ItemIcon
-                      item={{ itemId: drop.itemId, name: drop.itemName }}
+                      item={{
+                        itemId: drop.itemSlug ?? drop.itemId,
+                        name: drop.itemName,
+                        itemFamily: drop.itemFamily,
+                        category: drop.category,
+                      }}
                       alt=""
                       className="size-5"
                     />
@@ -423,7 +432,9 @@ function BattleStatus({
 
 function createBossFight(
   combatant: CombatantStats,
-  tier: number
+  tier: number,
+  playerId: string,
+  session: { sessionId: string; settlementKey: string; monsterHp: number }
 ): CurrentFight {
   const combatantStats = calculateDerivedStats(
     combatant.str,
@@ -434,12 +445,13 @@ function createBossFight(
   );
 
   return {
-    settlementKey: crypto.randomUUID(),
+    settlementKey: session.settlementKey,
+    sessionId: session.sessionId as CurrentFight["sessionId"],
     monsterTier: tier,
     monsterType: combatant.type,
     monsterName: combatant.name,
     isBoss: true,
-    monsterHp: Math.max(1, Math.round(combatantStats.health)),
+    monsterHp: session.monsterHp,
     monsterMaxHp: Math.max(
       1,
       Math.round(combatantStats.health)
@@ -549,6 +561,7 @@ export function FightArea({ player }: FightAreaProps) {
   const respawnTimerRef = useRef(respawnTimer);
   const isStartingRef = useRef(false);
   const enqueueAutoBattle = useEnqueueAutoBattle();
+  const startBossFight = useStartBossFight();
 
   selectedTierRef.current = selectedTier;
   selectedZoneRef.current = selectedZone;
@@ -695,33 +708,49 @@ export function FightArea({ player }: FightAreaProps) {
     isStartingRef.current = true;
     setIsStarting(true);
 
-    try {
-      const fight = createBossFight(
-        {
-          type: boss.bossId,
-          name: boss.name,
-          str: boss.str,
-          dex: boss.dex,
-          int: boss.int,
-          luk: boss.luk,
-          con: boss.con,
-        },
-        tier
-      );
-      currentFightRef.current = fight;
-      setCurrentFight(fight);
-      setPlayerHp(player.health);
-      setPlayerMaxHp(player.health);
-      setFightPhase("fighting");
-      setEventTracker({
-        type: "fighting",
-        monsterName: fight.monsterName,
-        tier,
-      });
-    } finally {
-      isStartingRef.current = false;
-      setIsStarting(false);
-    }
+    void (async () => {
+      try {
+        // Server-authoritative session: HP, settlement key, and the final
+        // verdict all come from convex/bossFights.
+        const session = await startBossFight({
+          playerId: player._id,
+          tier,
+        });
+        const fight = createBossFight(
+          {
+            type: session.bossId,
+            name: session.bossName,
+            str: boss.str,
+            dex: boss.dex,
+            int: boss.int,
+            luk: boss.luk,
+            con: boss.con,
+          },
+          tier,
+          player._id,
+          session
+        );
+        currentFightRef.current = fight;
+        setCurrentFight(fight);
+        setPlayerHp(session.playerHp);
+        setPlayerMaxHp(session.playerMaxHp);
+        setFightPhase("fighting");
+        setEventTracker({
+          type: "fighting",
+          monsterName: fight.monsterName,
+          tier,
+        });
+      } catch (error) {
+        setAutoBattleError(
+          error instanceof Error
+            ? error.message
+            : "Unable to start the boss fight."
+        );
+      } finally {
+        isStartingRef.current = false;
+        setIsStarting(false);
+      }
+    })();
 
     return true;
   };

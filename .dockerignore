@@ -1,4 +1,10 @@
 .react-router
 build
+dist
 node_modules
 README.md
+.git
+.gitignore
+.env*
+docker/.env.selfhosted
+docker-compose.yml

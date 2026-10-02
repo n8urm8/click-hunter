@@ -18,6 +18,21 @@ export async function requireAdmin(
     throw new Error("Player not found");
   }
 
+  // Bind the admin row to the caller's signed-in session. Role semantics are
+  // intentionally unchanged (everyone is admin while testing).
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    throw new Error("Authentication required. Sign in to play.");
+  }
+  if (player.authSubject === undefined) {
+    throw new Error("Character is not claimed. Create or claim it first.");
+  }
+  if (player.authSubject !== identity.subject) {
+    throw new Error(
+      "This character belongs to a different signed-in session."
+    );
+  }
+
   if (player.role !== "admin") {
     throw new Error("Unauthorized: admin role required");
   }

@@ -104,6 +104,7 @@ export function ActiveFight({
         {/* Attack Button */}
         <AttackButton
           player={player}
+          respawnTimeMs={respawnTimeMs}
           onStartNextFight={onStartNextFight}
         />
       </div>

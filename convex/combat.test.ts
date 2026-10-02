@@ -28,11 +28,13 @@ afterEach(() => {
 });
 
 async function setup(weaponSpeed = 1.3) {
-  const t = convexTest(schema, modules);
-  rateLimiterTest.register(t);
+  const base = convexTest(schema, modules);
+  rateLimiterTest.register(base);
+  const t = base.withIdentity({ subject: "combat-user" });
   const fixture = await t.run(async (ctx) => {
     const playerId = await ctx.db.insert("players", {
       anonymousId: "combat-test", name: "Hunter", role: "admin",
+      authSubject: "combat-user",
       str: 10, dex: 10, int: 10, luk: 0, con: 50,
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
       currentTier: 1, autoAttackEnabled: false, autoStartFightEnabled: false,
@@ -264,7 +266,9 @@ test("live speed buffs affect encounters and cooldowns without adding clock-depe
 
 test("new and reborn players always auto attack; old clients cannot disable it", async () => {
   const { t, playerId } = await setup();
-  expect((await t.mutation(api.players.getOrCreatePlayer, {
+  // Fresh identity (no character yet) so creation actually runs.
+  const newcomer = t.withIdentity({ subject: "brand-new-user" });
+  expect((await newcomer.mutation(api.players.getOrCreatePlayer, {
     anonymousId: "new-player", name: "New Hunter",
   }))?.autoAttackEnabled).toBe(true);
   await expect(t.mutation(api.players.setAutoAttack, { playerId, enabled: false }))

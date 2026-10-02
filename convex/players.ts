@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { requireAuthSubject, requirePlayer, requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
 import { api, components, internal } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
@@ -171,14 +172,32 @@ export const getOrCreatePlayer = mutation({
     starterId: v.optional(starterWeaponValidator),
   },
   handler: async (ctx, { anonymousId, name, starterId }) => {
-    // Check if player already exists
+    const subject = await requireAuthSubject(ctx);
+
+    const owned = await ctx.db
+      .query("players")
+      .withIndex("by_authSubject", (q) => q.eq("authSubject", subject))
+      .first();
+    if (owned) {
+      return owned;
+    }
+
+    // One-time claim of a pre-auth character. The anonymousId is a bearer
+    // secret from localStorage; a claimed character can never be re-claimed.
     const existing = await ctx.db
       .query("players")
       .withIndex("by_anonymousId", (q) => q.eq("anonymousId", anonymousId))
       .first();
 
     if (existing) {
-      return existing;
+      if (
+        existing.authSubject !== undefined &&
+        existing.authSubject !== subject
+      ) {
+        throw new Error("That character is already claimed by another session.");
+      }
+      await ctx.db.patch(existing._id, { authSubject: subject });
+      return await ctx.db.get(existing._id);
     }
 
     const [startingStatsValue, rebirthThresholdsValue] = await Promise.all([
@@ -192,6 +211,7 @@ export const getOrCreatePlayer = mutation({
     const now = Date.now();
     const playerId = await ctx.db.insert("players", {
       anonymousId,
+      authSubject: subject,
       name,
       role: "admin",
       str: startingStats.str,
@@ -231,8 +251,7 @@ export const chooseStarter = mutation({
     starterId: starterWeaponValidator,
   },
   handler: async (ctx, { playerId, starterId }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    const player = await requirePlayer(ctx, playerId);
     if (!player.pendingStarterPick) {
       throw new Error("No starter kit is pending");
     }
@@ -247,16 +266,16 @@ export const chooseStarter = mutation({
 });
 
 /**
- * Get player by anonymous ID
+ * The caller's own character profile. Identity-derived with no arguments,
+ * so there is nothing to forge. This replaces the anonymousId lookup flow.
  */
-export const getPlayerByAnonymousId = query({
-  args: {
-    anonymousId: v.string(),
-  },
-  handler: async (ctx, { anonymousId }) => {
+export const getCurrentPlayer = query({
+  args: {},
+  handler: async (ctx) => {
+    const subject = await requireAuthSubject(ctx);
     const player = await ctx.db
       .query("players")
-      .withIndex("by_anonymousId", (q) => q.eq("anonymousId", anonymousId))
+      .withIndex("by_authSubject", (q) => q.eq("authSubject", subject))
       .first();
     if (!player) return null;
     return {
@@ -267,15 +286,14 @@ export const getPlayerByAnonymousId = query({
 });
 
 /**
- * Get player by ID
+ * Get player by ID. Strictly owner-only.
  */
 export const getPlayerById = query({
   args: {
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) return null;
+    const player = await requirePlayerRead(ctx, playerId);
     return {
       ...(await withEquipmentStats(ctx, player)),
       characterLevel: await calculateCharacterLevel(ctx, player),
@@ -291,8 +309,7 @@ export const attemptAttack = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    const player = await requirePlayer(ctx, playerId);
 
     const { combatStats } = await readPlayerCombatProfile(ctx, player, Date.now());
     const cooldownMs = Math.ceil(1000 / combatStats.attackSpeed);
@@ -315,9 +332,10 @@ export const attemptAttack = mutation({
 });
 
 /**
- * Update gold
+ * Server-only gold adjustment (settlement paths). Internal until auth lands:
+ * a public arbitrary-delta mutation is free currency for any caller.
  */
-export const updateGold = mutation({
+export const updateGold = internalMutation({
   args: {
     playerId: v.id("players"),
     delta: v.number(),
@@ -337,9 +355,9 @@ export const updateGold = mutation({
 });
 
 /**
- * Add experience
+ * Server-only experience grant (settlement paths). Internal until auth lands.
  */
-export const addExperience = mutation({
+export const addExperience = internalMutation({
   args: {
     playerId: v.id("players"),
     amount: v.number(),
@@ -363,9 +381,9 @@ export const addExperience = mutation({
 });
 
 /**
- * Increase a stat
+ * Server-only stat adjustment (upgrade/rebirth paths). Internal until auth lands.
  */
-export const increaseStat = mutation({
+export const increaseStat = internalMutation({
   args: {
     playerId: v.id("players"),
     stat: v.union(
@@ -405,11 +423,37 @@ export const advanceTierProgression = mutation({
     tierJustBeaten: v.number(),
   },
   handler: async (ctx, { playerId, tierJustBeaten }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    const player = await requirePlayer(ctx, playerId);
+    if (!Number.isSafeInteger(tierJustBeaten) || tierJustBeaten < 1) {
+      throw new Error("Tier just beaten must be a positive integer");
+    }
+
+    const currentMax = player.maxTierReached || 1;
+    // No skipping: live one tier above the proven max at most. Re-asserting
+    // an already-reached tier is always allowed (back-compat for rows that
+    // predate fight history).
+    if (tierJustBeaten > currentMax + 1) {
+      throw new Error("Tier progression must advance one tier at a time");
+    }
+    if (tierJustBeaten > currentMax) {
+      const proof = await ctx.db
+        .query("fightHistory")
+        .withIndex("by_playerId_timestamp", (q) => q.eq("playerId", playerId))
+        .filter((q) =>
+          q.and(
+            q.eq(q.field("monsterTier"), tierJustBeaten),
+            q.eq(q.field("won"), true)
+          )
+        )
+        .order("desc")
+        .first();
+      if (!proof) {
+        throw new Error("No recorded victory for that tier");
+      }
+    }
 
     // Update maxTierReached if player beat a higher tier
-    const newMaxTier = Math.max(player.maxTierReached || 1, tierJustBeaten);
+    const newMaxTier = Math.max(currentMax, tierJustBeaten);
 
     await ctx.db.patch(playerId, {
       maxTierReached: newMaxTier,
@@ -431,8 +475,7 @@ export const canRebirth = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) return false;
+    const player = await requirePlayerRead(ctx, playerId);
 
     return (player.maxTierReached || 1) >= player.rebirthTierThreshold;
   },
@@ -446,9 +489,8 @@ export const rebirth = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
+    const player = await requirePlayer(ctx, playerId);
     await ctx.runMutation(internal.tasks.prepareRebirth, { playerId });
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
 
     // Check if eligible for rebirth
     if ((player.maxTierReached || 1) < player.rebirthTierThreshold) {
@@ -514,8 +556,7 @@ export const setAutoAttack = mutation({
     enabled: v.boolean(),
   },
   handler: async (ctx, { playerId, enabled }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    await requirePlayer(ctx, playerId);
     if (!enabled) throw new Error("Auto attack is always enabled");
 
     await ctx.db.patch(playerId, {
@@ -534,8 +575,7 @@ export const setAutoStartFight = mutation({
     enabled: v.boolean(),
   },
   handler: async (ctx, { playerId, enabled }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    await requirePlayer(ctx, playerId);
 
     await ctx.db.patch(playerId, {
       autoStartFightEnabled: enabled,

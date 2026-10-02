@@ -9,10 +9,11 @@ import { DEFAULT_ITEM_RARITY_LEVEL } from "./itemTypes";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 async function setup() {
-  const t = convexTest(schema, modules);
+  const t = convexTest(schema, modules).withIdentity({ subject: "admin-user" });
   await t.mutation(internal.init.default, {});
   const playerId = await t.run((ctx) => ctx.db.insert("players", {
     anonymousId: "admin-test", name: "Admin", role: "admin",
+      authSubject: "admin-user",
     str: 1, dex: 1, int: 1, luk: 1, con: 1,
     gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
     currentTier: 1, autoAttackEnabled: true, autoStartFightEnabled: false,

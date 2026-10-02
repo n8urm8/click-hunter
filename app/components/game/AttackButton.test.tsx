@@ -5,7 +5,17 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { AttackButton } from "./AttackButton";
 
 const mocks = vi.hoisted(() => ({
-  attempt: vi.fn(async () => ({ allowed: true, retryAfterMs: 4_000, cooldownMs: 4_000 })),
+  strike: vi.fn(async () => ({
+    allowed: true,
+    status: "open",
+    monsterHp: 999,
+    monsterMaxHp: 1_000,
+    playerHp: 30,
+    playerMaxHp: 30,
+    damage: 1,
+    isCrit: false,
+    retryAfterMs: 4_000,
+  })),
   effects: [] as Array<() => void | (() => void)>,
   fight: null as CurrentFight | null,
 }));
@@ -22,14 +32,16 @@ vi.mock("jotai", () => ({
 }));
 vi.mock("~/store/gameStore", () => ({
   currentFightAtom: "fight", clickAnimationsAtom: "floaters",
-  inFightPhaseAtom: "phase", playerHpAtom: "hp", eventTrackerAtom: "event",
+  inFightPhaseAtom: "phase", playerHpAtom: "hp", playerMaxHpAtom: "maxHp",
+  respawnTimerAtom: "respawn", eventTrackerAtom: "event",
 }));
 vi.mock("~/hooks/usePlayer", () => ({
-  useAttemptAttack: () => mocks.attempt,
-  useRecordFight: () => vi.fn(),
   useAdvanceTierProgression: () => vi.fn(),
 }));
-vi.mock("~/lib/statCalculations", () => ({ calculateDamage: () => 1 }));
+vi.mock("~/hooks/useBossFight", () => ({
+  useStrikeBoss: () => mocks.strike,
+  useCheckBossFight: () => vi.fn(),
+}));
 
 const player: PlayerWithDerivedStats = {
   _id: "hunter" as Id<"players">, _creationTime: 0, anonymousId: "hunter",
@@ -47,7 +59,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.effects.length = 0;
   mocks.fight = {
-    settlementKey: "boss-fight", monsterTier: 1, monsterType: "boss",
+    settlementKey: "boss-fight", sessionId: "session-1", monsterTier: 1, monsterType: "boss",
     monsterName: "Boss", monsterAttack: 10, monsterAttackSpeed: 0.5,
     isBoss: true, monsterHp: 1_000, monsterMaxHp: 1_000,
   };
@@ -67,36 +79,40 @@ test("boss attacks are mandatory, respect slow weapons and follow the server ret
     if (cleanup) cleanups.push(cleanup);
   }
   await vi.advanceTimersByTimeAsync(3_076);
-  expect(mocks.attempt).not.toHaveBeenCalled();
+  expect(mocks.strike).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
-  expect(mocks.attempt).toHaveBeenCalledTimes(1);
+  expect(mocks.strike).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(3_999);
-  expect(mocks.attempt).toHaveBeenCalledTimes(1);
+  expect(mocks.strike).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(1);
-  expect(mocks.attempt).toHaveBeenCalledTimes(2);
+  expect(mocks.strike).toHaveBeenCalledTimes(2);
 });
 
 test("unmounting cancels automatic attacks", async () => {
   AttackButton({ player, onStartNextFight: () => false });
   for (const effect of mocks.effects) effect()?.();
   await vi.advanceTimersByTimeAsync(10_000);
-  expect(mocks.attempt).not.toHaveBeenCalled();
+  expect(mocks.strike).not.toHaveBeenCalled();
 });
 
 test("restarting the timer during an in-flight attack does not permanently stop auto attack", async () => {
-  let complete: ((result: { allowed: boolean; retryAfterMs: number; cooldownMs: number }) => void) | undefined;
-  mocks.attempt.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let complete: ((result: any) => void) | undefined;
+  mocks.strike.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
   AttackButton({ player, onStartNextFight: () => false });
   const effect = mocks.effects[0];
   const firstCleanup = effect();
   await vi.advanceTimersByTimeAsync(3_077);
-  expect(mocks.attempt).toHaveBeenCalledTimes(1);
+  expect(mocks.strike).toHaveBeenCalledTimes(1);
   if (firstCleanup) firstCleanup();
   const cleanup = effect();
   if (cleanup) cleanups.push(cleanup);
   await vi.advanceTimersByTimeAsync(3_077);
-  expect(mocks.attempt).toHaveBeenCalledTimes(1);
-  complete?.({ allowed: true, retryAfterMs: 4_000, cooldownMs: 4_000 });
+  expect(mocks.strike).toHaveBeenCalledTimes(1);
+  complete?.({
+    allowed: true, status: "open", monsterHp: 999, monsterMaxHp: 1_000,
+    playerHp: 30, playerMaxHp: 30, damage: 1, isCrit: false, retryAfterMs: 4_000,
+  });
   await vi.advanceTimersByTimeAsync(3_077);
-  expect(mocks.attempt).toHaveBeenCalledTimes(2);
+  expect(mocks.strike).toHaveBeenCalledTimes(2);
 });

@@ -1,4 +1,5 @@
 import { internalMutation, mutation, query } from "./_generated/server";
+import { requirePlayer } from "./playerAuth";
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -8,7 +9,7 @@ import {
   simulateRegularBattle,
 } from "./combat";
 import type { LootSummary } from "./loot";
-import { getEquippedStatBonuses } from "./items";
+import { getEquippedProfile } from "./items";
 import {
   combatZoneValidator,
   isCombatZone,
@@ -114,11 +115,7 @@ async function getAutoBattleRespawnMs(ctx: DatabaseCtx) {
 }
 
 async function getPlayer(ctx: DatabaseCtx, playerId: PlayerId) {
-  const player = await ctx.db.get(playerId);
-  if (!player) {
-    throw new Error("Player not found");
-  }
-  return player;
+  return await requirePlayer(ctx, playerId);
 }
 
 async function getTaskDefinition(
@@ -148,11 +145,17 @@ async function getPresence(ctx: DatabaseCtx, playerId: PlayerId) {
 async function startTaskPresence(ctx: MutationCtx, task: PlayerTask, now: number) {
   if (task.taskType !== "battle" && task.canProgressOffline) return;
   const presence = await getPresence(ctx, task.playerId);
-  const value = { taskId: task._id, segmentStartedAt: now, lastSeenAt: now };
   if (presence) {
-    await ctx.db.patch(presence._id, value);
+    // Same-ms duplicate sync/heartbeat: skip the redundant write so repeated
+    // calls don't pay write I/O or invalidate subscribers.
+    if (presence.taskId === task._id &&
+      presence.segmentStartedAt === now &&
+      presence.lastSeenAt === now) {
+      return;
+    }
+    await ctx.db.patch(presence._id, { taskId: task._id, segmentStartedAt: now, lastSeenAt: now });
   } else {
-    await ctx.db.insert("taskPresence", { playerId: task.playerId, ...value });
+    await ctx.db.insert("taskPresence", { playerId: task.playerId, taskId: task._id, segmentStartedAt: now, lastSeenAt: now });
   }
 }
 
@@ -294,7 +297,10 @@ function readLootSummary(value: unknown): LootSummary[] {
       typeof pending === "number" &&
       Number.isSafeInteger(pending) &&
       pending >= 0 &&
-      (entry.purpose === "augmentation" || entry.purpose === "boss-catalyst")
+      (entry.purpose === "augmentation" || entry.purpose === "boss-catalyst") &&
+      (entry.itemSlug === undefined || typeof entry.itemSlug === "string") &&
+      (entry.itemFamily === undefined || typeof entry.itemFamily === "string") &&
+      (entry.category === undefined || typeof entry.category === "string")
     );
   });
 }
@@ -920,8 +926,8 @@ async function processAutoBattle(
 
     if (!encounter) {
       const player = await getPlayer(ctx, playerId);
-      const equipmentBonuses = await getEquippedStatBonuses(ctx, playerId);
-      encounter = await simulateRegularBattle(ctx, player, tier, equipmentBonuses, task.zone);
+      const equipped = await getEquippedProfile(ctx, playerId);
+      encounter = await simulateRegularBattle(ctx, player, tier, equipped.bonuses, task.zone, equipped.armor);
     }
     const result = encounter;
     const durationToConsume =
@@ -956,7 +962,7 @@ async function processAutoBattle(
       monsterTier: result.monsterTier,
       monsterType: result.monsterType,
       won: result.won,
-      settlementKey: `${task._id}:${completedBattles}`,
+      settlementKey: `${playerId}:${task._id}:${completedBattles}`,
       ...(task.zone === undefined ? {} : { monsterZone: task.zone }),
       goldEarned: result.goldEarned,
       experienceEarned: result.experienceEarned,
@@ -1042,13 +1048,13 @@ async function settleTaskQueue(ctx: MutationCtx, playerId: PlayerId, now: number
     : [];
   const active = await resolveTimedQueue(ctx, playerId, now, onlineSegments);
   if (active?.taskType === "battle") {
-    await processAutoBattle(ctx, active, now, before?._id === active._id ? onlineSegments : []);
+    return await processAutoBattle(ctx, active, now, before?._id === active._id ? onlineSegments : []);
   }
+  return active;
 }
 
 async function settleTaskQueueForInteraction(ctx: MutationCtx, playerId: PlayerId, now: number) {
-  await settleTaskQueue(ctx, playerId, now);
-  const active = await getActiveTask(ctx, playerId);
+  const active = await settleTaskQueue(ctx, playerId, now);
   if (active && (
     getDeferredProgressMs(active) > 0 ||
     (active.taskType === "battle" && active.onlineCreditMs > 0 &&
@@ -1180,25 +1186,28 @@ function getNextSettlementAt(
 async function getQueueSnapshot(
   ctx: DatabaseCtx,
   playerId: PlayerId,
-  snapshotTime?: number
+  snapshotTime?: number,
+  options: { includeHistory?: boolean; includeBattleStats?: boolean } = {}
 ) {
-  const [activeTask, queuedTasks, history, capacity, offlineWindowMs, syncSettings] =
+  const includeHistory = options.includeHistory ?? true;
+  const includeBattleStats = options.includeBattleStats ?? true;
+  const [activeTask, capacity, history, offlineWindowMs, syncSettings] =
     await Promise.all([
       getActiveTask(ctx, playerId),
-      getQueueCapacity(ctx).then((queueCapacity) =>
-        getQueuedTasks(ctx, playerId, queueCapacity)
-      ),
-      ctx.db
-        .query("taskHistory")
-        .withIndex("by_playerId_and_completedAt", (q) =>
-          q.eq("playerId", playerId)
-        )
-        .order("desc")
-        .take(HISTORY_QUERY_LIMIT),
       getQueueCapacity(ctx),
+      includeHistory
+        ? ctx.db
+            .query("taskHistory")
+            .withIndex("by_playerId_and_completedAt", (q) =>
+              q.eq("playerId", playerId)
+            )
+            .order("desc")
+            .take(HISTORY_QUERY_LIMIT)
+        : Promise.resolve([]),
       getOfflineTaskWindow(ctx),
       getHeartbeatGrace(ctx).then((graceMs) => readTaskSyncSettings(ctx, graceMs)),
     ]);
+  const queuedTasks = await getQueuedTasks(ctx, playerId, capacity);
   const now = snapshotTime ?? Math.max(
     activeTask?.updatedAt ?? 0,
     ...queuedTasks.map((task) => task.updatedAt),
@@ -1212,16 +1221,18 @@ async function getQueueSnapshot(
   );
 
   const battleStatsByTaskId = new Map<string, BattleStat[]>();
-  const battleTasks = [activeTask, ...queuedTasks].filter(
-    (task): task is PlayerTask => task?.taskType === "battle"
-  );
+  const battleTasks = includeBattleStats
+    ? [activeTask, ...queuedTasks].filter(
+        (task): task is PlayerTask => task?.taskType === "battle"
+      )
+    : [];
   await Promise.all(
     battleTasks.map(async (task) => {
       const stats = await ctx.db
         .query("taskBattleStats")
         .withIndex("by_taskId", (q) => q.eq("taskId", task._id))
         .order("desc")
-        .collect();
+        .take(100);
       battleStatsByTaskId.set(task._id, stats);
     })
   );
@@ -1280,13 +1291,18 @@ export const getQueue = query({
   args: {
     playerId: v.id("players"),
     now: v.optional(v.number()),
+    includeHistory: v.optional(v.boolean()),
+    includeBattleStats: v.optional(v.boolean()),
   },
-  handler: async (ctx, { playerId, now }) => {
+  handler: async (ctx, { playerId, now, includeHistory, includeBattleStats }) => {
     await getPlayer(ctx, playerId);
     if (now !== undefined && !Number.isFinite(now)) {
       throw new Error("Queue timestamp must be finite");
     }
-    return await getQueueSnapshot(ctx, playerId, now);
+    return await getQueueSnapshot(ctx, playerId, now, {
+      ...(includeHistory === undefined ? {} : { includeHistory }),
+      ...(includeBattleStats === undefined ? {} : { includeBattleStats }),
+    });
   },
 });
 
@@ -1297,9 +1313,8 @@ export const sync = mutation({
   handler: async (ctx, { playerId }) => {
     await getPlayer(ctx, playerId);
     const now = Date.now();
-    await settleTaskQueue(ctx, playerId, now);
-    const [active, settings, offlineWindowMs] = await Promise.all([
-      getActiveTask(ctx, playerId),
+    const active = await settleTaskQueue(ctx, playerId, now);
+    const [settings, offlineWindowMs] = await Promise.all([
       getHeartbeatGrace(ctx).then((graceMs) => readTaskSyncSettings(ctx, graceMs)),
       getOfflineTaskWindow(ctx),
     ]);
@@ -1372,6 +1387,27 @@ export const enqueueTimedTask = mutation({
   },
   handler: async (ctx, { playerId, definitionId, payload }) => {
     await settleTaskQueueForInteraction(ctx, playerId, Date.now());
+    // Skill tasks must go through enqueueSkillAction, which validates tiers,
+    // reserves ingredients server-side, and snapshots balanced rewards. The
+    // generic path cannot trust a client-built skill payload.
+    if (definitionId === "skill_action") {
+      throw new Error("Skill tasks must use enqueueSkillAction");
+    }
+    if (
+      payload !== undefined &&
+      isRecord(payload) &&
+      (payload.skillTaskVersion !== undefined ||
+        payload.skillActionSnapshot !== undefined ||
+        payload.reservedIngredients !== undefined)
+    ) {
+      throw new Error("Skill payloads must use enqueueSkillAction");
+    }
+    if (payload !== undefined) {
+      const serialized = JSON.stringify(payload);
+      if (serialized.length > 8192) {
+        throw new Error("Task payload is too large");
+      }
+    }
     const player = await getPlayer(ctx, playerId);
     const definition = await getTaskDefinition(ctx, definitionId);
     if (!definition) {
@@ -1634,6 +1670,7 @@ export const cancel = mutation({
     taskId: v.id("playerTasks"),
   },
   handler: async (ctx, { playerId, taskId }) => {
+    await getPlayer(ctx, playerId);
     const task = await ctx.db.get(taskId);
     if (!task || task.playerId !== playerId) {
       throw new Error("Task not found");

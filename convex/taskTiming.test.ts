@@ -25,10 +25,11 @@ afterEach(() => {
 });
 
 async function setup(overrides: Partial<Doc<"playerTasks">> = {}) {
-  const t = convexTest(schema, modules);
+  const t = convexTest(schema, modules).withIdentity({ subject: "timing-user" });
   const { playerId, taskId, itemId } = await t.run(async (ctx) => {
     const playerId = await ctx.db.insert("players", {
-      anonymousId: "test", name: "Test", str: 1, dex: 1, int: 1, luk: 1, con: 1,
+      anonymousId: "test", name: "Test", authSubject: "timing-user",
+      str: 1, dex: 1, int: 1, luk: 1, con: 1,
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
       currentTier: 1, autoAttackEnabled: false, autoStartFightEnabled: false,
       createdAt: 0, lastUpdated: 0,

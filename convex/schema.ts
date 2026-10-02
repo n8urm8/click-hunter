@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { authTables } from "@convex-dev/auth/server";
 import { combatZoneValidator } from "./zones";
 import { battleEncounterValidator } from "./taskTiming";
 import {
@@ -71,6 +72,10 @@ export default defineSchema({
   players: defineTable({
     anonymousId: v.string(),
     name: v.string(),
+    // Bound Convex Auth subject (stable per browser, anonymous sign-in).
+    // All mutations verify the caller's identity matches this subject.
+    // Unset only for rows created before auth; claimed on first authed use.
+    authSubject: v.optional(v.string()),
     // Temporary role flag until authenticated Convex identities are wired in.
     role: v.optional(v.union(v.literal("admin"), v.literal("player"))),
     // Base stats
@@ -108,6 +113,7 @@ export default defineSchema({
     lastUpdated: v.number(),
   })
     .index("by_anonymousId", ["anonymousId"])
+    .index("by_authSubject", ["authSubject"])
     .index("by_createdAt", ["createdAt"]),
 
   playerUpgrades: defineTable({
@@ -863,4 +869,32 @@ export default defineSchema({
   })
     .index("by_playerId", ["playerId"])
     .index("by_playerId_and_nodeId", ["playerId", "nodeId"]),
+
+  // Server-authoritative manual boss fights. The client renders HP bars and
+  // sends intents (start/strike); all damage rolls and win/loss settlement
+  // happen here, so a forged `won: true` can never mint rewards.
+  bossSessions: defineTable({
+    playerId: v.id("players"),
+    bossId: v.string(),
+    tier: v.number(),
+    monsterHp: v.number(),
+    monsterMaxHp: v.number(),
+    monsterAttack: v.number(),
+    monsterAttackSpeed: v.number(),
+    playerHp: v.number(),
+    playerMaxHp: v.number(),
+    settlementKey: v.string(),
+    status: v.union(
+      v.literal("open"),
+      v.literal("won"),
+      v.literal("lost")
+    ),
+    strikes: v.number(),
+    startedAt: v.number(),
+    lastStrikeAt: v.number(),
+  })
+    .index("by_playerId_and_status", ["playerId", "status"])
+    .index("by_settlementKey", ["settlementKey"]),
+
+  ...authTables,
 });

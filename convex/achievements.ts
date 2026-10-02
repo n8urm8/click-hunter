@@ -1,4 +1,5 @@
 import { mutation, query } from "./_generated/server";
+import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
 
 /**
@@ -11,6 +12,7 @@ export const unlockAchievement = mutation({
   },
   async handler(ctx, args) {
     const { playerId, achievementId } = args;
+    await requirePlayer(ctx, playerId);
 
     // Check if already unlocked
     const existing = await ctx.db
@@ -44,6 +46,7 @@ export const unlockAchievement = mutation({
 export const getPlayerAchievements = query({
   args: { playerId: v.id("players") },
   async handler(ctx, args) {
+    await requirePlayerRead(ctx, args.playerId);
     const unlockedAchievements = await ctx.db
       .query("playerAchievements")
       .withIndex("by_playerId")
@@ -81,29 +84,37 @@ export const checkAchievementConditions = mutation({
     }),
   },
   async handler(ctx, args) {
+    const player = await requirePlayer(ctx, args.playerId);
+    // Server row wins over client claims: achievements are cosmetic, but
+    // there is no reason to let callers self-assert their own stats.
+    const { maxTierReached, totalExperience, rebirthCount } = {
+      maxTierReached: player.maxTierReached ?? player.currentTier,
+      totalExperience: player.totalExperience,
+      rebirthCount: player.rebirthCount,
+    };
     const conditions: { achievementId: string; unlocked: boolean }[] = [];
 
     // first-kill: if totalXP > 0
     conditions.push({
       achievementId: "first-kill",
-      unlocked: args.totalExperience > 0,
+      unlocked: totalExperience > 0,
     });
 
     // tier-5, tier-10, tier-20
-    conditions.push({ achievementId: "tier-5", unlocked: args.maxTierReached >= 5 });
-    conditions.push({ achievementId: "tier-10", unlocked: args.maxTierReached >= 10 });
-    conditions.push({ achievementId: "tier-20", unlocked: args.maxTierReached >= 20 });
+    conditions.push({ achievementId: "tier-5", unlocked: maxTierReached >= 5 });
+    conditions.push({ achievementId: "tier-10", unlocked: maxTierReached >= 10 });
+    conditions.push({ achievementId: "tier-20", unlocked: maxTierReached >= 20 });
 
     // first-rebirth: if rebirthCount > 0
     conditions.push({
       achievementId: "first-rebirth",
-      unlocked: args.rebirthCount > 0,
+      unlocked: rebirthCount > 0,
     });
 
     // totalXP:10000
     conditions.push({
       achievementId: "tier-100-xp",
-      unlocked: args.totalExperience >= 10000,
+      unlocked: totalExperience >= 10000,
     });
 
     // Unlock any that should be unlocked

@@ -88,6 +88,13 @@ export type LootSummary = {
   quantity: number;
   pending: number;
   purpose: "augmentation" | "boss-catalyst";
+  // Stable icon-resolution fields. itemId above is a Convex document id
+  // (opaque, substring matching on it is meaningless), so the client resolves
+  // icons from these instead. Optional so loot summaries recorded before this
+  // field existed still validate; clients fall back to itemName matching.
+  itemSlug?: string;
+  itemFamily?: string;
+  category?: string;
 };
 
 export type CombatSettlement = {
@@ -117,15 +124,14 @@ function readNonNegativeNumber(value: unknown, fallback: number) {
 }
 
 export async function getActiveEventMultipliers(ctx: MutationCtx, now: number) {
-  const events = await ctx.db
+  // Indexed range on startTime (events already started), then wall-clock
+  // endTime check in JS. Avoids the prior full-table filter() scan while
+  // staying correct even if the maintained isActive flag goes stale.
+  const candidates = await ctx.db
     .query("gameEvents")
-    .filter((q) =>
-      q.and(
-        q.lte(q.field("startTime"), now),
-        q.gt(q.field("endTime"), now)
-      )
-    )
-    .collect();
+    .withIndex("by_startTime", (q) => q.lte("startTime", now))
+    .take(100);
+  const events = candidates.filter((event) => event.endTime > now);
   let goldMultiplier = 1;
   let experienceMultiplier = 1;
   for (const event of events) {
@@ -254,6 +260,9 @@ async function resolveLoot(
         quantity,
         pending: grant.pending,
         purpose: entry.purpose,
+        itemSlug: item.itemId,
+        itemFamily: item.itemFamily,
+        category: item.category,
       });
     }
     await ctx.db.insert("lootAwards", {
@@ -302,6 +311,12 @@ export async function settleCombatFight(
   if (!args.settlementKey.trim()) {
     throw new Error("Fight settlement key is required");
   }
+  // Keys are namespaced per player (`${playerId}:...`). Without this, any
+  // caller can pre-claim another player's predictable key and force their
+  // later settlement to return as a duplicate with no rewards.
+  if (!args.settlementKey.startsWith(`${args.playerId}:`)) {
+    throw new Error("Fight settlement key must belong to the player");
+  }
   if (!Number.isSafeInteger(args.tier) || args.tier < 1) {
     throw new Error("Fight tier must be a positive integer");
   }
@@ -343,12 +358,16 @@ export async function settleCombatFight(
         existing.quantity += award.quantity;
         continue;
       }
+      const awardItem = await ctx.db.get(award.itemId);
       loot.push({
         itemId: award.itemId,
-        itemName: (await ctx.db.get(award.itemId))?.name ?? "Unknown item",
+        itemName: awardItem?.name ?? "Unknown item",
         quantity: award.quantity,
         pending: pendingByItemId.get(award.itemId) ?? 0,
         purpose,
+        itemSlug: awardItem?.itemId,
+        itemFamily: awardItem?.itemFamily,
+        category: awardItem?.category,
       });
     }
     return {

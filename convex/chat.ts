@@ -1,7 +1,12 @@
 import { mutation, query } from "./_generated/server";
+import { requirePlayerRead as requireChannelOwner } from "./playerAuth";
 import { v } from "convex/values";
+import { components } from "./_generated/api";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+
+const rateLimiter = new RateLimiter(components.rateLimiter, {});
 
 const WORLD_CHANNEL_ID = "world";
 const MAX_CHAT_MESSAGE_LENGTH = 280;
@@ -60,6 +65,11 @@ async function resolveChannel(
     throw new Error(`Unsupported chat channel: ${channelType}`);
   }
 
+  // NOTE: channelId is derived from the caller-supplied playerId, so the
+  // caller is a participant by construction. True impersonation resistance
+  // (caller A reading A+B's thread by passing A's id) requires auth
+  // identity; until then this only guarantees the pair exists.
+
   if (!recipientId) {
     throw new Error("A private chat recipient is required");
   }
@@ -93,6 +103,7 @@ export const listMessages = query({
       args.channelType,
       args.recipientId
     );
+    await requireChannelOwner(ctx, args.playerId);
 
     const messages = await ctx.db
       .query("chatMessages")
@@ -111,7 +122,7 @@ export const listPrivateChats = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    await getPlayerOrThrow(ctx, playerId);
+    await requireChannelOwner(ctx, playerId);
     const [sentMessages, receivedMessages, readReceipts] = await Promise.all([
       ctx.db
         .query("chatMessages")
@@ -194,6 +205,7 @@ export const markPrivateChatRead = mutation({
       "private",
       args.recipientId
     );
+    await requireChannelOwner(ctx, args.playerId);
     const now = Date.now();
     const existingReceipt = await ctx.db
       .query("chatReadReceipts")
@@ -244,6 +256,14 @@ export const sendMessage = mutation({
       args.channelType,
       args.recipientId
     );
+    await requireChannelOwner(ctx, args.playerId);
+    const chatStatus = await rateLimiter.limit(ctx, "chatMessage", {
+      key: args.playerId,
+      config: { kind: "token bucket", rate: 5, period: 10_000, capacity: 5 },
+    });
+    if (!chatStatus.ok) {
+      throw new Error("You are sending messages too fast. Slow down.");
+    }
     const now = Date.now();
     const messageId = await ctx.db.insert("chatMessages", {
       channelType: channel.channelType,

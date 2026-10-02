@@ -1,5 +1,6 @@
 import { useAtom } from "jotai";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { anonymousIdAtom } from "~/store/gameStore";
 import {
   type PlayerWithDerivedStats,
@@ -67,7 +68,16 @@ function GateShell({ message, isError = false }: { message: string; isError?: bo
 
 export function PlayerGate({ children }: PlayerGateProps) {
   const [anonymousId] = useAtom(anonymousIdAtom);
-  const player = usePlayer(anonymousId);
+  const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
+  const { signIn } = useAuthActions();
+  // Frictionless identity: anonymous sign-in on first visit. Same UX as
+  // before (type a name, play) with a server-issued session behind it.
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      void signIn("anonymous");
+    }
+  }, [authLoading, isAuthenticated, signIn]);
+  const player = usePlayer(isAuthenticated);
   const createPlayer = useCreatePlayer();
   const chooseStarter = useChooseStarter();
   const [isCreating, setIsCreating] = useState(false);
@@ -104,6 +114,10 @@ export function PlayerGate({ children }: PlayerGateProps) {
       setIsChoosing(false);
     }
   };
+
+  if (authLoading || !isAuthenticated) {
+    return <GateShell message="Signing in..." />;
+  }
 
   if (player.isPending) {
     return <GateShell message="Loading your character..." />;

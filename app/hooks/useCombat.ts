@@ -7,8 +7,9 @@ import {
   respawnTimerAtom,
   eventTrackerAtom,
 } from "~/store/gameStore";
-import { useRecordFight } from "./usePlayer";
+import { useCheckBossFight } from "./useBossFight";
 import { logInfo, logError } from "~/lib/logger";
+import type { Id } from "../../convex/_generated/dataModel";
 
 /**
  * Hook to manage monster attacks, defeat handling, and respawn timing.
@@ -19,10 +20,11 @@ export function useCombat(player: any, respawnTimeMs: number) {
   const [fightPhase, setFightPhase] = useAtom(inFightPhaseAtom);
   const [, setRespawnTimer] = useAtom(respawnTimerAtom);
   const [, setEventTracker] = useAtom(eventTrackerAtom);
-  const recordFight = useRecordFight();
+  const checkBossFight = useCheckBossFight();
   const currentFightRef = useRef(currentFight);
   const fightPhaseRef = useRef(fightPhase);
   const respawnTimeRef = useRef(respawnTimeMs);
+  const defeatInProgressRef = useRef(false);
 
   // Keep timer callbacks pointed at the latest fight state without restarting
   // the monster's attack schedule on every player hit.
@@ -30,78 +32,69 @@ export function useCombat(player: any, respawnTimeMs: number) {
   fightPhaseRef.current = fightPhase;
   respawnTimeRef.current = respawnTimeMs;
 
-  // Monster attack interval - convert attackSpeed (attacks/sec) to interval in ms
+  // Monster pressure poll: the server applies time-based monster damage and
+  // declares defeat. The client only renders the returned HP — it never
+  // decides death locally, so stalling clicks can't dodge a lethal monster.
   useEffect(() => {
     if (
       !currentFight ||
-      fightPhase !== "fighting" ||
-      currentFight.monsterHp <= 0
+      !currentFight.sessionId ||
+      fightPhase !== "fighting"
     ) {
       return;
     }
-
-    // Convert attacks per second to milliseconds between attacks
-    const interval = Math.max(500, 1000 / currentFight.monsterAttackSpeed);
-
-    logInfo(`Monster attack interval: ${interval}ms (${currentFight.monsterAttackSpeed} attacks/sec)`);
+    const sessionId = currentFight.sessionId;
 
     const timer = setInterval(() => {
       const fight = currentFightRef.current;
-      if (!fight || fightPhaseRef.current !== "fighting" || fight.monsterHp <= 0) {
-        clearInterval(timer);
+      if (
+        !fight ||
+        fight.sessionId !== sessionId ||
+        fightPhaseRef.current !== "fighting" ||
+        defeatInProgressRef.current
+      ) {
         return;
       }
 
-      // Monster damage comes from its tier-scaled attack stat.
-      const baseDamage = Math.max(
-        1,
-        Math.ceil(fight.monsterAttack ?? fight.monsterTier * 3)
-      );
-      const variance = Math.floor(Math.random() * (baseDamage / 2));
-      const damage = baseDamage + variance;
-
-      setPlayerHp((prev) => {
-        const newHp = Math.max(0, prev - damage);
-
-        logInfo(`Player took ${damage} damage. HP: ${prev} -> ${newHp}`);
-
-        if (newHp <= 0) {
-          setFightPhase("defeat");
-          handleDefeat();
+      void (async () => {
+        try {
+          const state = await checkBossFight({
+            playerId: player._id,
+            sessionId: sessionId as Id<"bossSessions">,
+          });
+          if (
+            !currentFightRef.current ||
+            currentFightRef.current.sessionId !== sessionId ||
+            fightPhaseRef.current !== "fighting"
+          ) {
+            return;
+          }
+          if (state.changed) {
+            setPlayerHp(state.playerHp);
+          }
+          if (state.status === "lost") {
+            handleDefeat();
+          }
+        } catch (error) {
+          logError("Failed to sync boss fight", error as Error);
         }
-
-        return newHp;
-      });
-    }, interval);
+      })();
+    }, 1000);
 
     return () => clearInterval(timer);
   }, [
-    currentFight?.monsterAttackSpeed,
-    currentFight?.monsterTier,
+    currentFight?.sessionId,
     fightPhase,
     setPlayerHp,
     setFightPhase,
   ]);
 
   const handleDefeat = async () => {
-    if (!currentFight) return;
+    if (!currentFight || defeatInProgressRef.current) return;
+    defeatInProgressRef.current = true;
 
     try {
-      // Record loss
-      await recordFight({
-        playerId: player._id,
-        monsterTier: currentFight.monsterTier,
-        monsterType: currentFight.monsterType,
-        isBoss: currentFight.isBoss,
-        won: false,
-        ...(currentFight.monsterZone === undefined
-          ? {}
-          : { monsterZone: currentFight.monsterZone }),
-        goldEarned: 0,
-        experienceEarned: 0,
-        settlementKey: currentFight.settlementKey,
-      });
-
+      // The loss was already recorded server-side by strikeBoss/checkBossFight.
       logInfo(`Fight lost against tier ${currentFight.monsterTier} monster`);
 
       // Set defeat event tracker
@@ -116,9 +109,11 @@ export function useCombat(player: any, respawnTimeMs: number) {
       setTimeout(() => {
         setCurrentFight(null);
         setEventTracker({ type: "idle" });
+        defeatInProgressRef.current = false;
       }, 500);
     } catch (error) {
       logError("Failed to record defeat", error as Error);
+      defeatInProgressRef.current = false;
     }
   };
 

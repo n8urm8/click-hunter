@@ -25,7 +25,7 @@ test("player stats and the character summary retain server equipment calculation
       },
     },
   });
-  const player = usePlayer("hunter").data;
+  const player = usePlayer().data;
   expect(player).toMatchObject({
     autoAttackEnabled: true, attackSpeed: 0.325, dex: 2, level: 5, attack: 7.2,
   });
@@ -38,6 +38,6 @@ test("player stats and the character summary retain server equipment calculation
 test("player query retains loading and missing-player states", () => {
   for (const data of [undefined, null]) {
     mocks.useQuery.mockReturnValue({ data, isPending: data === undefined });
-    expect(usePlayer("hunter").data).toBe(data);
+    expect(usePlayer().data).toBe(data);
   }
 });
