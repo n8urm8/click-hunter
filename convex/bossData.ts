@@ -1,4 +1,5 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { ELEMENT_VALUES, type ElementKind } from "./itemTypes";
 
 const BOSS_NAME_ADJECTIVES = [
   "Ashen",
@@ -99,6 +100,14 @@ export async function getTierScaleMultiplier(ctx: DatabaseCtx) {
 
 export function getTierScale(tier: number, tierMultiplier: number) {
   return Math.pow(tierMultiplier, tier - 1);
+}
+
+/**
+ * Element dealt by a tier's boss. Same cycle as augmentation imbues, so
+ * tier-N armor infusion wards tier-N boss hits.
+ */
+export function bossElementForTier(tier: number): ElementKind {
+  return ELEMENT_VALUES[((tier - 1) % ELEMENT_VALUES.length + ELEMENT_VALUES.length) % ELEMENT_VALUES.length];
 }
 
 export function scaleBossStat(value: number, multiplier: number) {

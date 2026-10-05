@@ -7,9 +7,11 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { Doc } from "./_generated/dataModel";
 import { readPlayerCombatProfile } from "./combat";
 import { settleCombatFight } from "./loot";
+import { consumeBossKey } from "./infusion";
 import {
   getTierScale,
   getTierScaleMultiplier,
+  bossElementForTier,
   scaleBossStat,
 } from "./bossData";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
@@ -57,9 +59,9 @@ function rollPlayerHit(attack: number, critChance: number, critMultiplier: numbe
   };
 }
 
-function rollMonsterHit(monsterAttack: number) {
+function rollMonsterHit(monsterAttack: number, ward = 0) {
   const base = Math.max(1, Math.ceil(monsterAttack));
-  return base + Math.floor(Math.random() * (base / 2));
+  return Math.max(0, base + Math.floor(Math.random() * (base / 2)) - ward);
 }
 
 async function applyPendingMonsterDamage(
@@ -74,9 +76,16 @@ async function applyPendingMonsterDamage(
     MAX_MONSTER_HITS_PER_CALL,
     Math.floor(elapsedMs / intervalMs)
   );
+  // Attuned armor augments ward matching-element boss hits.
+  const ward =
+    typeof session.monsterWard === "number" &&
+    Number.isFinite(session.monsterWard) &&
+    session.monsterWard > 0
+      ? session.monsterWard
+      : 0;
   let playerHp = session.playerHp;
   for (let i = 0; i < hits; i += 1) {
-    playerHp -= rollMonsterHit(monsterAttack);
+    playerHp -= rollMonsterHit(monsterAttack, ward);
     if (playerHp <= 0) break;
   }
   return { playerHp: Math.max(0, Math.ceil(playerHp)), hits };
@@ -88,6 +97,7 @@ function toClientState(session: BossSession) {
     settlementKey: session.settlementKey,
     monsterHp: session.monsterHp,
     monsterMaxHp: session.monsterMaxHp,
+    monsterElement: session.monsterElement ?? null,
     playerHp: session.playerHp,
     playerMaxHp: session.playerMaxHp,
     strikes: session.strikes,
@@ -140,6 +150,15 @@ export const startBossFight = mutation({
       throw new Error("Boss is not configured for this tier");
     }
 
+    // Boss keys are consumed on start, even if the attempt is abandoned.
+    try {
+      await consumeBossKey(ctx, playerId, tier);
+    } catch (e) {
+      throw new Error(
+        `Requires 1x Tier ${tier} Boss Key to challenge this boss`
+      );
+    }
+
     // One open session at a time; stale opens never settled anything.
     const stale = await ctx.db
       .query("bossSessions")
@@ -152,7 +171,9 @@ export const startBossFight = mutation({
     }
 
     const monster = monsterDerivedStats(boss);
-    const { combatStats } = await readPlayerCombatProfile(ctx, player, Date.now());
+    const profile = await readPlayerCombatProfile(ctx, player, Date.now());
+    const { combatStats, ward } = profile;
+    const bossElement = bossElementForTier(tier);
     const now = Date.now();
     const sessionId = await ctx.db.insert("bossSessions", {
       playerId,
@@ -162,6 +183,8 @@ export const startBossFight = mutation({
       monsterMaxHp: monster.maxHp,
       monsterAttack: monster.attack,
       monsterAttackSpeed: monster.attackSpeed,
+      monsterElement: bossElement,
+      monsterWard: ward[bossElement] ?? 0,
       playerHp: Math.max(1, Math.ceil(combatStats.health)),
       playerMaxHp: Math.max(1, Math.ceil(combatStats.health)),
       settlementKey: `${playerId}:boss-session:${crypto.randomUUID()}`,

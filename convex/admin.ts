@@ -2076,6 +2076,8 @@ export const createAugmentationDefinition = mutation({
     bossCatalystQuantity: v.union(v.number(), v.null()),
     effectType: v.string(),
     effectStat: v.union(itemEffectStatValidator, v.null()),
+    effectElement: v.optional(v.union(v.string(), v.null())),
+    requiresPreviousTier: v.optional(v.union(v.boolean(), v.null())),
     effectAmount: v.number(),
     experienceReward: v.optional(v.number()),
     enabled: v.boolean(),
@@ -2122,6 +2124,10 @@ export const createAugmentationDefinition = mutation({
     if (args.effectType === "stat-bonus" && args.effectStat === null) {
       throw new Error("Stat-bonus effects require an effect stat");
     }
+    const effectElement =
+      args.effectElement === null || args.effectElement === undefined
+        ? undefined
+        : requiredText(args.effectElement, "Effect element", 20);
 
     const now = Date.now();
     const id = await ctx.db.insert("augmentationDefinitions", {
@@ -2146,6 +2152,11 @@ export const createAugmentationDefinition = mutation({
       ...(bossCatalystQuantity === undefined ? {} : { bossCatalystQuantity }),
       effectType: requiredText(args.effectType, "Effect type", 100),
       ...(args.effectStat === null ? {} : { effectStat: args.effectStat }),
+      ...(effectElement === undefined ? {} : { effectElement }),
+      ...(args.requiresPreviousTier === null ||
+      args.requiresPreviousTier === undefined
+        ? {}
+        : { requiresPreviousTier: args.requiresPreviousTier }),
       effectAmount: numberAtLeast(args.effectAmount, "Effect amount", 0),
       experienceReward:
         args.experienceReward === undefined
@@ -2175,6 +2186,8 @@ export const updateAugmentationDefinition = mutation({
     bossCatalystQuantity: v.union(v.number(), v.null()),
     effectType: v.string(),
     effectStat: v.union(itemEffectStatValidator, v.null()),
+    effectElement: v.optional(v.union(v.string(), v.null())),
+    requiresPreviousTier: v.optional(v.union(v.boolean(), v.null())),
     effectAmount: v.number(),
     experienceReward: v.optional(v.number()),
     enabled: v.boolean(),
@@ -2212,6 +2225,10 @@ export const updateAugmentationDefinition = mutation({
     if (effectType === "stat-bonus" && args.effectStat === null) {
       throw new Error("Stat-bonus effects require an effect stat");
     }
+    const updateEffectElement =
+      args.effectElement === null || args.effectElement === undefined
+        ? undefined
+        : requiredText(args.effectElement, "Effect element", 20);
 
     await ctx.db.replace(existing._id, {
       augmentationId: existing.augmentationId,
@@ -2235,6 +2252,13 @@ export const updateAugmentationDefinition = mutation({
       ...(bossCatalystQuantity === undefined ? {} : { bossCatalystQuantity }),
       effectType,
       ...(args.effectStat === null ? {} : { effectStat: args.effectStat }),
+      ...(updateEffectElement === undefined
+        ? {}
+        : { effectElement: updateEffectElement }),
+      ...(args.requiresPreviousTier === null ||
+      args.requiresPreviousTier === undefined
+        ? {}
+        : { requiresPreviousTier: args.requiresPreviousTier }),
       effectAmount: numberAtLeast(args.effectAmount, "Effect amount", 0),
       experienceReward:
         args.experienceReward === undefined
@@ -2815,6 +2839,25 @@ export const saveCraftingConfig = mutation({
           : { bossCatalystQuantity }),
         effectType,
         ...(effectStat === undefined ? {} : { effectStat }),
+        ...(value.effectElement === undefined
+          ? {}
+          : {
+              effectElement: stringValue(
+                value,
+                "effectElement",
+                "Effect element",
+                20
+              ),
+            }),
+        ...(value.requiresPreviousTier === undefined
+          ? {}
+          : {
+              requiresPreviousTier: booleanValue(
+                value,
+                "requiresPreviousTier",
+                "Requires previous tier"
+              ),
+            }),
         effectAmount: numberValue(value, "effectAmount", "Effect amount", 0),
         experienceReward,
         enabled: booleanValue(value, "enabled", "Enabled"),

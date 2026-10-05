@@ -3,6 +3,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { ensureBossForTier } from "./bossData";
 import type { CombatZone } from "./zones";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
+import { grantInfusionDrops } from "./infusion";
 import { getPassiveBonuses } from "./passiveTree";
 import {
   getSkillXpRequiredForLevel,
@@ -433,6 +434,23 @@ export async function settleCombatFight(
       await recordTierProgress(ctx, player, args.tier);
     }
     const loot = await resolveLoot(ctx, args);
+    const infusionLoot = await grantInfusionDrops(ctx, {
+      playerId: args.playerId,
+      tier: args.tier,
+      won: args.won,
+      sourceType: args.sourceType,
+      sourceId: args.sourceId,
+      settlementKey: args.settlementKey,
+    });
+    for (const extra of infusionLoot) {
+      const existing = loot.find((row) => row.itemId === extra.itemId);
+      if (existing) {
+        existing.quantity += extra.quantity;
+        existing.pending += extra.pending;
+      } else {
+        loot.push({ ...extra });
+      }
+    }
     await ctx.db.insert("fightHistory", {
       playerId: args.playerId,
       settlementKey: args.settlementKey,
@@ -509,6 +527,23 @@ export async function settleCombatFight(
   }
 
   const loot = await resolveLoot(ctx, args);
+  const infusionLoot = await grantInfusionDrops(ctx, {
+    playerId: args.playerId,
+    tier: args.tier,
+    won: args.won,
+    sourceType: args.sourceType,
+    sourceId: args.sourceId,
+    settlementKey: args.settlementKey,
+  });
+  for (const extra of infusionLoot) {
+    const existing = loot.find((row) => row.itemId === extra.itemId);
+    if (existing) {
+      existing.quantity += extra.quantity;
+      existing.pending += extra.pending;
+    } else {
+      loot.push({ ...extra });
+    }
+  }
   await ctx.db.insert("fightHistory", {
     playerId: args.playerId,
     settlementKey: args.settlementKey,

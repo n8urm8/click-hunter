@@ -1531,6 +1531,12 @@ export const enqueueSkillAction = mutation({
       if (!item || item.category !== "equipment") {
         throw new Error("Only equipment can be augmented");
       }
+      const augmentDef = await ctx.db
+        .query("augmentationDefinitions")
+        .withIndex("by_augmentationId", (q) =>
+          q.eq("augmentationId", actionId)
+        )
+        .first();
       const existingAugments = await ctx.db
         .query("playerItemAugments")
         .withIndex("by_playerItemId", (q) =>
@@ -1543,6 +1549,7 @@ export const enqueueSkillAction = mutation({
       ]);
       const queuedTasks = await getQueuedTasks(ctx, playerId, capacity);
       let reservedSlots = 0;
+      let queuedForItem = false;
       for (const task of [activeTask, ...queuedTasks]) {
         if (
           !task ||
@@ -1556,9 +1563,38 @@ export const enqueueSkillAction = mutation({
         if (task.payload.actionId === actionId) {
           throw new Error("That augmentation is already queued for this item");
         }
+        queuedForItem = true;
         reservedSlots += 1;
       }
-      if (existingAugments.length + reservedSlots >= (item.augmentSlots ?? 1)) {
+      if (augmentDef?.requiresPreviousTier === true) {
+        if (augmentDef.tier > 1) {
+          const predecessor = existingAugments.find(
+            (augment) => (augment.tier ?? 0) === augmentDef.tier - 1
+          );
+          if (!predecessor) {
+            throw new Error(
+              `That augmentation requires a tier ${augmentDef.tier - 1} augment first`
+            );
+          }
+          // The predecessor is replaced on success, freeing its slot.
+          if (queuedForItem) {
+            throw new Error(
+              "Finish the queued augmentation for this item first"
+            );
+          }
+          if (existingAugments.length - 1 >= (item.augmentSlots ?? 1)) {
+            throw new Error("That equipment has no open augmentation slots");
+          }
+        } else if (
+          existingAugments.length + reservedSlots >=
+          (item.augmentSlots ?? 1)
+        ) {
+          throw new Error("That equipment has no open augmentation slots");
+        }
+      } else if (
+        existingAugments.length + reservedSlots >=
+        (item.augmentSlots ?? 1)
+      ) {
         throw new Error("That equipment has no open augmentation slots");
       }
     }

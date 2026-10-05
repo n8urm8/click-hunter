@@ -5,6 +5,7 @@ import { Card } from "~/components/ui/card";
 import { usePlayerInventory } from "~/hooks/useInventory";
 import { useEnqueueSkillAction, useTaskQueue } from "~/hooks/useTasks";
 import { useSkillPanel } from "~/hooks/useSkills";
+import { formatPercent, infusionSuccessChance } from "~/lib/infusion";
 import {
   Tabs,
   TabsContent,
@@ -103,7 +104,7 @@ function isCompatibleEquipment(
   augmentation: AugmentationDefinition
 ) {
   const item = ownedItem.item;
-  return (
+  const basic =
     item.category === "equipment" &&
     (item.augmentSlots ?? 1) > ownedItem.augments.length &&
     (augmentation.baseItemFamily === undefined ||
@@ -114,8 +115,20 @@ function isCompatibleEquipment(
       )) &&
     !ownedItem.augments.some(
       (applied) => applied.augmentationId === augmentation.augmentationId
-    )
-  );
+    );
+  if (!basic) return false;
+  if (augmentation.requiresPreviousTier === true) {
+    // Chained lines replace in place: tier N needs the tier N-1 augment,
+    // and the predecessor frees its slot.
+    if (augmentation.tier <= 1) return true;
+    const predecessor = ownedItem.augments.find(
+      (applied) => (applied.tier ?? 0) === augmentation.tier - 1
+    );
+    if (!predecessor) return false;
+    const occupied = ownedItem.augments.length - 1;
+    return occupied < (item.augmentSlots ?? 1);
+  }
+  return true;
 }
 
 function SkillSummary({
@@ -578,6 +591,21 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
               Base action {formatDuration(baseActionDurationMs)} · +
               {recipe.experienceReward} XP
             </p>
+            {skill.skillId === "infusion" && data.infusionRates && (
+              <p className="mt-1 text-[11px] text-gold-light">
+                Infusion success{" "}
+                {formatPercent(
+                  infusionSuccessChance(
+                    state?.level ?? 1,
+                    recipe.tier,
+                    data.infusionRates
+                  )
+                )}{" "}
+                at Infusion level {state?.level ?? 1} · failure burns the
+                materials for{" "}
+                {Math.round(data.infusionRates.failXpPercent * 100)}% XP
+              </p>
+            )}
             {missingIngredients.length > 0 && (
               <p className="mt-1 text-[11px] text-blood-light">
                 Missing:{" "}
@@ -761,6 +789,9 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
               {augmentation.effectStat
                 ? ` · ${augmentation.effectStat.toUpperCase()}`
                 : ""}
+              {augmentation.effectElement
+                ? ` · ${augmentation.effectElement}`
+                : ""}
               {augmentation.effectAmount > 0
                 ? ` +${augmentation.effectAmount}`
                 : ""}
@@ -772,6 +803,28 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
               )}{" "}
               · +{augmentation.experienceReward} XP
             </p>
+            {skill.skillId === "infusion" && data.infusionRates && (
+              <p className="mt-1 text-[11px] text-gold-light">
+                Infusion success{" "}
+                {formatPercent(
+                  infusionSuccessChance(
+                    state?.level ?? 1,
+                    augmentation.tier,
+                    data.infusionRates,
+                    "augment"
+                  )
+                )}{" "}
+                at Infusion level {state?.level ?? 1} · failure burns the
+                materials for{" "}
+                {Math.round(data.infusionRates.failXpPercent * 100)}% XP
+              </p>
+            )}
+            {augmentation.requiresPreviousTier === true && (
+              <p className="mt-1 text-[11px] text-gold-light">
+                Chained: needs the tier {augmentation.tier - 1} augment
+                applied to the same item (replaced on success).
+              </p>
+            )}
             {!unlocked && (
               <p className="mt-1 text-[11px] text-blood-light">
                 Requires {skill.name} level {tier?.requiredLevel ?? augmentation.tier}

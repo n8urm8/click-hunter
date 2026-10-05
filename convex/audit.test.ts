@@ -124,10 +124,44 @@ test("forged boss wins settle nothing; server strikes do", async () => {
   })).rejects.toThrow("strikeBoss");
   expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 0 });
 
-  const session = await t.mutation(api.bossFights.startBossFight, {
+  const session = await t.run(async (ctx) => {
+    const now = Date.now();
+    const keyId =
+      (
+        await ctx.db
+          .query("items")
+          .withIndex("by_itemId", (q) => q.eq("itemId", "boss-key-tier-1"))
+          .first()
+      )?._id ??
+      (await ctx.db.insert("items", {
+        itemId: "boss-key-tier-1",
+        name: "Tier 1 Boss Key",
+        category: "crafting",
+        description: "Test key",
+        stackable: true,
+        maxStackSize: 25,
+        allowedEquipmentSlots: [],
+        rarityLevel: 10,
+        itemFamily: "boss-key",
+        craftingSkillId: "infusion",
+        craftingTier: 1,
+        createdAt: now,
+        updatedAt: now,
+      }));
+    await ctx.db.insert("playerItems", {
+      playerId,
+      itemId: keyId,
+      quantity: 1,
+      acquiredAt: now,
+      updatedAt: now,
+    });
+    return null;
+  });
+  void session;
+  const fightSession = await t.mutation(api.bossFights.startBossFight, {
     playerId, tier: 1,
   });
-  expect(session.monsterHp).toBeGreaterThan(0);
+  expect(fightSession.monsterHp).toBeGreaterThan(0);
 
   // Grind through server-validated strikes (cooldown-gated).
   let status = "open";
@@ -136,7 +170,7 @@ test("forged boss wins settle nothing; server strikes do", async () => {
     status = (
       await t.mutation(api.bossFights.strikeBoss, {
         playerId,
-        sessionId: session.sessionId,
+        sessionId: fightSession.sessionId,
       })
     ).status;
   }
@@ -150,7 +184,7 @@ test("forged boss wins settle nothing; server strikes do", async () => {
   // Re-reporting the same victory is an idempotent duplicate, not double pay.
   const again = await t.mutation(api.upgrades.recordFight, {
     playerId, monsterTier: 1, monsterType: "boss1", isBoss: true, won: true,
-    sessionId: session.sessionId,
+    sessionId: fightSession.sessionId,
   });
   expect(again.duplicate).toBe(true);
   expect((await t.run((ctx) => ctx.db.get(playerId)))?.gold).toBe(gold);

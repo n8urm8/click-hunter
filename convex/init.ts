@@ -12,6 +12,7 @@ import {
 } from "./bossData";
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
+import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 import {
@@ -29,15 +30,15 @@ async function seedMonsters(ctx: MutationCtx) {
   if (existing) return; // Already seeded
 
   const monsters = [
-    { type: "rat",       name: "Rat",       str: 2,  dex: 4, int: 1, luk: 2, con: 2, goldDrop: 10,  experienceReward: 5,  baseMsPerAttack: 2000, strength: 5   },
-    { type: "goblin",    name: "Goblin",    str: 3,  dex: 3, int: 2, luk: 3, con: 3, goldDrop: 15,  experienceReward: 8,  baseMsPerAttack: 2000, strength: 15  },
-    { type: "orc",       name: "Orc",       str: 4,  dex: 2, int: 2, luk: 1, con: 4, goldDrop: 20,  experienceReward: 12, baseMsPerAttack: 2000, strength: 25  },
-    { type: "troll",     name: "Troll",     str: 6,  dex: 3, int: 3, luk: 2, con: 6, goldDrop: 50,  experienceReward: 25, baseMsPerAttack: 2000, strength: 40  },
-    { type: "wyvern",    name: "Wyvern",    str: 5,  dex: 5, int: 4, luk: 3, con: 5, goldDrop: 60,  experienceReward: 30, baseMsPerAttack: 2000, strength: 50  },
-    { type: "dragon",    name: "Dragon",    str: 7,  dex: 4, int: 5, luk: 2, con: 7, goldDrop: 75,  experienceReward: 40, baseMsPerAttack: 2000, strength: 60  },
-    { type: "demon",     name: "Demon",     str: 9,  dex: 6, int: 6, luk: 4, con: 8, goldDrop: 150, experienceReward: 60, baseMsPerAttack: 2000, strength: 75  },
-    { type: "nightmare", name: "Nightmare", str: 8,  dex: 8, int: 7, luk: 5, con: 7, goldDrop: 175, experienceReward: 75, baseMsPerAttack: 2000, strength: 85  },
-    { type: "archfiend", name: "Archfiend", str: 10, dex: 7, int: 8, luk: 3, con: 9, goldDrop: 200, experienceReward: 90, baseMsPerAttack: 2000, strength: 100 },
+    { type: "rat",       name: "Rat",       element: "earth", str: 2,  dex: 4, int: 1, luk: 2, con: 2, goldDrop: 10,  experienceReward: 5,  baseMsPerAttack: 2000, strength: 5   },
+    { type: "goblin",    name: "Goblin",    element: "wind",  str: 3,  dex: 3, int: 2, luk: 3, con: 3, goldDrop: 15,  experienceReward: 8,  baseMsPerAttack: 2000, strength: 15  },
+    { type: "orc",       name: "Orc",       element: "fire",  str: 4,  dex: 2, int: 2, luk: 1, con: 4, goldDrop: 20,  experienceReward: 12, baseMsPerAttack: 2000, strength: 25  },
+    { type: "troll",     name: "Troll",     element: "water", str: 6,  dex: 3, int: 3, luk: 2, con: 6, goldDrop: 50,  experienceReward: 25, baseMsPerAttack: 2000, strength: 40  },
+    { type: "wyvern",    name: "Wyvern",    element: "wind",  str: 5,  dex: 5, int: 4, luk: 3, con: 5, goldDrop: 60,  experienceReward: 30, baseMsPerAttack: 2000, strength: 50  },
+    { type: "dragon",    name: "Dragon",    element: "fire",  str: 7,  dex: 4, int: 5, luk: 2, con: 7, goldDrop: 75,  experienceReward: 40, baseMsPerAttack: 2000, strength: 60  },
+    { type: "demon",     name: "Demon",     element: "dark",  str: 9,  dex: 6, int: 6, luk: 4, con: 8, goldDrop: 150, experienceReward: 60, baseMsPerAttack: 2000, strength: 75  },
+    { type: "nightmare", name: "Nightmare", element: "dark",  str: 8,  dex: 8, int: 7, luk: 5, con: 7, goldDrop: 175, experienceReward: 75, baseMsPerAttack: 2000, strength: 85  },
+    { type: "archfiend", name: "Archfiend", element: "light", str: 10, dex: 7, int: 8, luk: 3, con: 9, goldDrop: 200, experienceReward: 90, baseMsPerAttack: 2000, strength: 100 },
   ];
   for (const m of monsters) {
     await ctx.db.insert("monsters", { ...m, createdAt: Date.now() });
@@ -102,6 +103,7 @@ async function seedGameBalance(ctx: MutationCtx) {
     { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
     { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
     { ...PASSIVE_POINT_BALANCE_DEFAULT },
+    ...INFUSION_BALANCE_DEFAULTS,
   ];
   for (const e of entries) {
     await ctx.db.insert("gameBalance", { ...e, lastUpdated: Date.now() });

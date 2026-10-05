@@ -6,13 +6,14 @@
  * Safe to call multiple times — upserts existing records.
  */
 
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { requireAdmin } from "./adminAuth";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
 import {
   DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
+  bossElementForTier,
   ensureBossForTier,
   getTierScale,
   getTierScaleMultiplier,
@@ -30,6 +31,7 @@ import {
 import type { Doc, Id } from "./_generated/dataModel";
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
 import { seedForestCraftingContent } from "./forestCraftingSeed";
+import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 import { validateAllRecipeChains } from "./recipeValidation";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
@@ -46,15 +48,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function populateMonsters(ctx: MutationCtx) {
   const monsters = [
-    { type: "rat",       name: "Rat",       str: 2,  dex: 4, int: 1, luk: 2, con: 2, goldDrop: 10,  experienceReward: 5,  baseMsPerAttack: 2000, strength: 5   },
-    { type: "goblin",    name: "Goblin",    str: 3,  dex: 3, int: 2, luk: 3, con: 3, goldDrop: 15,  experienceReward: 8,  baseMsPerAttack: 2000, strength: 15  },
-    { type: "orc",       name: "Orc",       str: 4,  dex: 2, int: 2, luk: 1, con: 4, goldDrop: 20,  experienceReward: 12, baseMsPerAttack: 2000, strength: 25  },
-    { type: "troll",     name: "Troll",     str: 6,  dex: 3, int: 3, luk: 2, con: 6, goldDrop: 50,  experienceReward: 25, baseMsPerAttack: 2000, strength: 40  },
-    { type: "wyvern",    name: "Wyvern",    str: 5,  dex: 5, int: 4, luk: 3, con: 5, goldDrop: 60,  experienceReward: 30, baseMsPerAttack: 2000, strength: 50  },
-    { type: "dragon",    name: "Dragon",    str: 7,  dex: 4, int: 5, luk: 2, con: 7, goldDrop: 75,  experienceReward: 40, baseMsPerAttack: 2000, strength: 60  },
-    { type: "demon",     name: "Demon",     str: 9,  dex: 6, int: 6, luk: 4, con: 8, goldDrop: 150, experienceReward: 60, baseMsPerAttack: 2000, strength: 75  },
-    { type: "nightmare", name: "Nightmare", str: 8,  dex: 8, int: 7, luk: 5, con: 7, goldDrop: 175, experienceReward: 75, baseMsPerAttack: 2000, strength: 85  },
-    { type: "archfiend", name: "Archfiend", str: 10, dex: 7, int: 8, luk: 3, con: 9, goldDrop: 200, experienceReward: 90, baseMsPerAttack: 2000, strength: 100 },
+    { type: "rat",       name: "Rat",       element: "earth", str: 2,  dex: 4, int: 1, luk: 2, con: 2, goldDrop: 10,  experienceReward: 5,  baseMsPerAttack: 2000, strength: 5   },
+    { type: "goblin",    name: "Goblin",    element: "wind",  str: 3,  dex: 3, int: 2, luk: 3, con: 3, goldDrop: 15,  experienceReward: 8,  baseMsPerAttack: 2000, strength: 15  },
+    { type: "orc",       name: "Orc",       element: "fire",  str: 4,  dex: 2, int: 2, luk: 1, con: 4, goldDrop: 20,  experienceReward: 12, baseMsPerAttack: 2000, strength: 25  },
+    { type: "troll",     name: "Troll",     element: "water", str: 6,  dex: 3, int: 3, luk: 2, con: 6, goldDrop: 50,  experienceReward: 25, baseMsPerAttack: 2000, strength: 40  },
+    { type: "wyvern",    name: "Wyvern",    element: "wind",  str: 5,  dex: 5, int: 4, luk: 3, con: 5, goldDrop: 60,  experienceReward: 30, baseMsPerAttack: 2000, strength: 50  },
+    { type: "dragon",    name: "Dragon",    element: "fire",  str: 7,  dex: 4, int: 5, luk: 2, con: 7, goldDrop: 75,  experienceReward: 40, baseMsPerAttack: 2000, strength: 60  },
+    { type: "demon",     name: "Demon",     element: "dark",  str: 9,  dex: 6, int: 6, luk: 4, con: 8, goldDrop: 150, experienceReward: 60, baseMsPerAttack: 2000, strength: 75  },
+    { type: "nightmare", name: "Nightmare", element: "dark",  str: 8,  dex: 8, int: 7, luk: 5, con: 7, goldDrop: 175, experienceReward: 75, baseMsPerAttack: 2000, strength: 85  },
+    { type: "archfiend", name: "Archfiend", element: "light", str: 10, dex: 7, int: 8, luk: 3, con: 9, goldDrop: 200, experienceReward: 90, baseMsPerAttack: 2000, strength: 100 },
   ];
   for (const monster of monsters) {
     const existing = await ctx.db.query("monsters").withIndex("by_type", (q) => q.eq("type", monster.type)).first();
@@ -133,6 +135,7 @@ async function populateGameBalance(ctx: MutationCtx) {
     { ...PASSIVE_POINT_BALANCE_DEFAULT },
     ...SKILL_TASK_BALANCE_DEFAULTS,
     ...TASK_SYNC_BALANCE_DEFAULTS,
+    ...INFUSION_BALANCE_DEFAULTS,
   ];
   for (const entry of entries) {
     const existing = await ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", entry.key)).first();
@@ -277,6 +280,7 @@ export const getScaledBoss = query({
 
     return {
       ...boss,
+      element: bossElementForTier(args.tier),
       str: scaleBossStat(boss.str, mult),
       dex: scaleBossStat(boss.dex, mult),
       int: scaleBossStat(boss.int, mult),
@@ -476,6 +480,21 @@ export const populateAll = mutation({
 });
 
 /**
+ * Non-destructive upsert of forest crafting content (incl. infusion).
+ * Runs seedForestCraftingContent + recipe validation without wiping player
+ * data. Invoke from CLI against self-hosted:
+ * npx convex run --env-file docker/.env.selfhosted seed:upsertForestCrafting '{}'
+ */
+export const upsertForestCrafting = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    await seedForestCraftingContent(ctx);
+    await validateAllRecipeChains(ctx);
+    return { success: true };
+  },
+});
+
+/**
  * Development-only reset for the forest crafting expansion. Combat progression,
  * character stats, gold, and fight history intentionally remain untouched.
  */
@@ -493,6 +512,7 @@ export const resetForestCrafting = mutation({
       "alchemy",
       "woodworking",
       "forging",
+      "infusion",
     ]);
     const skillActionTaskIds = new Set<string>();
 

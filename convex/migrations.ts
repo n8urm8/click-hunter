@@ -22,6 +22,7 @@ import {
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 import { COMBAT_BALANCE_DEFAULTS } from "./items";
+import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
   DEFAULT_ITEM_RARITIES,
@@ -225,6 +226,46 @@ export const backfillCombatBalance = internalMutation({
       created += 1;
     }
     return { created };
+  },
+});
+
+/**
+ * Add missing infusion settings (essence/keys/enchanting) without touching
+ * live tuning. Run: npx convex run migrations:backfillInfusionBalance
+ */
+export const backfillInfusionBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let created = 0;
+    for (const entry of INFUSION_BALANCE_DEFAULTS) {
+      const existing = await ctx.db.query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key)).first();
+      if (existing) continue;
+      await ctx.db.insert("gameBalance", { ...entry, lastUpdated: Date.now() });
+      created += 1;
+    }
+    return { created };
+  },
+});
+/**
+ * Backfill tiers on applied augments from their definitions so chained
+ * lines can find predecessors. Run:
+ * npx convex run migrations:backfillPlayerItemAugmentTiers '{}'
+ */
+export const backfillPlayerItemAugmentTiers = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let updated = 0;
+    const defs = await ctx.db.query("augmentationDefinitions").collect();
+    const tierById = new Map(defs.map((def) => [def.augmentationId, def.tier]));
+    for await (const row of ctx.db.query("playerItemAugments")) {
+      if (row.tier !== undefined) continue;
+      const tier = tierById.get(row.augmentationId);
+      if (tier === undefined) continue;
+      await ctx.db.patch(row._id, { tier });
+      updated += 1;
+    }
+    return { updated };
   },
 });
 

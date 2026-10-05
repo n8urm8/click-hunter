@@ -21,6 +21,10 @@ import {
   SKILL_XP_BALANCE_DEFAULT,
 } from "./skillProgression";
 import { validateRecipeChain } from "./recipeValidation";
+import {
+  infusionSuccessFor,
+  readInfusionBalance,
+} from "./infusion";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
@@ -135,6 +139,12 @@ async function assertSkillTierUnlocked(
   const skill = await getSkillDefinition(ctx, skillId);
   if (!skill || !skill.enabled) {
     throw new Error("That skill is not configured");
+  }
+  // Infusion is never level-gated: every tier is attemptable from level 1,
+  // with success chance falling off by tier gap (see infusion.ts).
+  if (skillId === "infusion") {
+    const playerSkill = await getPlayerSkillRow(ctx, playerId, skillId);
+    return { tierDefinition: null, level: playerSkill?.level ?? 1 };
   }
   const tierDefinition = await getTierDefinition(ctx, skillId, tier);
   if (!tierDefinition || !tierDefinition.enabled) {
@@ -251,7 +261,31 @@ async function inspectAugmentationTarget(
     .query("playerItemAugments")
     .withIndex("by_playerItemId", (q) => q.eq("playerItemId", playerItemId))
     .collect();
-  if (existingAugments.length >= (item.augmentSlots ?? 1)) {
+  const chained = definition.requiresPreviousTier === true;
+  if (chained) {
+    // Chained lines climb on the same item: tier N requires the tier N-1
+    // augment already applied, which it replaces. No equipment-tier lock.
+    if (definition.tier > 1) {
+      const predecessor = existingAugments.find(
+        (augment) => (augment.tier ?? 0) === definition.tier - 1
+      );
+      if (!predecessor) {
+        return {
+          error: `That augmentation requires a tier ${definition.tier - 1} augment first`,
+        };
+      }
+      // The predecessor is replaced, so it does not occupy a slot.
+      const removable = predecessor._id;
+      const occupied = existingAugments.filter(
+        (augment) => augment._id !== removable
+      );
+      if (occupied.length >= (item.augmentSlots ?? 1)) {
+        return { error: "That equipment has no open augmentation slots" };
+      }
+    } else if (existingAugments.length >= (item.augmentSlots ?? 1)) {
+      return { error: "That equipment has no open augmentation slots" };
+    }
+  } else if (existingAugments.length >= (item.augmentSlots ?? 1)) {
     return { error: "That equipment has no open augmentation slots" };
   }
   if (
@@ -534,9 +568,14 @@ export async function prepareSkillAction(
         baseItemFamily: definition.baseItemFamily ?? null,
         allowedEquipmentSlots: definition.allowedEquipmentSlots,
         targetItemFamily: item.itemFamily ?? null,
+        tier: definition.tier,
+        requiresPreviousTier: definition.requiresPreviousTier ?? false,
         ...(definition.effectStat === undefined
           ? {}
           : { effectStat: definition.effectStat }),
+        ...(definition.effectElement === undefined
+          ? {}
+          : { effectElement: definition.effectElement }),
         effectAmount: definition.effectAmount,
         itemFamily: item.itemFamily ?? null,
       },
@@ -697,24 +736,65 @@ export async function resolveSkillTask(
   ) {
     throw new Error("Skill action has an invalid experience reward");
   }
+  const infusionSkillId = recipeSnapshot?.skillId ?? action!.skillId;
+  const rawTier =
+    recipeSnapshot?.tier ??
+    (action !== null &&
+    typeof action === "object" &&
+    "tier" in action &&
+    typeof (action as { tier: unknown }).tier === "number"
+      ? (action as { tier: number }).tier
+      : 1);
+  let infusionSucceeded = true;
+  let earnedReward = xpReward;
+  let infusionChance: number | null = null;
+  if (actionType === "crafting" && infusionSkillId === "infusion") {
+    const infusionBalance = await readInfusionBalance(ctx);
+    const infusionRow = await getPlayerSkillRow(
+      ctx,
+      task.playerId,
+      "infusion"
+    );
+    const chance = infusionSuccessFor(
+      infusionRow?.level ?? 1,
+      typeof rawTier === "number" && rawTier >= 1 ? rawTier : 1,
+      {
+        infusionBaseRate: infusionBalance.infusionBaseRate,
+        infusionFalloffPerTierGap: infusionBalance.infusionFalloffPerTierGap,
+        infusionMinRate: infusionBalance.infusionMinRate,
+        infusionMaxRate: infusionBalance.infusionMaxRate,
+      }
+    );
+    infusionChance = chance;
+    infusionSucceeded = Math.random() < chance;
+    if (!infusionSucceeded) {
+      earnedReward = Math.floor(xpReward * infusionBalance.infusionFailXpPercent);
+    }
+  }
   const xpBase = readSkillXpBase(
     await getBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key)
   );
   const { level, experience } = applySkillExperience(
     playerSkill.level,
     playerSkill.experience,
-    xpReward,
+    earnedReward,
     skill.maxLevel,
     xpBase
   );
-  const totalExperience = playerSkill.totalExperience + xpReward;
+  const totalExperience = playerSkill.totalExperience + earnedReward;
 
   const result: Record<string, unknown> = {
     actionType,
     actionId,
     skillId: recipeSnapshot?.skillId ?? action!.skillId,
-    experienceEarned: xpReward,
+    experienceEarned: earnedReward,
     level,
+    ...(infusionChance === null
+      ? {}
+      : {
+          infusionSuccessChance: infusionChance,
+          infusionSucceeded,
+        }),
   };
 
   if (actionType === "gathering") {
@@ -761,22 +841,24 @@ export async function resolveSkillTask(
       recipeSnapshot?.recipeId ??
       (action && "recipeId" in action ? action.recipeId : actionId);
     const outputSummary = [];
-    for (const output of outputs) {
-      const completion = await grantItemToInventory(ctx, {
-        playerId: task.playerId,
-        itemId: output.itemId,
-        quantity: output.quantity,
-        overflowSource: {
-          sourceType: "crafting",
-          sourceId,
-          settlementKey: completionKey,
-        },
-      });
-      outputSummary.push({
-        itemId: output.itemId,
-        quantity: output.quantity,
-        pending: completion.pending,
-      });
+    if (infusionSucceeded) {
+      for (const output of outputs) {
+        const completion = await grantItemToInventory(ctx, {
+          playerId: task.playerId,
+          itemId: output.itemId,
+          quantity: output.quantity,
+          overflowSource: {
+            sourceType: "crafting",
+            sourceId,
+            settlementKey: completionKey,
+          },
+        });
+        outputSummary.push({
+          itemId: output.itemId,
+          quantity: output.quantity,
+          pending: completion.pending,
+        });
+      }
     }
     result.outputs = outputSummary;
     if (recipeSnapshot) {
@@ -835,10 +917,13 @@ type SkillActionSnapshot = {
     name: string;
     effectType: string;
     effectStat?: SnapshotEffectStat;
+    effectElement?: string;
     effectAmount: number;
     baseItemFamily: string | null;
     allowedEquipmentSlots: string[];
     targetItemFamily: string | null;
+    tier: number;
+    requiresPreviousTier: boolean;
   };
 };
 
@@ -924,7 +1009,15 @@ function readSkillActionSnapshot(
         (slot) => typeof slot === "string"
       ) ||
       (augmentation.targetItemFamily !== null &&
-        typeof augmentation.targetItemFamily !== "string")
+        typeof augmentation.targetItemFamily !== "string") ||
+      // Tier fields are new; tasks queued before them default to legacy.
+      (augmentation.tier !== undefined &&
+        (!Number.isSafeInteger(augmentation.tier) ||
+          (augmentation.tier as number) < 1)) ||
+      (augmentation.requiresPreviousTier !== undefined &&
+        typeof augmentation.requiresPreviousTier !== "boolean") ||
+      (augmentation.effectElement !== undefined &&
+        typeof augmentation.effectElement !== "string")
     ) {
       throw new Error("Skill task has an invalid augmentation snapshot");
     }
@@ -935,10 +1028,20 @@ function readSkillActionSnapshot(
       name: augmentation.name,
       effectType: augmentation.effectType,
       ...(effectStat === undefined ? {} : { effectStat }),
+      ...(augmentation.effectElement === undefined
+        ? {}
+        : { effectElement: augmentation.effectElement as string }),
       effectAmount: augmentation.effectAmount,
       baseItemFamily: augmentation.baseItemFamily,
       allowedEquipmentSlots: augmentation.allowedEquipmentSlots,
       targetItemFamily: augmentation.targetItemFamily,
+      tier:
+        typeof augmentation.tier === "number" &&
+        Number.isSafeInteger(augmentation.tier) &&
+        (augmentation.tier as number) >= 1
+          ? (augmentation.tier as number)
+          : 1,
+      requiresPreviousTier: augmentation.requiresPreviousTier === true,
     };
   }
   return snapshot;
@@ -1028,7 +1131,23 @@ async function applyQueuedAugmentation(
       q.eq("playerItemId", augmentation.targetPlayerItemId)
     )
     .collect();
-  if (augments.length >= (item.augmentSlots ?? 1)) {
+  const chained = augmentation.requiresPreviousTier === true;
+  let predecessor: (typeof augments)[number] | null = null;
+  if (chained) {
+    if (augmentation.tier > 1) {
+      predecessor =
+        augments.find(
+          (augment) => (augment.tier ?? 0) === augmentation.tier - 1
+        ) ?? null;
+      if (!predecessor) {
+        return `That augmentation requires a tier ${augmentation.tier - 1} augment first`;
+      }
+    }
+  }
+  const occupied = predecessor
+    ? augments.filter((augment) => augment._id !== predecessor._id)
+    : augments;
+  if (occupied.length >= (item.augmentSlots ?? 1)) {
     return "That equipment has no open augmentation slots";
   }
   if (
@@ -1039,6 +1158,10 @@ async function applyQueuedAugmentation(
     return "That augmentation is already applied";
   }
 
+  if (predecessor) {
+    // Chained upgrade: the previous tier is consumed into the new one.
+    await ctx.db.delete(predecessor._id);
+  }
   await ctx.db.insert("playerItemAugments", {
     playerId,
     playerItemId: augmentation.targetPlayerItemId,
@@ -1048,6 +1171,10 @@ async function applyQueuedAugmentation(
     ...(augmentation.effectStat === undefined
       ? {}
       : { effectStat: augmentation.effectStat }),
+    ...(augmentation.effectElement === undefined
+      ? {}
+      : { effectElement: augmentation.effectElement }),
+    tier: augmentation.tier,
     effectAmount: augmentation.effectAmount,
     appliedAt: now,
   });
@@ -1149,6 +1276,40 @@ export async function advanceSkillActionTask(
   let consumedMs = 0;
   let actionCountThisCall = 0;
   let experienceThisCall = 0;
+  let successfulCraftActions = 0;
+  let successfulAugmentActions = 0;
+  let failedInfusionActions = 0;
+  let infusionAugmentFailed = false;
+  let infusionAugmentChance: number | null = null;
+  let infusionAugmentFailXpPercent = 0.5;
+  const isInfusionCraft =
+    snapshot.actionType === "crafting" && snapshot.skillId === "infusion";
+  let infusionChanceCtx: {
+    level: number;
+    tier: number;
+    baseRate: number;
+    falloff: number;
+    minRate: number;
+    maxRate: number;
+    failXpPercent: number;
+  } | null = null;
+  if (isInfusionCraft) {
+    const infusionBalance = await readInfusionBalance(ctx);
+    const infusionRow = await getPlayerSkillRow(
+      ctx,
+      task.playerId,
+      "infusion"
+    );
+    infusionChanceCtx = {
+      level: infusionRow?.level ?? 1,
+      tier: snapshot.recipe?.tier ?? 1,
+      baseRate: infusionBalance.infusionBaseRate,
+      falloff: infusionBalance.infusionFalloffPerTierGap,
+      minRate: infusionBalance.infusionMinRate,
+      maxRate: infusionBalance.infusionMaxRate,
+      failXpPercent: infusionBalance.infusionFailXpPercent,
+    };
+  }
   let currentDuration = currentActionDurationMs;
   let currentProgress = currentActionProgressMs;
   let currentXpReward = currentActionXpReward;
@@ -1235,13 +1396,54 @@ export async function advanceSkillActionTask(
       if (!snapshot.augmentation) {
         throw new Error("Augmentation task is missing its target snapshot");
       }
-      failureReason = await applyQueuedAugmentation(
-        ctx,
-        task.playerId,
-        snapshot.augmentation,
-        now
-      ) ?? undefined;
-      if (failureReason) break;
+      if (snapshot.skillId === "infusion") {
+        // Infusion augments roll like crafts: fail burns the materials for
+        // half XP but still completes the task (no failureReason).
+        // Augmentation runs a harsher base rate than key crafting.
+        const infusionBalance = await readInfusionBalance(ctx);
+        const [infusionRow, definition] = await Promise.all([
+          getPlayerSkillRow(ctx, task.playerId, "infusion"),
+          ctx.db
+            .query("augmentationDefinitions")
+            .withIndex("by_augmentationId", (q) =>
+              q.eq("augmentationId", snapshot.augmentation!.augmentationId)
+            )
+            .first(),
+        ]);
+        const chance = infusionSuccessFor(
+          infusionRow?.level ?? 1,
+          definition?.tier ?? 1,
+          {
+            infusionBaseRate: infusionBalance.augmentBaseRate,
+            infusionFalloffPerTierGap:
+              infusionBalance.infusionFalloffPerTierGap,
+            infusionMinRate: infusionBalance.infusionMinRate,
+            infusionMaxRate: infusionBalance.infusionMaxRate,
+          }
+        );
+        infusionAugmentChance = chance;
+        if (Math.random() < chance) {
+          successfulAugmentActions += 1;
+          failureReason = await applyQueuedAugmentation(
+            ctx,
+            task.playerId,
+            snapshot.augmentation,
+            now
+          ) ?? undefined;
+          if (failureReason) break;
+        } else {
+          infusionAugmentFailed = true;
+          infusionAugmentFailXpPercent = infusionBalance.infusionFailXpPercent;
+        }
+      } else {
+        failureReason = await applyQueuedAugmentation(
+          ctx,
+          task.playerId,
+          snapshot.augmentation,
+          now
+        ) ?? undefined;
+        if (failureReason) break;
+      }
     } else if (snapshot.actionType === "gathering") {
       if (!snapshot.gathering) {
         throw new Error("Gathering task is missing its output snapshot");
@@ -1263,9 +1465,38 @@ export async function advanceSkillActionTask(
     }
 
     actionCountThisCall += 1;
+    let earnedXp = currentXpReward;
+    if (infusionAugmentFailed && snapshot.actionType === "augmentation") {
+      earnedXp = Math.floor(currentXpReward * infusionAugmentFailXpPercent);
+      // Counted once: augmentation tasks complete a single action.
+      infusionAugmentFailed = false;
+      failedInfusionActions += 1;
+    } else if (
+      infusionChanceCtx !== null &&
+      snapshot.actionType === "crafting"
+    ) {
+      const chance = infusionSuccessFor(
+        infusionChanceCtx.level,
+        infusionChanceCtx.tier,
+        {
+          infusionBaseRate: infusionChanceCtx.baseRate,
+          infusionFalloffPerTierGap: infusionChanceCtx.falloff,
+          infusionMinRate: infusionChanceCtx.minRate,
+          infusionMaxRate: infusionChanceCtx.maxRate,
+        }
+      );
+      if (Math.random() < chance) {
+        successfulCraftActions += 1;
+      } else {
+        failedInfusionActions += 1;
+        earnedXp = Math.floor(currentXpReward * infusionChanceCtx.failXpPercent);
+      }
+    } else if (snapshot.actionType === "crafting") {
+      successfulCraftActions += 1;
+    }
     experienceThisCall = addSafeInteger(
       experienceThisCall,
-      currentXpReward,
+      earnedXp,
       "experience reward"
     );
     currentDuration = undefined;
@@ -1322,8 +1553,11 @@ export async function advanceSkillActionTask(
     if (!snapshot.recipe) {
       throw new Error("Crafting task is missing its output snapshot");
     }
+    const productiveActions = isInfusionCraft
+      ? successfulCraftActions
+      : actionCountThisCall;
     for (const output of snapshot.recipe.outputs) {
-      const quantity = output.quantity * actionCountThisCall;
+      const quantity = output.quantity * productiveActions;
       if (!Number.isSafeInteger(quantity)) {
         throw new Error("Crafting output quantity exceeds the supported limit");
       }
@@ -1425,6 +1659,26 @@ export async function advanceSkillActionTask(
       "total experience"
     );
     payload.outputSummary = nextOutputSummary;
+    if (isInfusionCraft) {
+      payload.infusionSucceeded = addSafeInteger(
+        typeof payload.infusionSucceeded === "number" &&
+          Number.isSafeInteger(payload.infusionSucceeded) &&
+          payload.infusionSucceeded >= 0
+          ? payload.infusionSucceeded
+          : 0,
+        successfulCraftActions,
+        "infusion succeeded"
+      );
+      payload.infusionFailed = addSafeInteger(
+        typeof payload.infusionFailed === "number" &&
+          Number.isSafeInteger(payload.infusionFailed) &&
+          payload.infusionFailed >= 0
+          ? payload.infusionFailed
+          : 0,
+        failedInfusionActions,
+        "infusion failed"
+      );
+    }
   }
 
   if (currentDuration === undefined) {
@@ -1498,6 +1752,19 @@ export async function advanceSkillActionTask(
     if (snapshot.augmentation) {
       result.augmentationId = snapshot.augmentation.augmentationId;
       result.targetPlayerItemId = snapshot.augmentation.targetPlayerItemId;
+    }
+    if (isInfusionCraft) {
+      result.infusionSucceeded = payload.infusionSucceeded ?? successfulCraftActions;
+      result.infusionFailed = payload.infusionFailed ?? failedInfusionActions;
+    } else if (
+      snapshot.actionType === "augmentation" &&
+      snapshot.skillId === "infusion"
+    ) {
+      result.infusionSucceeded = successfulAugmentActions;
+      result.infusionFailed = failedInfusionActions;
+      if (infusionAugmentChance !== null) {
+        result.infusionSuccessChance = infusionAugmentChance;
+      }
     }
     const completionKey = `${task._id}:skill`;
     const existing = await ctx.db
@@ -1727,6 +1994,7 @@ async function getSkillCatalogData(ctx: DatabaseCtx) {
     readSkillTaskMsPerXp(ctx),
   ]);
   const skillXpBase = readSkillXpBase(xpBaseValue);
+  const infusionBalance = await readInfusionBalance(ctx);
   return {
     definitions,
     tiers: visibleTiers,
@@ -1736,6 +2004,19 @@ async function getSkillCatalogData(ctx: DatabaseCtx) {
     skillXpBase,
     skillTaskMsPerXp,
     maxSkillBatchSize: MAX_SKILL_BATCH_SIZE,
+    infusionRates: {
+      baseRate: infusionBalance.infusionBaseRate,
+      augmentBaseRate: infusionBalance.augmentBaseRate,
+      falloffPerTierGap: infusionBalance.infusionFalloffPerTierGap,
+      minRate: infusionBalance.infusionMinRate,
+      maxRate: infusionBalance.infusionMaxRate,
+      failXpPercent: infusionBalance.infusionFailXpPercent,
+      keyEssenceQty: infusionBalance.bossKeyEssenceQty,
+      enchantEssenceQty: infusionBalance.enchantEssenceQty,
+      damagePerLevel: infusionBalance.enchantDamagePerLevel,
+      defensePerLevel: infusionBalance.enchantDefensePerLevel,
+      enchantLevelCap: infusionBalance.enchantLevelCap,
+    },
   };
 }
 

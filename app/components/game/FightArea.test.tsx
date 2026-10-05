@@ -7,7 +7,7 @@ import { BattleRunSettings } from "./BattleRunSettings";
 import { CombatStats } from "./CombatStats";
 import type { PlayerWithDerivedStats } from "~/hooks/usePlayer";
 import type { Id } from "../../../convex/_generated/dataModel";
-import { FightArea } from "./FightArea";
+import { FightArea, BossKeyStatus } from "./FightArea";
 
 const mocks = vi.hoisted(() => ({
   enqueue: vi.fn(async () => ({ _id: "queued-battle" })),
@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   settings: { mode: "until-stopped", target: "10" },
   usedSlots: 0,
   queryState: "ready",
+  keyRows: [] as Array<{ item: { itemId: string }; quantity: number }>,
   respawnTimer: 0,
   active: null as Record<string, unknown> | null,
   cancel: vi.fn(async () => null),
@@ -85,6 +86,12 @@ vi.mock("~/hooks/useBossFight", () => ({
   useStrikeBoss: () => vi.fn(),
   useCheckBossFight: () => vi.fn(),
 }));
+vi.mock("~/hooks/useInventory", () => ({
+  usePlayerInventory: () => ({
+    data: { inventory: mocks.keyRows },
+    isPending: false,
+  }),
+}));
 vi.mock("~/hooks/useTaskClock", () => ({ useTaskClock: () => 0 }));
 vi.mock("./ActiveFight", () => ({ ActiveFight: () => null }));
 vi.mock("~/components/ui/button", () => ({
@@ -107,6 +114,7 @@ beforeEach(() => {
   mocks.settings = { mode: "until-stopped", target: "10" };
   mocks.usedSlots = 0;
   mocks.active = null;
+  mocks.keyRows = [];
   mocks.queryState = "ready";
   mocks.respawnTimer = 0;
 });
@@ -247,4 +255,17 @@ test("recovery keeps stats visible and disables new hunt controls", () => {
   expect(markup).toContain("Recovering after defeat. Ready in 5s.");
   expect(findStartButton(screen, "Recovering")?.props.disabled).toBe(true);
   expect(markup.match(/<fieldset disabled=""/g)).toHaveLength(2);
+});
+
+test("boss key status shows count or the infusion hint", () => {
+  const empty = renderToStaticMarkup(
+    <BossKeyStatus playerId={player._id} tier={3} />
+  );
+  expect(empty).toContain("No Boss Key T3");
+  expect(empty).toContain("Skills → Infusion");
+  mocks.keyRows = [{ item: { itemId: "boss-key-tier-3" }, quantity: 2 }];
+  const stocked = renderToStaticMarkup(
+    <BossKeyStatus playerId={player._id} tier={3} />
+  );
+  expect(stocked).toContain("Boss Key T3 ×2");
 });

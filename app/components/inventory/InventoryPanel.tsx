@@ -12,12 +12,14 @@ import {
   useClaimAllPendingRewards,
   useClaimPendingReward,
   useCombatBoost,
+  useEnchantEquipment,
   useEquipItem,
   usePlayerInventory,
   useSkillBoost,
   useUnequipItem,
 } from "~/hooks/useInventory";
 import { useSkillPanel } from "~/hooks/useSkills";
+import { formatPercent, infusionSuccessChance } from "~/lib/infusion";
 import { useEnqueueSkillAction } from "~/hooks/useTasks";
 import { ItemIcon } from "~/components/game/ItemIcon";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
@@ -39,12 +41,17 @@ type OwnedItem = {
   _id: Id<"playerItems">;
   itemId: Id<"items">;
   quantity: number;
+  enchantLevel?: number;
   acquiredAt: number;
   updatedAt: number;
   item: Doc<"items">;
   rarity: Doc<"itemRarities"> | null;
   augments: Doc<"playerItemAugments">[];
 };
+
+type CatalogAugmentation = NonNullable<
+  ReturnType<typeof useSkillPanel>["data"]
+>["augmentations"][number];
 
 const SLOT_LABELS: Record<EquipmentSlot, string> = {
   head: "Head",
@@ -251,6 +258,11 @@ function ItemDetails({
               <div className="min-w-0">
               <p className="font-heading text-sm text-gold-light">
                 {ownedItem.item.name}
+                {(ownedItem.enchantLevel ?? 0) > 0 && (
+                  <span className="text-forest-glow">
+                    {" "}+{ownedItem.enchantLevel}
+                  </span>
+                )}
               </p>
               {ownedItem.rarity && (
                 <p
@@ -365,6 +377,15 @@ function AugmentationControls({
   if (!ownedItem || ownedItem.item.category !== "equipment") return null;
 
   const augmentSlots = ownedItem.item.augmentSlots ?? 1;
+  const isChainCompatible = (augmentation: CatalogAugmentation) => {
+    if (augmentation.requiresPreviousTier !== true) return true;
+    if (augmentation.tier <= 1) return true;
+    const predecessor = ownedItem.augments.find(
+      (applied) => (applied.tier ?? 0) === augmentation.tier - 1
+    );
+    if (!predecessor) return false;
+    return ownedItem.augments.length - 1 < augmentSlots;
+  };
   const availableAugmentations = (skillPanel.data?.augmentations ?? []).filter(
     (augmentation) =>
       (augmentation.baseItemFamily === undefined ||
@@ -375,7 +396,10 @@ function AugmentationControls({
         )) &&
       !ownedItem.augments.some(
         (applied) => applied.augmentationId === augmentation.augmentationId
-      )
+      ) &&
+      (augmentation.requiresPreviousTier === true
+        ? isChainCompatible(augmentation)
+        : ownedItem.augments.length < augmentSlots)
   );
 
   const queueAugmentation = async (augmentationId: string) => {
@@ -418,6 +442,8 @@ function AugmentationControls({
             >
               {augment.name}{" "}
               {augment.effectAmount > 0 ? `+${augment.effectAmount}` : ""}
+              {augment.effectElement ? ` ${augment.effectElement}` : ""}
+              {augment.tier !== undefined ? ` · T${augment.tier}` : ""}
             </span>
           ))}
         </div>
@@ -502,6 +528,120 @@ function AugmentationControls({
             })
           )}
         </div>
+      )}
+      {error && (
+        <p className="mt-2 text-xs text-blood-light" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function EnchantmentControls({
+  playerId,
+  ownedItem,
+  inventoryItems,
+}: {
+  playerId: Id<"players">;
+  ownedItem: OwnedItem | null;
+  inventoryItems: OwnedItem[];
+}) {
+  const skillPanel = useSkillPanel(playerId);
+  const enchantEquipment = useEnchantEquipment();
+  const [isEnchanting, setIsEnchanting] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!ownedItem || ownedItem.item.category !== "equipment") return null;
+
+  const rates = skillPanel.data?.infusionRates;
+  const infusionLevel =
+    skillPanel.data?.playerSkills.find(
+      (skill) => skill.skillId === "infusion"
+    )?.level ?? 1;
+  const current = ownedItem.enchantLevel ?? 0;
+  const next = current + 1;
+  const isWeapon = ownedItem.item.baseDamage !== undefined;
+  const isArmor = ownedItem.item.baseDefense !== undefined;
+  const enchantable = isWeapon || isArmor;
+  const essenceSlug = `essence-tier-${next}`;
+  const essenceCount = inventoryItems
+    .filter((row) => row.item.itemId === essenceSlug)
+    .reduce((total, row) => total + row.quantity, 0);
+  const need = rates?.enchantEssenceQty ?? 100;
+  const atCap = rates ? next > rates.enchantLevelCap : false;
+  const chance = rates
+    ? infusionSuccessChance(infusionLevel, next, rates)
+    : null;
+  const bonus = isWeapon
+    ? `+${rates?.damagePerLevel ?? 2} base damage`
+    : `+${rates?.defensePerLevel ?? 2} base defense`;
+
+  const runEnchant = async () => {
+    setIsEnchanting(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const result = await enchantEquipment({
+        playerId,
+        playerItemId: ownedItem._id,
+      });
+      setStatus(
+        result.success
+          ? `Enchanted to +${result.enchantLevel}!`
+          : `Infusion failed — materials burned for +${result.experienceEarned} Infusion XP. Still +${result.enchantLevel}.`
+      );
+    } catch (enchantError) {
+      setError(
+        enchantError instanceof Error
+          ? enchantError.message
+          : "Unable to enchant."
+      );
+    } finally {
+      setIsEnchanting(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-forest-light/20 pt-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Enchantment
+        </p>
+        <span className="text-[10px] text-muted-foreground">
+          {current > 0 ? `+${current}` : "Unenchanted"}
+        </span>
+      </div>
+      {!enchantable ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Only weapons and armor can be enchanted.
+        </p>
+      ) : atCap ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Maximum enchant level reached.
+        </p>
+      ) : (
+        <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-[11px] text-forest-glow">
+            +{next}: {need}x {essenceSlug} (have {essenceCount}) · {bonus}
+            {chance !== null &&
+              ` · ${formatPercent(chance)} at Infusion ${infusionLevel}`}
+          </p>
+          <Button
+            type="button"
+            size="xs"
+            disabled={isEnchanting || essenceCount < need}
+            onClick={() => void runEnchant()}
+          >
+            {isEnchanting ? "Enchanting..." : `Enchant +${next}`}
+          </Button>
+        </div>
+      )}
+      {status && (
+        <p className="mt-2 text-xs text-forest-glow" role="status">
+          {status}
+        </p>
       )}
       {error && (
         <p className="mt-2 text-xs text-blood-light" role="alert">
@@ -1076,6 +1216,11 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
                   playerId={playerId}
                   ownedItem={selectedEquipmentItem}
                   itemQuantities={itemQuantities}
+                />
+                <EnchantmentControls
+                  playerId={playerId}
+                  ownedItem={selectedEquipmentItem}
+                  inventoryItems={inventory.data.inventory}
                 />
               </div>
             </div>

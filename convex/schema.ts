@@ -179,6 +179,8 @@ export default defineSchema({
     itemId: v.id("items"),
     quantity: v.number(),
     equippedSlot: v.optional(equipmentSlotValidator),
+    // Per-instance enchantment level (infusion). Absent means +0.
+    enchantLevel: v.optional(v.number()),
     acquiredAt: v.number(),
     updatedAt: v.number(),
   })
@@ -337,7 +339,12 @@ export default defineSchema({
     bossCatalystQuantity: v.optional(v.number()),
     effectType: v.string(),
     effectStat: v.optional(itemEffectStatValidator),
+    // Element imbued by damage-bonus augmentations (weapons).
+    effectElement: v.optional(v.string()),
     effectAmount: v.number(),
+    // Chained lines: applying tier N requires (and replaces) tier N-1
+    // on the same item, and requires tier-N equipment.
+    requiresPreviousTier: v.optional(v.boolean()),
     experienceReward: v.optional(v.number()),
     enabled: v.boolean(),
     createdAt: v.number(),
@@ -354,6 +361,9 @@ export default defineSchema({
     name: v.string(),
     effectType: v.string(),
     effectStat: v.optional(itemEffectStatValidator),
+    effectElement: v.optional(v.string()),
+    // Augment tier within its chain (absent on rows applied before tiers).
+    tier: v.optional(v.number()),
     effectAmount: v.number(),
     appliedAt: v.number(),
   })
@@ -599,6 +609,8 @@ export default defineSchema({
   monsters: defineTable({
     type: v.string(), // "rat", "goblin", etc.
     name: v.string(),
+    // Element dealt by this monster's attacks (for elemental wards).
+    element: v.optional(v.string()),
     // Base stats for a tier-1 monster
     str: v.number(),
     dex: v.number(),
@@ -807,6 +819,8 @@ export default defineSchema({
           name: v.string(),
           effectType: v.string(),
           effectStat: v.optional(itemEffectStatValidator),
+          effectElement: v.optional(v.string()),
+          tier: v.optional(v.number()),
           effectAmount: v.number(),
           appliedAt: v.number(),
         })
@@ -881,6 +895,9 @@ export default defineSchema({
     monsterMaxHp: v.number(),
     monsterAttack: v.number(),
     monsterAttackSpeed: v.number(),
+    // Element dealt by this boss + the player's attuned ward at start.
+    monsterElement: v.optional(v.string()),
+    monsterWard: v.optional(v.number()),
     playerHp: v.number(),
     playerMaxHp: v.number(),
     settlementKey: v.string(),

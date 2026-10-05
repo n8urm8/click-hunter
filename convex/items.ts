@@ -65,6 +65,7 @@ type OwnedItem = {
   _id: Id<"playerItems">;
   itemId: Id<"items">;
   quantity: number;
+  enchantLevel?: number;
   acquiredAt: number;
   updatedAt: number;
   item: Doc<"items">;
@@ -687,16 +688,58 @@ export async function getEquippedWeapon(
   ) {
     return null;
   }
+  const enchantLevel =
+    typeof wielded.enchantLevel === "number" &&
+    Number.isSafeInteger(wielded.enchantLevel) &&
+    wielded.enchantLevel > 0
+      ? wielded.enchantLevel
+      : 0;
+  let damagePerLevel = 2;
+  if (enchantLevel > 0) {
+    const row = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "enchantDamagePerLevel"))
+      .first();
+    const value = row?.value;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      damagePerLevel = value;
+    }
+  }
+  // Damage-bonus augmentations add flat base damage; the first elemental
+  // augment also imbues the weapon, enabling elemental passive scaling.
+  const weaponAugments = await ctx.db
+    .query("playerItemAugments")
+    .withIndex("by_playerItemId", (q) => q.eq("playerItemId", wielded._id))
+    .take(50);
+  let augmentDamage = 0;
+  let augmentElement: ElementKind | null = null;
+  for (const augment of weaponAugments) {
+    if (
+      augment.effectType === "damage-bonus" &&
+      Number.isFinite(augment.effectAmount) &&
+      augment.effectAmount > 0
+    ) {
+      augmentDamage += augment.effectAmount;
+    }
+    if (
+      augmentElement === null &&
+      augment.effectElement !== undefined &&
+      (ELEMENT_VALUES as readonly string[]).includes(augment.effectElement)
+    ) {
+      augmentElement = augment.effectElement as ElementKind;
+    }
+  }
   return {
-    baseDamage: item.baseDamage,
+    baseDamage: item.baseDamage + enchantLevel * damagePerLevel + augmentDamage,
     attackSpeed: item.attackSpeed,
     damageStat: item.damageStat,
     damageType: item.damageType ?? "physical",
     element:
-      item.element !== undefined &&
+      augmentElement ??
+      (item.element !== undefined &&
       (ELEMENT_VALUES as readonly string[]).includes(item.element)
         ? (item.element as ElementKind)
-        : null,
+        : null),
   };
 }
 
@@ -719,6 +762,7 @@ export async function getEquippedProfile(
 ): Promise<{
   bonuses: EquipmentStatBonuses;
   armor: { defense: number; speedPenalty: number };
+  ward: Record<ElementKind, number>;
 }> {
   const rows = await ctx.db
     .query("playerItems")
@@ -728,7 +772,11 @@ export async function getEquippedProfile(
   const bonuses = { ...EMPTY_EQUIPMENT_STAT_BONUSES };
   let defense = 0;
   let speedPenalty = 0;
-  if (equipped.length === 0) return { bonuses, armor: { defense, speedPenalty } };
+  const ward: Record<ElementKind, number> = {
+    light: 0, dark: 0, water: 0, fire: 0, wind: 0, earth: 0,
+  };
+  if (equipped.length === 0)
+    return { bonuses, armor: { defense, speedPenalty }, ward };
   const distinctIds = [...new Set(equipped.map((row) => row.itemId))];
   const [defs, allAugments] = await Promise.all([
     Promise.all(distinctIds.map((itemId) => ctx.db.get(itemId))),
@@ -740,6 +788,17 @@ export async function getEquippedProfile(
   const defById = new Map(
     distinctIds.map((id, index) => [String(id), defs[index]])
   );
+  let defensePerLevel = 2;
+  if (equipped.some((row) => (row.enchantLevel ?? 0) > 0)) {
+    const row = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "enchantDefensePerLevel"))
+      .first();
+    const value = row?.value;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      defensePerLevel = value;
+    }
+  }
   const augmentsByRow = new Map<string, typeof allAugments>();
   for (const augment of allAugments) {
     const key = String(augment.playerItemId);
@@ -758,7 +817,15 @@ export async function getEquippedProfile(
     ) {
       bonuses[item.effectStat] += item.effectAmount;
     }
-    if (typeof item.baseDefense === "number") defense += item.baseDefense;
+    if (typeof item.baseDefense === "number") {
+      const enchantLevel =
+        typeof row.enchantLevel === "number" &&
+        Number.isSafeInteger(row.enchantLevel) &&
+        row.enchantLevel > 0
+          ? row.enchantLevel
+          : 0;
+      defense += item.baseDefense + enchantLevel * defensePerLevel;
+    }
     if (typeof item.speedPenalty === "number") {
       speedPenalty += item.speedPenalty;
     }
@@ -770,9 +837,26 @@ export async function getEquippedProfile(
       ) {
         bonuses[augment.effectStat] += augment.effectAmount;
       }
+      if (
+        augment.effectType === "defense-bonus" &&
+        Number.isFinite(augment.effectAmount) &&
+        augment.effectAmount > 0
+      ) {
+        defense += augment.effectAmount;
+      }
+      // Elemental ward: attuned armor mitigates matching-element hits.
+      if (
+        augment.effectType === "defense-bonus" &&
+        augment.effectElement !== undefined &&
+        (ELEMENT_VALUES as readonly string[]).includes(augment.effectElement) &&
+        Number.isFinite(augment.effectAmount) &&
+        augment.effectAmount > 0
+      ) {
+        ward[augment.effectElement as ElementKind] += augment.effectAmount;
+      }
     }
   }
-  return { bonuses, armor: { defense, speedPenalty } };
+  return { bonuses, armor: { defense, speedPenalty }, ward };
 }
 
 export function computeAttackSpeed(
@@ -925,6 +1009,7 @@ export const getPlayerInventory = query({
         _id: row._id,
         itemId: row.itemId,
         quantity: row.quantity,
+        ...(row.enchantLevel === undefined ? {} : { enchantLevel: row.enchantLevel }),
         acquiredAt: row.acquiredAt,
         updatedAt: row.updatedAt,
         item,

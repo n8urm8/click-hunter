@@ -24,6 +24,7 @@ import type * as combat from "../combat.js";
 import type * as events from "../events.js";
 import type * as forestCraftingSeed from "../forestCraftingSeed.js";
 import type * as http from "../http.js";
+import type * as infusion from "../infusion.js";
 import type * as init from "../init.js";
 import type * as itemTypes from "../itemTypes.js";
 import type * as items from "../items.js";
@@ -67,6 +68,7 @@ declare const fullApi: ApiFromModules<{
   events: typeof events;
   forestCraftingSeed: typeof forestCraftingSeed;
   http: typeof http;
+  infusion: typeof infusion;
   init: typeof init;
   itemTypes: typeof itemTypes;
   items: typeof items;

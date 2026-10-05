@@ -3,6 +3,8 @@ import type { Id } from "./_generated/dataModel";
 import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { COMBAT_BALANCE_DEFAULTS } from "./items";
+import { ELEMENT_VALUES } from "./itemTypes";
+import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 
 type SeedItem = {
   itemId: string;
@@ -47,6 +49,12 @@ type EquipmentSlot = SeedItem["allowedEquipmentSlots"][number];
 type EffectStat = NonNullable<SeedItem["effectStat"]>;
 
 const TIERS: Tier[] = [1, 2, 3, 4, 5, 6, 7, 8];
+/** Infusion (boss keys / enchanting) is seeded to the combat max tier. */
+const INFUSION_MAX_SEED_TIER = 20;
+const INFUSION_TIERS: number[] = Array.from(
+  { length: INFUSION_MAX_SEED_TIER },
+  (_, index) => index + 1
+);
 const TIER_NAMES = [
   "Grove",
   "Moonlit Grove",
@@ -716,7 +724,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
   },
 ];
 
-const BOSS_TOKEN_ITEMS: SeedItem[] = TIERS.map((tier) => ({
+const BOSS_TOKEN_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
   itemId: `forest-boss-token-${tier}`,
   name: `Heart of the Grove ${tier}`,
   category: "crafting",
@@ -728,12 +736,42 @@ const BOSS_TOKEN_ITEMS: SeedItem[] = TIERS.map((tier) => ({
   itemFamily: "boss-catalyst",
 }));
 
+const ESSENCE_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
+  itemId: `essence-tier-${tier}`,
+  name: `Tier ${tier} Monster Essence`,
+  category: "crafting",
+  description: `Condensed essence from tier ${tier} monsters. Used in infusion.`,
+  stackable: true,
+  maxStackSize: 10000,
+  allowedEquipmentSlots: [],
+  rarityLevel: Math.max(1, tier * 10),
+  itemFamily: "monster-material",
+  craftingSkillId: "infusion",
+  craftingTier: tier as Tier,
+}));
+
+const BOSS_KEY_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
+  itemId: `boss-key-tier-${tier}`,
+  name: `Tier ${tier} Boss Key`,
+  category: "crafting",
+  description: `Infused key required to challenge the tier ${tier} boss. Consumed on start.`,
+  stackable: true,
+  maxStackSize: 25,
+  allowedEquipmentSlots: [],
+  rarityLevel: Math.max(1, tier * 10),
+  itemFamily: "boss-key",
+  craftingSkillId: "infusion",
+  craftingTier: tier as Tier,
+}));
+
 const ALL_ITEMS = [
   ...RESOURCE_ITEMS,
   ...OUTPUT_ITEMS,
   ...STARTER_ITEMS,
   ...MONSTER_DROP_ITEMS,
   ...BOSS_TOKEN_ITEMS,
+  ...ESSENCE_ITEMS,
+  ...BOSS_KEY_ITEMS,
 ];
 
 const SKILLS = [
@@ -778,6 +816,13 @@ const SKILLS = [
     category: "crafting" as const,
     pairedSkillId: "mining",
     description: "Temper forest ores into weapons and protective equipment.",
+  },
+  {
+    skillId: "infusion",
+    name: "Infusion",
+    category: "crafting" as const,
+    description:
+      "Bind monster essence into boss keys, augmentations, and enchantments. Every tier is attemptable from level 1 with success falling off by tier gap.",
   },
 ];
 
@@ -868,7 +913,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       });
     }
   }
-  for (const entry of [...SKILL_TASK_BALANCE_DEFAULTS, ...COMBAT_BALANCE_DEFAULTS]) {
+  for (const entry of [...SKILL_TASK_BALANCE_DEFAULTS, ...COMBAT_BALANCE_DEFAULTS, ...INFUSION_BALANCE_DEFAULTS]) {
     const existing = await ctx.db
       .query("gameBalance")
       .withIndex("by_key", (q) => q.eq("key", entry.key))
@@ -910,7 +955,8 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
         tier,
         name: `${TIER_NAMES[index]} ${skill.name}`,
         description: `Tier ${tier} ${skill.name.toLowerCase()} activities.`,
-        requiredLevel: TIER_LEVELS[index],
+        // Infusion is never level-gated; every tier attemptable from level 1.
+        requiredLevel: skill.skillId === "infusion" ? 1 : TIER_LEVELS[index],
         enabled: true,
         updatedAt: now,
       };
@@ -928,6 +974,35 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
           createdAt: now,
         });
       }
+    }
+  }
+
+  // Infusion tiers past the 8 hand-authored tiers (up to the seeded max).
+  // All requiredLevel 1: gating is via success chance, not level locks.
+  for (const tier of INFUSION_TIERS) {
+    if (tier <= 8) continue;
+    const tierRow = {
+      skillId: "infusion",
+      tier,
+      name: `Tier ${tier} Infusion`,
+      description: `Tier ${tier} infusion activities.`,
+      requiredLevel: 1,
+      enabled: true,
+      updatedAt: now,
+    };
+    const existing = await ctx.db
+      .query("skillTierDefinitions")
+      .withIndex("by_skillId_and_tier", (q) =>
+        q.eq("skillId", "infusion").eq("tier", tier)
+      )
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, tierRow);
+    } else {
+      await ctx.db.insert("skillTierDefinitions", {
+        ...tierRow,
+        createdAt: now,
+      });
     }
   }
 
@@ -1318,31 +1393,164 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     }
   }
 
-  const augmentments = MONSTER_DROPS.map(([monsterId, materialId], index) => {
-    const tier = index < 3 ? 1 : index < 6 ? 2 : 3;
-    const stat = (["str", "dex", "int", "luk", "con"] as const)[index % 5];
-    return {
-      augmentationId: `augment-${monsterId}`,
-      skillId: "forging",
+  // Boss-key chain: T1 = 100x essence T1; TN = 100x essence TN + 1x key T(N-1).
+  // Legacy recipes (no stage): validated as plain crafting, gated by infusion
+  // success chance instead of level locks.
+  const BOSS_KEY_ESSENCE_QTY = 100;
+  for (const tier of INFUSION_TIERS) {
+    const recipeId = `infuse-boss-key-tier-${tier}`;
+    const recipe = {
+      recipeId,
+      skillId: "infusion",
       tier,
-      name: `${monsterId[0].toUpperCase()}${monsterId.slice(1)} Aspect`,
-      description: `Bind the aspect of a ${monsterId} to a crafted equipment item.`,
-      allowedEquipmentSlots: [],
-      requiredMaterialItemId: itemIdFor(itemById, materialId),
-      requiredMaterialQuantity: tier,
-      bossCatalystItemId: itemIdFor(
-        itemById,
-        `forest-boss-token-${tier}`
-      ),
-      bossCatalystQuantity: 1,
-      effectType: "stat-bonus",
-      effectStat: stat,
-      effectAmount: tier * 2,
-      experienceReward: 50 * tier,
+      name: `Infuse Tier ${tier} Boss Key`,
+      description: `Condense tier ${tier} monster essence${tier > 1 ? " with the previous tier key" : ""} into a boss key. Consumed when the boss fight starts.`,
+      durationMs: tier * 45_000,
+      experienceReward: tier * 50,
+      outputFamily: "boss-key",
       enabled: true,
       updatedAt: now,
     };
-  });
+    const existing = await ctx.db
+      .query("recipes")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+      .first();
+    if (existing) await ctx.db.patch(existing._id, recipe);
+    else await ctx.db.insert("recipes", { ...recipe, createdAt: now });
+
+    const oldIngredients = await ctx.db
+      .query("recipeIngredients")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+      .collect();
+    for (const row of oldIngredients) await ctx.db.delete(row._id);
+    await ctx.db.insert("recipeIngredients", {
+      recipeId,
+      itemId: itemIdFor(itemById, `essence-tier-${tier}`),
+      quantity: BOSS_KEY_ESSENCE_QTY,
+    });
+    if (tier > 1) {
+      await ctx.db.insert("recipeIngredients", {
+        recipeId,
+        itemId: itemIdFor(itemById, `boss-key-tier-${tier - 1}`),
+        quantity: 1,
+      });
+    }
+
+    const oldOutputs = await ctx.db
+      .query("recipeOutputs")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+      .collect();
+    for (const row of oldOutputs) await ctx.db.delete(row._id);
+    await ctx.db.insert("recipeOutputs", {
+      recipeId,
+      itemId: itemIdFor(itemById, `boss-key-tier-${tier}`),
+      quantity: 1,
+    });
+  }
+
+  // Legacy flavor augmentations (monster drops + tokens, stat bonuses).
+  // Retired in favor of chained boss-token lines below; rows stay for
+  // existing applied augments and refunds.
+  const retiredAugmentations = MONSTER_DROPS.map(
+    ([monsterId]) => `augment-${monsterId}`
+  );
+  for (const augmentationId of retiredAugmentations) {
+    const existing = await ctx.db
+      .query("augmentationDefinitions")
+      .withIndex("by_augmentationId", (q) =>
+        q.eq("augmentationId", augmentationId)
+      )
+      .first();
+    if (existing && existing.enabled) {
+      await ctx.db.patch(existing._id, { enabled: false, updatedAt: now });
+    }
+  }
+
+  // Chained boss-token lines: weapon (damage + element imbue) and armor
+  // (+defense + elemental ward). Tier N requires the tier N-1 augment
+  // on the same item, which it replaces. No cap.
+  const balanceDefault = (key: string, fallback: number) => {
+    const found = INFUSION_BALANCE_DEFAULTS.find((entry) => entry.key === key);
+    return typeof found?.value === "number" ? found.value : fallback;
+  };
+  const AUGMENT_TOKEN_QTY = balanceDefault("augmentBossTokenQty", 1);
+  const AUGMENT_DAMAGE_PER_TIER = balanceDefault("augmentDamagePerTier", 3);
+  const AUGMENT_DEFENSE_PER_TIER = balanceDefault("augmentDefensePerTier", 3);
+  const augmentments: Array<{
+    augmentationId: string;
+    skillId: string;
+    tier: number;
+    name: string;
+    description: string;
+    allowedEquipmentSlots: Array<
+      "head" | "chest" | "mainHand" | "legs" | "feet"
+    >;
+    requiredMaterialItemId: Id<"items">;
+    requiredMaterialQuantity: number;
+    effectType: string;
+    effectElement?: string;
+    effectAmount: number;
+    requiresPreviousTier: boolean;
+    experienceReward: number;
+    enabled: boolean;
+    updatedAt: number;
+  }> = [];
+  for (const tier of INFUSION_TIERS) {
+    const chainNote =
+      tier > 1
+        ? ` Requires the tier ${tier - 1} augment on the same item first.`
+        : "";
+    const imbue = ELEMENT_VALUES[(tier - 1) % ELEMENT_VALUES.length];
+    augmentments.push(
+      {
+        augmentationId: `augment-weapon-tier-${tier}`,
+        skillId: "infusion",
+        tier,
+        name: `Tier ${tier} Weapon Infusion`,
+        description:
+          `Imbue a weapon with ` +
+          `${imbue} ` +
+          `for +${tier * AUGMENT_DAMAGE_PER_TIER} base damage.` +
+          chainNote,
+        allowedEquipmentSlots: ["mainHand"],
+        requiredMaterialItemId: itemIdFor(
+          itemById,
+          `forest-boss-token-${tier}`
+        ),
+        requiredMaterialQuantity: AUGMENT_TOKEN_QTY,
+        effectType: "damage-bonus",
+        effectElement: imbue,
+        effectAmount: tier * AUGMENT_DAMAGE_PER_TIER,
+        requiresPreviousTier: tier > 1,
+        experienceReward: 50 * tier,
+        enabled: true,
+        updatedAt: now,
+      },
+      {
+        augmentationId: `augment-armor-tier-${tier}`,
+        skillId: "infusion",
+        tier,
+        name: `Tier ${tier} Armor Infusion`,
+        description:
+          `Attune armor to ${imbue} for +${tier * AUGMENT_DEFENSE_PER_TIER} ` +
+          `base defense and a ${imbue} ward against matching hits.` +
+          chainNote,
+        allowedEquipmentSlots: ["head", "chest", "legs", "feet"],
+        requiredMaterialItemId: itemIdFor(
+          itemById,
+          `forest-boss-token-${tier}`
+        ),
+        requiredMaterialQuantity: AUGMENT_TOKEN_QTY,
+        effectType: "defense-bonus",
+        effectElement: imbue,
+        effectAmount: tier * AUGMENT_DEFENSE_PER_TIER,
+        requiresPreviousTier: tier > 1,
+        experienceReward: 50 * tier,
+        enabled: true,
+        updatedAt: now,
+      }
+    );
+  }
   for (const augmentation of augmentments) {
     const existing = await ctx.db
       .query("augmentationDefinitions")
@@ -1445,7 +1653,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     "demon-ash-seed",
     "nightmare-dreamleaf",
   ];
-  for (const tier of TIERS) {
+  for (const tier of INFUSION_TIERS) {
     const tableId = `loot-boss-tier-${tier}`;
     const tokenId = itemIdFor(itemById, `forest-boss-token-${tier}`);
     const existingTable = await ctx.db
@@ -1481,7 +1689,12 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       createdAt: now,
       updatedAt: now,
     });
-    const catalystId = itemIdFor(itemById, bossCatalysts[tier - 1]);
+    const catalystId = itemIdFor(
+      itemById,
+      tier <= bossCatalysts.length
+        ? bossCatalysts[tier - 1]
+        : `essence-tier-${tier}`
+    );
     await ctx.db.insert("lootTableEntries", {
       lootTableId: tableId,
       itemId: catalystId,

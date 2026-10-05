@@ -224,6 +224,10 @@ function stripAugment(augment: Doc<"playerItemAugments">): EscrowedAugment {
     ...(augment.effectStat === undefined
       ? {}
       : { effectStat: augment.effectStat }),
+    ...(augment.effectElement === undefined
+      ? {}
+      : { effectElement: augment.effectElement }),
+    ...(augment.tier === undefined ? {} : { tier: augment.tier }),
     effectAmount: augment.effectAmount,
     appliedAt: augment.appliedAt,
   };
@@ -254,6 +258,9 @@ async function takeEscrowFromRow(
   const item = await ctx.db.get(row.itemId);
   if (!item) {
     throw new Error("Item definition not found");
+  }
+  if ((row.enchantLevel ?? 0) > 0) {
+    throw new Error("Enchanted items cannot be traded on the Bazaar yet");
   }
   const augments = await getAugmentsFor(ctx, row._id);
 
@@ -353,6 +360,9 @@ async function takeEscrowFromInventory(
   if (!row) {
     throw new Error("Not enough of that item to sell");
   }
+  if ((row.enchantLevel ?? 0) > 0) {
+    throw new Error("Enchanted items cannot be traded on the Bazaar yet");
+  }
   const snapshot = (await getAugmentsFor(ctx, row._id)).map(stripAugment);
   await deleteRowAndAugments(ctx, row);
   return { itemId, quantity: 1, augments: snapshot };
@@ -408,6 +418,10 @@ async function deliverEscrow(
       ...(augment.effectStat === undefined
         ? {}
         : { effectStat: augment.effectStat }),
+      ...(augment.effectElement === undefined
+        ? {}
+        : { effectElement: augment.effectElement }),
+      ...(augment.tier === undefined ? {} : { tier: augment.tier }),
       effectAmount: augment.effectAmount,
       appliedAt: augment.appliedAt,
     });

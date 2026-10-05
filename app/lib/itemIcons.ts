@@ -120,6 +120,7 @@ function craftingIcon(item: ItemIconInput): string {
     case "monster-augmentation":
       return gemIcon;
     case "boss-catalyst":
+    case "boss-key":
       return gemIcon;
     default:
       break;

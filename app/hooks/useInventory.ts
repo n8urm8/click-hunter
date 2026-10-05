@@ -38,3 +38,7 @@ export function useSkillBoost() {
 export function useCombatBoost() {
   return useMutation(api.items.useCombatBoost);
 }
+
+export function useEnchantEquipment() {
+  return useMutation(api.infusion.enchantEquipment);
+}

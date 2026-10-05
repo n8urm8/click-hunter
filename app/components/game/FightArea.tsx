@@ -42,6 +42,7 @@ import {
   useTaskQueue,
 } from "~/hooks/useTasks";
 import { useStartBossFight } from "~/hooks/useBossFight";
+import { usePlayerInventory } from "~/hooks/useInventory";
 import { formatNumber } from "~/lib/utils";
 import type { PlayerWithDerivedStats } from "~/hooks/usePlayer";
 import { useTaskClock } from "~/hooks/useTaskClock";
@@ -105,6 +106,24 @@ type BattleTask = QueueTask & {
   taskType: "battle";
   battleMode: AutoBattleMode;
 };
+
+export function BossKeyStatus({ playerId, tier }: { playerId: Id<"players">; tier: number }) {
+  const inventory = usePlayerInventory(playerId);
+  if (inventory.isPending || !inventory.data) return null;
+  const keySlug = `boss-key-tier-${tier}`;
+  const keyCount = inventory.data.inventory
+    .filter((row) => row.item.itemId === keySlug)
+    .reduce((total, row) => total + row.quantity, 0);
+  return (
+    <p className="text-xs text-muted-foreground" role="status">
+      {keyCount > 0 ? (
+        <>Boss Key T{tier} ×{keyCount} · consumed on start</>
+      ) : (
+        <>No Boss Key T{tier} — infuse one in Skills → Infusion</>
+      )}
+    </p>
+  );
+}
 
 function toBattleTask(task: QueueTask | null | undefined): BattleTask | null {
   if (!task || task.taskType !== "battle" || !task.battleMode) {
@@ -881,6 +900,15 @@ export function FightArea({ player }: FightAreaProps) {
                 : boss ? "Challenge Boss" : "Boss unavailable"}
             </Button>
           </div>
+          {boss && (
+            <BossKeyStatus playerId={player._id} tier={boss.tier} />
+          )}
+          {boss?.element && (
+            <p className="text-xs text-muted-foreground" role="status">
+              Deals {boss.element} damage — attune T{boss.tier} armor in
+              Skills → Infusion to ward it
+            </p>
+          )}
           {hasQueuedTasks && !isRespawning && (
             <p className="text-xs text-muted-foreground" role="status">
               Finish or stop queued tasks before challenging a boss.

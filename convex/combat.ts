@@ -181,6 +181,9 @@ export async function readPlayerCombatProfile(
     str: 0, dex: 0, int: 0, luk: 0, con: 0,
   };
   const armor = armorTotals ?? equipped?.armor ?? { defense: 0, speedPenalty: 0 };
+  const ward = equipped?.ward ?? {
+    light: 0, dark: 0, water: 0, fire: 0, wind: 0, earth: 0,
+  };
   // Character queries show permanent/equipped stats without a wall-clock dependency.
   const boosts = now === undefined
     ? null
@@ -212,7 +215,7 @@ export async function readPlayerCombatProfile(
     attackSpeedMultiplier: balance.attackSpeedMultiplier,
     damageType: weapon?.damageType ?? "physical",
   };
-  return { bonuses, weapon, armor, passives, balance, boosts, effectiveStats, baseAttack, damageMultiplier, combatStats };
+  return { bonuses, weapon, armor, ward, passives, balance, boosts, effectiveStats, baseAttack, damageMultiplier, combatStats };
 }
 
 /**
@@ -290,13 +293,22 @@ export async function simulateRegularBattle(
     (Math.max(0, monsterPhysical - combatStats.defense) +
       Math.max(0, monsterMagical - combatStats.magicalDefense)) *
     monsterPower;
+  // Elemental ward: attuned armor augments mitigate matching-element hits.
+  const attackerElement =
+    typeof monster.element === "string" ? monster.element : null;
+  const wardAmount =
+    attackerElement !== null &&
+    Object.prototype.hasOwnProperty.call(profile.ward, attackerElement)
+      ? profile.ward[attackerElement as keyof typeof profile.ward]
+      : 0;
+  const wardedDamagePerHit = Math.max(0, monsterDamagePerHit - wardAmount);
   const playerDamagePerHit =
     playerAttack * (1 + critChance * (balance.critDamageMultiplier - 1));
   const playerIntervalMs = Math.ceil(1000 / combatStats.attackSpeed);
   const monsterIntervalMs = monster.baseMsPerAttack;
   const monsterNetDamagePerHit = Math.max(
     0,
-    monsterDamagePerHit - (profile.boosts?.regenPerSecond ?? 0) * monsterIntervalMs / 1_000
+    wardedDamagePerHit - (profile.boosts?.regenPerSecond ?? 0) * monsterIntervalMs / 1_000
   );
   const playerDamagePerSecond = playerDamagePerHit * (1000 / playerIntervalMs);
   const monsterDamagePerSecond = monsterNetDamagePerHit * (1000 / monsterIntervalMs);
