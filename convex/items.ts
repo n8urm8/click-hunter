@@ -28,6 +28,7 @@ import {
   type SkillTaskEffectType,
 } from "./itemTypes";
 import { MAX_SKILL_MODIFIER_MULTIPLIER } from "./skillBonuses";
+import { getBagCapacityBonus } from "./leatherwork";
 
 function isCombatEffectType(value: unknown): value is CombatEffectType {
   return COMBAT_EFFECT_TYPES.some((effectType) => effectType === value);
@@ -46,6 +47,8 @@ const equipmentSlotValidator = v.union(
   v.literal("feet"),
   v.literal("accessory1"),
   v.literal("accessory2"),
+  v.literal("amulet"),
+  v.literal("belt"),
   v.literal("bag"),
   v.literal("craftingEquipment")
 );
@@ -318,7 +321,7 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
     throw new Error("Only main-hand weapons can define weapon combat fields");
   }
 
-  const ARMOR_SLOTS: EquipmentSlot[] = ["head", "chest", "legs", "feet"];
+  const ARMOR_SLOTS: EquipmentSlot[] = ["head", "chest", "legs", "feet", "belt"];
   const isArmor = allowedEquipmentSlots.some((slot) =>
     ARMOR_SLOTS.includes(slot)
   );
@@ -329,7 +332,7 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
       !isArmor
     ) {
       throw new Error(
-        "Base defense must be a non-negative number on head, chest, legs, or feet gear"
+        "Base defense must be a non-negative number on head, chest, legs, feet, or belt gear"
       );
     }
   }
@@ -919,18 +922,24 @@ export async function getActiveCombatBoosts(
   return { statBonus, regenPerSecond, xpMultiplier };
 }
 
-export async function getInventorySlotCapacity(ctx: DatabaseCtx) {
+export async function getInventorySlotCapacity(
+  ctx: DatabaseCtx,
+  playerId?: Id<"players">
+) {
   const row = await ctx.db
     .query("gameBalance")
     .withIndex("by_key", (q) => q.eq("key", "inventorySlotCapacity"))
     .first();
   const value = row?.value;
 
-  return typeof value === "number" &&
+  const base =
+    typeof value === "number" &&
     Number.isSafeInteger(value) &&
     value >= 1
-    ? value
-    : DEFAULT_INVENTORY_SLOT_CAPACITY;
+      ? value
+      : DEFAULT_INVENTORY_SLOT_CAPACITY;
+  if (playerId === undefined) return base;
+  return base + (await getBagCapacityBonus(ctx, playerId));
 }
 
 async function getOwnedItemRows(
@@ -950,7 +959,7 @@ export const getPlayerInventory = query({
   },
   handler: async (ctx, { playerId }) => {
     await requirePlayerRead(ctx, playerId);
-    const capacity = await getInventorySlotCapacity(ctx);
+    const capacity = await getInventorySlotCapacity(ctx, playerId);
     const rows = await getOwnedItemRows(ctx, playerId, capacity);
     const [rarities, pendingRewards, attackSpeedMultiplier, allAugments] = await Promise.all([
       ctx.db.query("itemRarities").take(100),
@@ -1084,7 +1093,7 @@ export async function grantItemToInventory(
     throw new Error("Item definition not found");
   }
 
-  const capacity = await getInventorySlotCapacity(ctx);
+  const capacity = await getInventorySlotCapacity(ctx, playerId);
   const rows = await getOwnedItemRows(ctx, playerId, capacity);
   let usedSlots = rows.filter((row) => row.equippedSlot === undefined).length;
   let remaining = quantity;
@@ -1199,7 +1208,7 @@ export async function canGrantItemToInventory(
   const item = await ctx.db.get(itemId);
   if (!item) return false;
 
-  const capacity = await getInventorySlotCapacity(ctx);
+  const capacity = await getInventorySlotCapacity(ctx, playerId);
   const rows = await getOwnedItemRows(ctx, playerId, capacity);
   const unequipped = rows.filter((row) => row.equippedSlot === undefined);
   const freeSlots = Math.max(0, capacity - unequipped.length);
@@ -1393,7 +1402,7 @@ export const equipItem = mutation({
       throw new Error("Item cannot be equipped to that slot");
     }
 
-    const capacity = await getInventorySlotCapacity(ctx);
+    const capacity = await getInventorySlotCapacity(ctx, playerId);
     const occupyingItem = await ctx.db
       .query("playerItems")
       .withIndex("by_playerId_and_equippedSlot", (q) =>
@@ -1451,7 +1460,7 @@ export const unequipItem = mutation({
       return { unequipped: false };
     }
 
-    const capacity = await getInventorySlotCapacity(ctx);
+    const capacity = await getInventorySlotCapacity(ctx, playerId);
     const rows = await getOwnedItemRows(ctx, playerId, capacity);
     const usedSlots = rows.filter(
       (row) => row.equippedSlot === undefined

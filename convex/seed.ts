@@ -513,6 +513,7 @@ export const resetForestCrafting = mutation({
       "woodworking",
       "forging",
       "infusion",
+      "leathercrafting",
     ]);
     const skillActionTaskIds = new Set<string>();
 

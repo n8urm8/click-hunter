@@ -5,9 +5,12 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
 import {
+  readPlayerCombatProfile,
   settleRegularFight,
   simulateRegularBattle,
 } from "./combat";
+import { resolveCurrentHp, readHpRegenBalance, writePlayerHp } from "./playerHp";
+import { tickEquippedConsumables } from "./consumableSlots";
 import type { LootSummary } from "./loot";
 import { getEquippedProfile } from "./items";
 import {
@@ -659,6 +662,10 @@ async function resolveTimedQueue(
       isRecord(currentTask.payload) &&
       currentTask.payload.skillTaskVersion === 1
     ) {
+      // Auto-use equipped skilling consumables matching this task's category.
+      const rawCategory = (currentTask.payload as Record<string, unknown>).skillCategory;
+      const skillCategory = rawCategory === "crafting" ? "crafting" as const : "gathering" as const;
+      await tickEquippedConsumables(ctx, playerId, { kind: "skill", skillCategory }, now);
       let skillTask = currentTask;
       while (
         currentTask &&
@@ -876,7 +883,24 @@ async function processAutoBattle(
   onlineSegments: ProgressSegment[]
 ) {
   const playerId = task.playerId;
-  if (task.respawnUntil !== undefined && now < task.respawnUntil) return task;
+  // Shared HP helpers for the respawn-wait path below (resting = wall regen).
+  const hpPlayerForWait = await getPlayer(ctx, playerId);
+  const hpProfileForWait = await readPlayerCombatProfile(ctx, hpPlayerForWait, now);
+  const hpMaxForWait = Math.max(1, Math.ceil(hpProfileForWait.combatStats.health));
+  const regenBalanceForWait = await readHpRegenBalance(ctx);
+  if (task.respawnUntil !== undefined && now < task.respawnUntil) {
+    // Resting through a respawn wait: wall-clock CON regen applies.
+    const rested = resolveCurrentHp(
+      hpPlayerForWait,
+      hpMaxForWait,
+      hpProfileForWait.effectiveStats.con,
+      regenBalanceForWait,
+      now,
+      false
+    );
+    await writePlayerHp(ctx, playerId, rested.currentHp, rested.maxHp, now);
+    return task;
+  }
   const onlineDeltaMs = onlineSegments.reduce(
     (total, segment) => total + segment.remainingMs, 0
   );
@@ -905,6 +929,31 @@ async function processAutoBattle(
     return await activateNextTask(ctx, playerId, now);
   }
 
+  // Auto-use equipped combat consumables whose buff expired (battle context).
+  await tickEquippedConsumables(ctx, playerId, { kind: "battle" }, now);
+
+  // Resolve persistent HP without wall-clock healing while actively
+  // fighting: recovery comes from in-fight CON mitigation (baked into each
+  // sim) so chain-farming can't double-dip wall regen per heartbeat. Coming
+  // out of a respawn wait counts as rested (the wait just ended); idle
+  // recovery also applies when no battle is running or this tick settles no
+  // fights (below).
+  const justRespawned = task.respawnUntil !== undefined;
+  const hpPlayer = await getPlayer(ctx, playerId);
+  const hpProfile = await readPlayerCombatProfile(ctx, hpPlayer, now);
+  const hpMax = Math.max(1, Math.ceil(hpProfile.combatStats.health));
+  const regenBalance = await readHpRegenBalance(ctx);
+  const hpState = resolveCurrentHp(
+    hpPlayer,
+    hpMax,
+    hpProfile.effectiveStats.con,
+    regenBalance,
+    now,
+    !justRespawned
+  );
+  let persistentHp = hpState.currentHp;
+  let persistentMaxHp = hpState.maxHp;
+
   let completed = false;
   for (let attempt = 0; attempt < batchLimit; attempt += 1) {
     if (
@@ -925,9 +974,18 @@ async function processAutoBattle(
     }
 
     if (!encounter) {
+      // Defeated with no HP left: stall for regen instead of chain-losing.
+      if (persistentHp <= 0) {
+        if (autoBattleRespawnMs > 0 && nextRespawnUntil === undefined) {
+          nextRespawnUntil = now + autoBattleRespawnMs;
+          onlineCreditMs = 0;
+        }
+        break;
+      }
       const player = await getPlayer(ctx, playerId);
       const equipped = await getEquippedProfile(ctx, playerId);
-      encounter = await simulateRegularBattle(ctx, player, tier, equipped.bonuses, task.zone, equipped.armor);
+      encounter = await simulateRegularBattle(ctx, player, tier, equipped.bonuses, task.zone, equipped.armor, persistentHp);
+      persistentMaxHp = encounter.playerMaxHealth;
     }
     const result = encounter;
     const durationToConsume =
@@ -949,6 +1007,7 @@ async function processAutoBattle(
       break;
     }
     completedBattles += 1;
+    persistentHp = result.playerEndingHp ?? (result.won ? persistentHp : 0);
     encounter = undefined;
     if (result.won) {
       wins += 1;
@@ -993,6 +1052,30 @@ async function processAutoBattle(
       break;
     }
   }
+
+  // Persist HP once per settlement (batch-safe). Mid-encounter, project
+  // remaining HP from elapsed credit so a refresh keeps the bar instead of
+  // snapping back up. When this tick settled no fights and there is no
+  // in-progress encounter (blocked/offline/stalling), grant resting wall
+  // regen instead — otherwise a queued battle task would pin HP forever.
+  const fightsSettled = wins + losses;
+  if (encounter) {
+    const projected = projectBattleHealth(encounter, onlineCreditMs);
+    persistentHp = projected.currentPlayerHealth;
+    persistentMaxHp = projected.currentPlayerMaxHealth;
+  } else if (fightsSettled === 0) {
+    const rested = resolveCurrentHp(
+      { ...hpPlayer, currentHp: persistentHp, currentHpUpdatedAt: hpPlayer.currentHpUpdatedAt },
+      persistentMaxHp,
+      hpProfile.effectiveStats.con,
+      regenBalance,
+      now,
+      false
+    );
+    persistentHp = rested.currentHp;
+    persistentMaxHp = rested.maxHp;
+  }
+  await writePlayerHp(ctx, playerId, persistentHp, persistentMaxHp, now);
 
   const encounterFields = encounter
     ? {
@@ -1049,6 +1132,26 @@ async function settleTaskQueue(ctx: MutationCtx, playerId: PlayerId, now: number
   const active = await resolveTimedQueue(ctx, playerId, now, onlineSegments);
   if (active?.taskType === "battle") {
     return await processAutoBattle(ctx, active, now, before?._id === active._id ? onlineSegments : []);
+  }
+  // No auto-battle running: let CON regen refill the persistent bar (unless a
+  // manual boss session is open, which counts as in-combat).
+  const openBoss = await ctx.db
+    .query("bossSessions")
+    .withIndex("by_playerId_and_status", (q) =>
+      q.eq("playerId", playerId).eq("status", "open")
+    )
+    .first();
+  if (!openBoss) {
+    const p = await getPlayer(ctx, playerId);
+    if (p) {
+      const prof = await readPlayerCombatProfile(ctx, p, now);
+      const max = Math.max(1, Math.ceil(prof.combatStats.health));
+      const bal = await readHpRegenBalance(ctx);
+      const st = resolveCurrentHp(p, max, prof.effectiveStats.con, bal, now, false);
+      if (Math.abs(st.currentHp - (p.currentHp ?? max)) > 0.001 || p.currentHp === undefined) {
+        await writePlayerHp(ctx, playerId, st.currentHp, st.maxHp, now);
+      }
+    }
   }
   return active;
 }

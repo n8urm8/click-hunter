@@ -83,8 +83,11 @@ function equipmentIcon(item: ItemIconInput): string {
       return shieldIcon;
     case "bag":
       return backpackIcon;
+    case "belt":
+      return gemIcon;
     case "accessory1":
     case "accessory2":
+    case "amulet":
     case "craftingEquipment":
       return gemIcon;
     case "mainHand":

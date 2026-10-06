@@ -3048,6 +3048,7 @@ const PASSIVE_EFFECT_TYPES = new Set([
   "skill-xp-multiplier",
   "skill-speed-multiplier",
   "elemental-damage-percent",
+  "consumable-slot",
 ]);
 
 function normalizePassiveNode(args: {

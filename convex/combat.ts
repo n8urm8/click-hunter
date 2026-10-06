@@ -12,6 +12,10 @@ import {
 } from "./items";
 import { getPassiveBonuses } from "./passiveTree";
 import { getActiveEventMultipliers, settleCombatFight } from "./loot";
+import { conRegenPerSecond, readHpRegenBalance, resolveCurrentHp } from "./playerHp";
+import { query } from "./_generated/server";
+import { requirePlayerRead } from "./playerAuth";
+import { v } from "convex/values";
 import {
   monstersInZone,
   type CombatZone,
@@ -153,6 +157,9 @@ export interface AutoBattleResult {
   monsterName: string;
   monsterMaxHealth: number;
   playerMaxHealth: number;
+  playerStartingHp?: number;
+  playerEndingHp?: number;
+  conRegenPerSecond?: number;
   monsterDamagePerSecond: number;
   playerDamagePerSecond: number;
   playerAttackSpeed?: number;
@@ -215,7 +222,19 @@ export async function readPlayerCombatProfile(
     attackSpeedMultiplier: balance.attackSpeedMultiplier,
     damageType: weapon?.damageType ?? "physical",
   };
-  return { bonuses, weapon, armor, ward, passives, balance, boosts, effectiveStats, baseAttack, damageMultiplier, combatStats };
+  // CON-based HP regen (% of max HP/sec, balance-tuned). Applies in-fight as
+  // damage mitigation alongside heal-over-time boosts, and out-of-combat as a
+  // wall-clock tick in playerHp.ts.
+  let conRegen = 0;
+  if (now !== undefined) {
+    const regenBalance = await readHpRegenBalance(ctx);
+    conRegen = conRegenPerSecond(
+      Math.max(1, Math.ceil(combatStats.health)),
+      effectiveStats.con,
+      regenBalance
+    );
+  }
+  return { bonuses, weapon, armor, ward, passives, balance, boosts, effectiveStats, baseAttack, damageMultiplier, combatStats, conRegenPerSecond: conRegen };
 }
 
 /**
@@ -227,7 +246,8 @@ export async function simulateRegularBattle(
   tier: number,
   equipmentBonuses?: EquipmentStatBonuses,
   zone?: CombatZone,
-  armorTotals?: { defense: number; speedPenalty: number }
+  armorTotals?: { defense: number; speedPenalty: number },
+  playerStartingHp?: number
 ): Promise<AutoBattleResult> {
   // Bounded catalog read: monster pool is small content (~9 rows); take()
   // keeps a hard cap so future content growth can't turn encounter rolls
@@ -279,6 +299,11 @@ export async function simulateRegularBattle(
       profile.damageMultiplier
   );
   const playerHealth = combatStats.health;
+  const playerMaxHp = Math.max(1, Math.ceil(playerHealth));
+  const startingHp =
+    playerStartingHp === undefined
+      ? playerMaxHp
+      : Math.min(playerMaxHp, Math.max(0, playerStartingHp));
   const critChance = combatStats.critChance / 100;
   const monsterHealth = Math.max(
     1,
@@ -306,19 +331,25 @@ export async function simulateRegularBattle(
     playerAttack * (1 + critChance * (balance.critDamageMultiplier - 1));
   const playerIntervalMs = Math.ceil(1000 / combatStats.attackSpeed);
   const monsterIntervalMs = monster.baseMsPerAttack;
+  // CON regen + heal-over-time boosts both blunt incoming hits. CON scales
+  // with max HP so it stays relevant by level without out-healing real threats.
+  const totalRegenPerSecond =
+    profile.conRegenPerSecond + (profile.boosts?.regenPerSecond ?? 0);
   const monsterNetDamagePerHit = Math.max(
     0,
-    wardedDamagePerHit - (profile.boosts?.regenPerSecond ?? 0) * monsterIntervalMs / 1_000
+    wardedDamagePerHit - totalRegenPerSecond * monsterIntervalMs / 1_000
   );
   const playerDamagePerSecond = playerDamagePerHit * (1000 / playerIntervalMs);
   const monsterDamagePerSecond = monsterNetDamagePerHit * (1000 / monsterIntervalMs);
   const timeToDefeatMonster =
     Math.ceil(monsterHealth / playerDamagePerHit) * playerIntervalMs;
   const timeToDefeatPlayer =
-    monsterNetDamagePerHit > 0
-      ? Math.ceil(playerHealth / monsterNetDamagePerHit) * monsterIntervalMs
-      : Number.MAX_SAFE_INTEGER;
-  const won = timeToDefeatMonster <= timeToDefeatPlayer;
+    monsterNetDamagePerHit > 0 && startingHp > 0
+      ? Math.ceil(startingHp / monsterNetDamagePerHit) * monsterIntervalMs
+      : monsterNetDamagePerHit <= 0
+        ? Number.MAX_SAFE_INTEGER
+        : 1;
+  const won = startingHp > 0 && timeToDefeatMonster <= timeToDefeatPlayer;
   const durationMs = Math.max(
     1,
     Math.ceil(
@@ -329,13 +360,22 @@ export async function simulateRegularBattle(
     )
   );
 
+  const monsterHitsTaken = Math.floor(durationMs / monsterIntervalMs);
+  const damageTaken = monsterHitsTaken * monsterNetDamagePerHit;
+  const playerEndingHp = won
+    ? Math.max(1, Math.ceil(startingHp - damageTaken))
+    : 0;
+
   return {
     won,
     monsterTier: tier,
     monsterType: monster.type,
     monsterName: monster.name,
     monsterMaxHealth: monsterHealth,
-    playerMaxHealth: playerHealth,
+    playerMaxHealth: playerMaxHp,
+    playerStartingHp: Math.ceil(startingHp),
+    playerEndingHp,
+    conRegenPerSecond: profile.conRegenPerSecond,
     monsterDamagePerSecond,
     playerDamagePerSecond,
     playerAttackSpeed: combatStats.attackSpeed,
@@ -412,3 +452,49 @@ export async function settleRegularFight(
     playerLevel: player ? await calculateCharacterLevel(ctx, player) : 0,
   };
 }
+
+/**
+ * Persistent HP bar for the HUD: current HP with out-of-combat regen applied
+ * as a read-only projection (settlement writes catch up on next tick).
+ */
+export const getHpStatus = query({
+  args: { playerId: v.id("players") },
+  handler: async (ctx, { playerId }) => {
+    const player = await requirePlayerRead(ctx, playerId);
+    const now = Date.now();
+    const profile = await readPlayerCombatProfile(ctx, player, now);
+    const maxHp = Math.max(1, Math.ceil(profile.combatStats.health));
+    const regenBalance = await readHpRegenBalance(ctx);
+    const inCombat =
+      (await ctx.db
+        .query("playerTasks")
+        .withIndex("by_playerId_and_status", (q) =>
+          q.eq("playerId", playerId).eq("status", "active")
+        )
+        .first())?.taskType === "battle" ||
+      (await ctx.db
+        .query("bossSessions")
+        .withIndex("by_playerId_and_status", (q) =>
+          q.eq("playerId", playerId).eq("status", "open")
+        )
+        .first()) !== null;
+    const state = resolveCurrentHp(
+      player,
+      maxHp,
+      profile.effectiveStats.con,
+      regenBalance,
+      now,
+      inCombat
+    );
+    const boostRegen = profile.boosts?.regenPerSecond ?? 0;
+    return {
+      currentHp: Math.ceil(state.currentHp),
+      maxHp: state.maxHp,
+      inCombat,
+      conRegenPerSecond: conRegenPerSecond(maxHp, profile.effectiveStats.con, regenBalance),
+      boostRegenPerSecond: boostRegen,
+      totalInCombatRegenPerSecond:
+        conRegenPerSecond(maxHp, profile.effectiveStats.con, regenBalance) + boostRegen,
+    };
+  },
+});

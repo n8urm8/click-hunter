@@ -208,7 +208,7 @@ export async function ensureBossKeyItem(ctx: MutationCtx, tier: number) {
     category: "crafting",
     description: `Infused key required to challenge the tier ${tier} boss. Consumed on start.`,
     stackable: true,
-    maxStackSize: 25,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: Math.max(1, tier * 10),
     itemFamily: "boss-key",

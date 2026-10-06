@@ -213,6 +213,116 @@ test("failed enchants burn essence but grant half XP", async () => {
   expect(stacks.every((row) => row.itemId !== undefined)).toBe(true);
 });
 
+test("trophy talismans sink 1000 dead drops into accessories", async () => {
+  const { t, playerId } = await setup();
+  await t.run((ctx) => seedForestCraftingContent(ctx));
+  const rows = await t.run(async (ctx) => {
+    const items = await Promise.all(
+      [
+        "rat-fang-talisman",
+        "goblin-thorn-talisman",
+        "heartwood-talisman",
+        "ember-scale-talisman",
+      ].map((slug) =>
+        ctx.db
+          .query("items")
+          .withIndex("by_itemId", (q) => q.eq("itemId", slug))
+          .first()
+      )
+    );
+    const recipe = await ctx.db
+      .query("recipes")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", "forge-rat-fang-talisman"))
+      .first();
+    const fang = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "moonlit-rat-fang"))
+      .first();
+    const tonic = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "verdant-tonic"))
+      .first();
+    const ingredients = recipe
+      ? await ctx.db
+          .query("recipeIngredients")
+          .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+          .collect()
+      : [];
+    return { items, recipe, ingredients, fang, tonic };
+  });
+  expect(rows.items.every((item) => item?.category === "equipment")).toBe(true);
+  expect(
+    rows.items.every((item) =>
+      item?.allowedEquipmentSlots.includes("accessory1")
+    )
+  ).toBe(true);
+  expect(
+    rows.items.map((item) => [item?.craftingTier, item?.effectStat, item?.effectAmount])
+  ).toEqual([
+    [4, "luk", 6],
+    [5, "dex", 8],
+    [6, "str", 9],
+    [7, "con", 11],
+  ]);
+  expect(rows.recipe?.skillId).toBe("forging");
+  expect(rows.fang?.maxStackSize).toBe(1000);
+  expect(rows.tonic?.maxStackSize).toBe(1000);
+  expect(
+    rows.ingredients.map((row) => row.quantity).sort((a, b) => a - b)
+  ).toEqual([2, 1000]);
+
+  // 999 fangs is not enough; 1000 queues.
+  await t.run(async (ctx) => {
+    const now = Date.now();
+    await ctx.db.insert("taskDefinitions", {
+      taskId: "skill_action", name: "Skill action", category: "skill",
+      description: "d", canProgressOffline: true, requiresOnline: false,
+      enabled: true, createdAt: now, updatedAt: now,
+    });
+    await ctx.db.insert("playerSkills", {
+      playerId, skillId: "forging", level: 39, experience: 0,
+      totalExperience: 0, actionsCompleted: 0, createdAt: now, updatedAt: now,
+    });
+    const fang = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "moonlit-rat-fang"))
+      .first();
+    const ingot = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "emberstone-ingot"))
+      .first();
+    if (!fang || !ingot) throw new Error("Seed materials missing");
+    await ctx.db.insert("playerItems", {
+      playerId, itemId: fang._id, quantity: 999, acquiredAt: now, updatedAt: now,
+    });
+    await ctx.db.insert("playerItems", {
+      playerId, itemId: ingot._id, quantity: 2, acquiredAt: now, updatedAt: now,
+    });
+  });
+  await expect(
+    t.mutation(api.tasks.enqueueSkillAction, {
+      playerId, actionType: "crafting",
+      actionId: "forge-rat-fang-talisman", quantity: 1,
+    })
+  ).rejects.toThrow("Insufficient crafting materials");
+  await t.run(async (ctx) => {
+    const fang = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "moonlit-rat-fang"))
+      .first();
+    if (!fang) throw new Error("Seed fang missing");
+    await ctx.db.insert("playerItems", {
+      playerId, itemId: fang._id, quantity: 1,
+      acquiredAt: Date.now(), updatedAt: Date.now(),
+    });
+  });
+  const queued = await t.mutation(api.tasks.enqueueSkillAction, {
+    playerId, actionType: "crafting",
+    actionId: "forge-rat-fang-talisman", quantity: 1,
+  });
+  expect(queued).toBeDefined();
+});
+
 test("elemental ward mitigates matching-element hits", async () => {
   const { t, playerId } = await setup();
   const ids = await t.run(async (ctx) => {

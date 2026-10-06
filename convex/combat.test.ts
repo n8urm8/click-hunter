@@ -13,6 +13,8 @@ import {
   computeAttackSpeed,
   readCombatBalance,
 } from "./items";
+import { HP_REGEN_BALANCE_DEFAULTS } from "./playerHp";
+import { LEATHER_BALANCE_DEFAULTS } from "./leatherwork";
 import schema from "./schema";
 import { projectBattleHealth } from "./taskTiming";
 
@@ -106,6 +108,14 @@ test("regular monster power defaults to original strength and honors the balance
     const monster = await ctx.db.query("monsters").unique();
     if (!monster) throw new Error("Missing test monster");
     await ctx.db.patch(monster._id, { str: 100, int: 100 });
+    // Zero CON regen so raw monster-power scaling is exact (regen is a flat
+    // per-hit mitigation that would otherwise break the halving assertion).
+    for (const [key, value] of [
+      ["combatConRegenBasePercent", 0],
+      ["combatConRegenPerPoint", 0],
+    ] as const) {
+      await ctx.db.insert("gameBalance", { key, value, description: "Test", lastUpdated: 0 });
+    }
   });
 
   const simulate = () => t.mutation(async (ctx) => {
@@ -291,7 +301,7 @@ test("legacy client-calculated regular fights cannot bypass server auto-battle",
 test("combat balance backfill is idempotent, preserves tuning and validates bad multipliers", async () => {
   const { t, playerId } = await setup();
   expect((await t.mutation(internal.migrations.backfillCombatBalance, {})).created)
-    .toBe(COMBAT_BALANCE_DEFAULTS.length);
+    .toBe(COMBAT_BALANCE_DEFAULTS.length + HP_REGEN_BALANCE_DEFAULTS.length + LEATHER_BALANCE_DEFAULTS.length);
   expect(await t.mutation(internal.migrations.backfillCombatBalance, {})).toEqual({ created: 0 });
   const row = await t.query((ctx) => ctx.db.query("gameBalance")
     .withIndex("by_key", (q) => q.eq("key", "combatAttackSpeedMultiplier")).unique());

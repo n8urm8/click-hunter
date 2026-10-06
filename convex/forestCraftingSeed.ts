@@ -3,6 +3,8 @@ import type { Id } from "./_generated/dataModel";
 import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { COMBAT_BALANCE_DEFAULTS } from "./items";
+import { HP_REGEN_BALANCE_DEFAULTS } from "./playerHp";
+import { LEATHER_BALANCE_DEFAULTS } from "./leatherwork";
 import { ELEMENT_VALUES } from "./itemTypes";
 import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 
@@ -22,6 +24,8 @@ type SeedItem = {
     | "feet"
     | "accessory1"
     | "accessory2"
+    | "amulet"
+    | "belt"
     | "bag"
     | "craftingEquipment"
   >;
@@ -74,7 +78,7 @@ function craftingItem(
   itemFamily: string,
   craftingSkillId: string,
   craftingTier: Tier,
-  maxStackSize = 100
+  maxStackSize = 1000
 ): SeedItem {
   return {
     itemId,
@@ -363,27 +367,27 @@ const CONSUMABLE_ITEMS: Array<
   SeedItem & { tier: Tier; family: string; variant: "base" | "advanced" }
 > = [
   // Track 1 — combat (alchemy-might), one per tier.
-  { ...craftingItem("verdant-tonic", "Verdant Tonic", "A soothing tonic that knits wounds over time.", "alchemy-might", "alchemy", 1, 25), ...{ effectType: "heal-over-time", effectAmount: 1.5, effectDurationMs: 5 * MIN } as ConsumableEffect, tier: 1, family: "alchemy-might", variant: "base" },
-  { ...craftingItem("ember-might-draught", "Ember Might Draught", "Kindles raw strength for a time.", "alchemy-might", "alchemy", 2, 25), ...{ effectType: "combat-stat-boost", effectStat: "str", effectAmount: 3, effectDurationMs: 5 * MIN } as ConsumableEffect, tier: 2, family: "alchemy-might", variant: "base" },
-  { ...craftingItem("hunters-swift-draught", "Hunter's Swiftness Draught", "Sharpens reflexes for a time.", "alchemy-might", "alchemy", 3, 25), ...{ effectType: "combat-stat-boost", effectStat: "dex", effectAmount: 3, effectDurationMs: 6 * MIN } as ConsumableEffect, tier: 3, family: "alchemy-might", variant: "base" },
-  { ...craftingItem("starwater-salve", "Starwater Salve", "A potent salve that closes wounds over time.", "alchemy-might", "alchemy", 4, 25), ...{ effectType: "heal-over-time", effectAmount: 3, effectDurationMs: 8 * MIN } as ConsumableEffect, tier: 4, family: "alchemy-might", variant: "advanced" },
-  { ...craftingItem("demonseed-might-draught", "Demonseed Might Draught", "Burns with a dangerous, mighty strength.", "alchemy-might", "alchemy", 5, 25), ...{ effectType: "combat-stat-boost", effectStat: "str", effectAmount: 7, effectDurationMs: 10 * MIN } as ConsumableEffect, tier: 5, family: "alchemy-might", variant: "advanced" },
-  { ...craftingItem("stonehide-draught", "Stonehide Draught", "Skin takes on the patience of stone.", "alchemy-might", "alchemy", 6, 25), ...{ effectType: "combat-stat-boost", effectStat: "con", effectAmount: 4, effectDurationMs: 10 * MIN } as ConsumableEffect, tier: 6, family: "alchemy-might", variant: "base" },
-  { ...craftingItem("nightmare-swift-draught", "Nightmare Swiftness Draught", "Move like something out of a bad dream.", "alchemy-might", "alchemy", 7, 25), ...{ effectType: "combat-stat-boost", effectStat: "dex", effectAmount: 7, effectDurationMs: 12 * MIN } as ConsumableEffect, tier: 7, family: "alchemy-might", variant: "advanced" },
-  { ...craftingItem("starforged-heart-draught", "Starforged Heart Draught", "The heart of the forest, beating in a flask.", "alchemy-might", "alchemy", 8, 25), ...{ effectType: "combat-stat-boost", effectStat: "con", effectAmount: 8, effectDurationMs: 15 * MIN } as ConsumableEffect, tier: 8, family: "alchemy-might", variant: "advanced" },
+  { ...craftingItem("verdant-tonic", "Verdant Tonic", "A soothing tonic that knits wounds over time.", "alchemy-might", "alchemy", 1, 1000), ...{ effectType: "heal-over-time", effectAmount: 1.5, effectDurationMs: 5 * MIN } as ConsumableEffect, tier: 1, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("ember-might-draught", "Ember Might Draught", "Kindles raw strength for a time.", "alchemy-might", "alchemy", 2, 1000), ...{ effectType: "combat-stat-boost", effectStat: "str", effectAmount: 3, effectDurationMs: 5 * MIN } as ConsumableEffect, tier: 2, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("hunters-swift-draught", "Hunter's Swiftness Draught", "Sharpens reflexes for a time.", "alchemy-might", "alchemy", 3, 1000), ...{ effectType: "combat-stat-boost", effectStat: "dex", effectAmount: 3, effectDurationMs: 6 * MIN } as ConsumableEffect, tier: 3, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("starwater-salve", "Starwater Salve", "A potent salve that closes wounds over time.", "alchemy-might", "alchemy", 4, 1000), ...{ effectType: "heal-over-time", effectAmount: 3, effectDurationMs: 8 * MIN } as ConsumableEffect, tier: 4, family: "alchemy-might", variant: "advanced" },
+  { ...craftingItem("demonseed-might-draught", "Demonseed Might Draught", "Burns with a dangerous, mighty strength.", "alchemy-might", "alchemy", 5, 1000), ...{ effectType: "combat-stat-boost", effectStat: "str", effectAmount: 7, effectDurationMs: 10 * MIN } as ConsumableEffect, tier: 5, family: "alchemy-might", variant: "advanced" },
+  { ...craftingItem("stonehide-draught", "Stonehide Draught", "Skin takes on the patience of stone.", "alchemy-might", "alchemy", 6, 1000), ...{ effectType: "combat-stat-boost", effectStat: "con", effectAmount: 4, effectDurationMs: 10 * MIN } as ConsumableEffect, tier: 6, family: "alchemy-might", variant: "base" },
+  { ...craftingItem("nightmare-swift-draught", "Nightmare Swiftness Draught", "Move like something out of a bad dream.", "alchemy-might", "alchemy", 7, 1000), ...{ effectType: "combat-stat-boost", effectStat: "dex", effectAmount: 7, effectDurationMs: 12 * MIN } as ConsumableEffect, tier: 7, family: "alchemy-might", variant: "advanced" },
+  { ...craftingItem("starforged-heart-draught", "Starforged Heart Draught", "The heart of the forest, beating in a flask.", "alchemy-might", "alchemy", 8, 1000), ...{ effectType: "combat-stat-boost", effectStat: "con", effectAmount: 8, effectDurationMs: 15 * MIN } as ConsumableEffect, tier: 8, family: "alchemy-might", variant: "advanced" },
   // Track 2 — skill XP (alchemy-focus), per-skill pairs.
-  { ...craftingItem("gathering-focus-tonic", "Gathering Focus Tonic", "Sharpens gathering instincts, improving skill gains.", "alchemy-focus", "alchemy", 1, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 1, family: "alchemy-focus", variant: "base" },
-  { ...craftingItem("crafting-focus-tonic", "Crafting Focus Tonic", "Steadies the hand, improving crafting skill gains.", "alchemy-focus", "alchemy", 1, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 1, family: "alchemy-focus", variant: "base" },
-  { ...craftingItem("gathering-focus-elixir", "Gathering Focus Elixir", "Deep attunement to the wilds.", "alchemy-focus", "alchemy", 5, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.8, effectDurationMs: 45 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 5, family: "alchemy-focus", variant: "advanced" },
-  { ...craftingItem("crafting-focus-elixir", "Crafting Focus Elixir", "The workshop feels like an extension of the self.", "alchemy-focus", "alchemy", 5, 25), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.8, effectDurationMs: 45 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 5, family: "alchemy-focus", variant: "advanced" },
+  { ...craftingItem("gathering-focus-tonic", "Gathering Focus Tonic", "Sharpens gathering instincts, improving skill gains.", "alchemy-focus", "alchemy", 1, 1000), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 1, family: "alchemy-focus", variant: "base" },
+  { ...craftingItem("crafting-focus-tonic", "Crafting Focus Tonic", "Steadies the hand, improving crafting skill gains.", "alchemy-focus", "alchemy", 1, 1000), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 1, family: "alchemy-focus", variant: "base" },
+  { ...craftingItem("gathering-focus-elixir", "Gathering Focus Elixir", "Deep attunement to the wilds.", "alchemy-focus", "alchemy", 5, 1000), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.8, effectDurationMs: 45 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 5, family: "alchemy-focus", variant: "advanced" },
+  { ...craftingItem("crafting-focus-elixir", "Crafting Focus Elixir", "The workshop feels like an extension of the self.", "alchemy-focus", "alchemy", 5, 1000), ...{ effectType: "skill-xp-multiplier", effectAmount: 1.8, effectDurationMs: 45 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 5, family: "alchemy-focus", variant: "advanced" },
   // Track 3 — skill speed (alchemy-swiftness), per-skill pairs.
-  { ...craftingItem("gathering-alacrity-tonic", "Gathering Alacrity Tonic", "Quickens gathering work.", "alchemy-swiftness", "alchemy", 2, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.2, effectDurationMs: 30 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 2, family: "alchemy-swiftness", variant: "base" },
-  { ...craftingItem("crafting-alacrity-tonic", "Crafting Alacrity Tonic", "Quickens crafting work.", "alchemy-swiftness", "alchemy", 2, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.2, effectDurationMs: 30 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 2, family: "alchemy-swiftness", variant: "base" },
-  { ...craftingItem("gathering-alacrity-elixir", "Gathering Alacrity Elixir", "Blur through the undergrowth.", "alchemy-swiftness", "alchemy", 6, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.6, effectDurationMs: 45 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 6, family: "alchemy-swiftness", variant: "advanced" },
-  { ...craftingItem("crafting-alacrity-elixir", "Crafting Alacrity Elixir", "Hands move faster than thought.", "alchemy-swiftness", "alchemy", 6, 25), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.6, effectDurationMs: 45 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 6, family: "alchemy-swiftness", variant: "advanced" },
+  { ...craftingItem("gathering-alacrity-tonic", "Gathering Alacrity Tonic", "Quickens gathering work.", "alchemy-swiftness", "alchemy", 2, 1000), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.2, effectDurationMs: 30 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 2, family: "alchemy-swiftness", variant: "base" },
+  { ...craftingItem("crafting-alacrity-tonic", "Crafting Alacrity Tonic", "Quickens crafting work.", "alchemy-swiftness", "alchemy", 2, 1000), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.2, effectDurationMs: 30 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 2, family: "alchemy-swiftness", variant: "base" },
+  { ...craftingItem("gathering-alacrity-elixir", "Gathering Alacrity Elixir", "Blur through the undergrowth.", "alchemy-swiftness", "alchemy", 6, 1000), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.6, effectDurationMs: 45 * MIN, effectScope: "gathering" } as ConsumableEffect, tier: 6, family: "alchemy-swiftness", variant: "advanced" },
+  { ...craftingItem("crafting-alacrity-elixir", "Crafting Alacrity Elixir", "Hands move faster than thought.", "alchemy-swiftness", "alchemy", 6, 1000), ...{ effectType: "skill-speed-multiplier", effectAmount: 1.6, effectDurationMs: 45 * MIN, effectScope: "crafting" } as ConsumableEffect, tier: 6, family: "alchemy-swiftness", variant: "advanced" },
   // Track 4 — combat XP (alchemy-wisdom), single pair.
-  { ...craftingItem("wisdom-draught", "Wisdom Draught", "Learn from every battle.", "alchemy-wisdom", "alchemy", 3, 25), ...{ effectType: "combat-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN } as ConsumableEffect, tier: 3, family: "alchemy-wisdom", variant: "base" },
-  { ...craftingItem("wisdom-elixir", "Wisdom Elixir", "Every scar is a lesson.", "alchemy-wisdom", "alchemy", 7, 25), ...{ effectType: "combat-xp-multiplier", effectAmount: 2.0, effectDurationMs: 45 * MIN } as ConsumableEffect, tier: 7, family: "alchemy-wisdom", variant: "advanced" },
+  { ...craftingItem("wisdom-draught", "Wisdom Draught", "Learn from every battle.", "alchemy-wisdom", "alchemy", 3, 1000), ...{ effectType: "combat-xp-multiplier", effectAmount: 1.3, effectDurationMs: 30 * MIN } as ConsumableEffect, tier: 3, family: "alchemy-wisdom", variant: "base" },
+  { ...craftingItem("wisdom-elixir", "Wisdom Elixir", "Every scar is a lesson.", "alchemy-wisdom", "alchemy", 7, 1000), ...{ effectType: "combat-xp-multiplier", effectAmount: 2.0, effectDurationMs: 45 * MIN } as ConsumableEffect, tier: 7, family: "alchemy-wisdom", variant: "advanced" },
 ];
 
 // ─── Forged gear (7 pieces × 8 tiers) ───────────────────────────────────────
@@ -461,6 +465,152 @@ const WOODWORKING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
   ];
 });
 
+// ─── Leatherwork (leathercrafting skill: belts, bags, leather armor) ─────────
+// Medium-difficulty monsters supply the hides: troll → str, wyvern → dex,
+// dragon → int. Leather is tier-marked per monster and upgrades stepwise
+// (tier N cures from tier N-1 + fresh hides), so the line extends to any
+// future tier as data-only rows: formulas below are linear in tier with no
+// 8-cap in code, validation, or the recipes table.
+const LEATHER_SOURCES = [
+  { monster: "troll", hideItemId: "troll-moss-hide", prefix: "trollhide", name: "Trollhide", stat: "str" },
+  { monster: "wyvern", hideItemId: "wyvern-moon-scale", prefix: "wyvernscale", name: "Wyvernscale", stat: "dex" },
+  { monster: "dragon", hideItemId: "dragon-ember-scale", prefix: "dragonhide", name: "Dragonhide", stat: "int" },
+] as const;
+
+const LEATHER_ARMOR_PIECES = [
+  { suffix: "cap", slot: "head", name: "Cap", defense: 1 },
+  { suffix: "vest", slot: "chest", name: "Vest", defense: 3 },
+  { suffix: "leggings", slot: "legs", name: "Leggings", defense: 2 },
+  { suffix: "boots", slot: "feet", name: "Boots", defense: 1 },
+] as const;
+
+function leatherItem(
+  itemId: string,
+  name: string,
+  monster: string,
+  craftingTier: Tier
+): SeedItem {
+  return {
+    ...craftingItem(
+      itemId,
+      name,
+      `Cured tier ${craftingTier} leather from ${monster} hides. Upgrades with the tiers.`,
+      `leather-${monster}`,
+      "leathercrafting",
+      craftingTier
+    ),
+  };
+}
+
+function beltItem(
+  itemId: string,
+  name: string,
+  monster: string,
+  craftingTier: Tier,
+  effectStat: EffectStat
+): SeedItem {
+  return {
+    itemId,
+    name,
+    category: "equipment",
+    description: `${name}: holds alchemy brews at the hip (tier ${craftingTier} belts unlock more consumable slots) and carries the strength of the ${monster}.`,
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["belt"],
+    rarityLevel: craftingTier * 10,
+    itemFamily: `leather-belt-${monster}`,
+    craftingSkillId: "leathercrafting",
+    craftingTier,
+    effectType: "stat-bonus",
+    effectStat,
+    effectAmount: craftingTier,
+    augmentSlots: 1,
+    // Zero base defense keeps unenchanted belts purely utility; the armor
+    // flag makes them enchantable (and augmentable) like any equipment.
+    baseDefense: 0,
+  };
+}
+
+function bagItem(itemId: string, name: string, craftingTier: Tier): SeedItem {
+  return {
+    itemId,
+    name,
+    category: "equipment",
+    description: `${name}: stitched carry space, +${craftingTier * 10} inventory slots while equipped. No combat bonus.`,
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["bag"],
+    rarityLevel: craftingTier * 10,
+    itemFamily: "leather-bag",
+    craftingSkillId: "leathercrafting",
+    craftingTier,
+    augmentSlots: 0,
+  };
+}
+
+function leatherArmorItem(
+  itemId: string,
+  name: string,
+  monster: string,
+  craftingTier: Tier,
+  slot: EquipmentSlot,
+  effectStat: EffectStat,
+  baseDefensePerTier: number
+): SeedItem {
+  return {
+    itemId,
+    name,
+    category: "equipment",
+    description: `${name}: supple tier ${craftingTier} ${monster} leather. Less protection than wood or metal, but alive with ${effectStat.toUpperCase()}.`,
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: [slot],
+    rarityLevel: craftingTier * 10,
+    itemFamily: `leather-armor-${monster}-${slot}`,
+    craftingSkillId: "leathercrafting",
+    craftingTier,
+    effectType: "stat-bonus",
+    effectStat,
+    effectAmount: craftingTier,
+    augmentSlots: 1,
+    baseDefense: baseDefensePerTier * craftingTier,
+  };
+}
+
+const LEATHERWORKING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => [
+  ...LEATHER_SOURCES.map((source) =>
+    leatherItem(
+      `${source.prefix}-leather-t${tier}`,
+      `${source.name} Leather T${tier}`,
+      source.monster,
+      tier
+    )
+  ),
+  ...LEATHER_SOURCES.map((source) =>
+    beltItem(
+      `${source.prefix}-belt-t${tier}`,
+      `${source.name} Belt T${tier}`,
+      source.monster,
+      tier,
+      source.stat as EffectStat
+    )
+  ),
+  bagItem(`traveler-bag-t${tier}`, `Traveler's Bag T${tier}`, tier),
+  ...LEATHER_SOURCES.flatMap((source) =>
+    LEATHER_ARMOR_PIECES.map((piece) =>
+      leatherArmorItem(
+        `${source.prefix}-${piece.suffix}-t${tier}`,
+        `${source.name} ${piece.name} T${tier}`,
+        source.monster,
+        tier,
+        piece.slot as EquipmentSlot,
+        source.stat as EffectStat,
+        piece.defense
+      )
+    )
+  ),
+]);
+
 const OUTPUT_ITEMS: SeedItem[] = [
   ...REFINED_ITEMS,
   ...CONSUMABLE_ITEMS.map(
@@ -471,6 +621,7 @@ const OUTPUT_ITEMS: SeedItem[] = [
   ),
   ...WOODWORKING_ITEMS,
   ...FORGING_ITEMS,
+  ...LEATHERWORKING_ITEMS,
 ];
 
 // ─── Starter kits (T0, no recipes) ──────────────────────────────────────────
@@ -629,7 +780,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A sharp fang stained by the moonlit burrows beneath the forest.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 10,
     itemFamily: "monster-augmentation",
@@ -640,7 +791,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A crooked charm cut from a goblin's stolen thornwood.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 10,
     itemFamily: "monster-augmentation",
@@ -651,7 +802,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A splinter of heartwood carried by orc chieftains.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 20,
     itemFamily: "monster-augmentation",
@@ -662,7 +813,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "Tough hide covered in the moss of a troll's den.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 20,
     itemFamily: "monster-augmentation",
@@ -673,7 +824,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A scale that catches moonlight even in a closed pouch.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 30,
     itemFamily: "monster-augmentation",
@@ -684,7 +835,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A warm scale that remembers the color of a dragon's fire.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 30,
     itemFamily: "monster-augmentation",
@@ -695,7 +846,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A seed that refuses to sprout unless fed a spark of shadow.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 30,
     itemFamily: "monster-augmentation",
@@ -706,7 +857,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A leaf plucked from the edge of a nightmare.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 30,
     itemFamily: "monster-augmentation",
@@ -717,7 +868,7 @@ const MONSTER_DROP_ITEMS: SeedItem[] = [
     category: "crafting",
     description: "A horn whose black grain twists toward forbidden paths.",
     stackable: true,
-    maxStackSize: 100,
+    maxStackSize: 1000,
     allowedEquipmentSlots: [],
     rarityLevel: 30,
     itemFamily: "monster-augmentation",
@@ -730,7 +881,7 @@ const BOSS_TOKEN_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
   category: "crafting",
   description: `A token claimed from the tier ${tier} guardian of the forest.`,
   stackable: true,
-  maxStackSize: 25,
+  maxStackSize: 1000,
   allowedEquipmentSlots: [],
   rarityLevel: 30,
   itemFamily: "boss-catalyst",
@@ -750,19 +901,74 @@ const ESSENCE_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
   craftingTier: tier as Tier,
 }));
 
-const BOSS_KEY_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
-  itemId: `boss-key-tier-${tier}`,
+const BOSS_KEY_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({  itemId: `boss-key-tier-${tier}`,
   name: `Tier ${tier} Boss Key`,
   category: "crafting",
   description: `Infused key required to challenge the tier ${tier} boss. Consumed on start.`,
   stackable: true,
-  maxStackSize: 25,
+  maxStackSize: 1000,
   allowedEquipmentSlots: [],
   rarityLevel: Math.max(1, tier * 10),
   itemFamily: "boss-key",
   craftingSkillId: "infusion",
   craftingTier: tier as Tier,
 }));
+
+function talismanItem(
+  itemId: string,
+  name: string,
+  description: string,
+  craftingTier: Tier,
+  effectStat: EffectStat,
+  effectAmount: number
+): SeedItem {
+  return {
+    itemId,
+    name,
+    category: "equipment",
+    description,
+    stackable: false,
+    maxStackSize: 1,
+    allowedEquipmentSlots: ["accessory1", "accessory2", "amulet"],
+    rarityLevel: craftingTier * 10,
+    itemFamily: "forging-talisman",
+    craftingSkillId: "forging",
+    craftingTier,
+    effectType: "stat-bonus",
+    effectStat,
+    effectAmount,
+    augmentSlots: 1,
+  };
+}
+
+// Trophy talismans: obscene-quantity sinks (1000 each) for the monster drops
+// with no other use. Mid-to-high-tier accessories, one standout stat each.
+const TALISMAN_ITEMS: SeedItem[] = [
+  talismanItem(
+    "rat-fang-talisman",
+    "Rat Fang Talisman",
+    "A thousand moonlit fangs braided into a luck-thief's charm.",
+    4, "luk", 6
+  ),
+  talismanItem(
+    "goblin-thorn-talisman",
+    "Goblin Thorn Talisman",
+    "A thousand stolen thorns set in stormsilver, quick as theft.",
+    5, "dex", 8
+  ),
+  talismanItem(
+    "heartwood-talisman",
+    "Heartwood Talisman",
+    "A thousand heartwood splinters bound around voidquartz. It hits back.",
+    6, "str", 9
+  ),
+  talismanItem(
+    "ember-scale-talisman",
+    "Ember Scale Talisman",
+    "A thousand ember scales over nightsteel. Warm as blood, hard as war.",
+    7, "con", 11
+  ),
+];
 
 const ALL_ITEMS = [
   ...RESOURCE_ITEMS,
@@ -772,6 +978,7 @@ const ALL_ITEMS = [
   ...BOSS_TOKEN_ITEMS,
   ...ESSENCE_ITEMS,
   ...BOSS_KEY_ITEMS,
+  ...TALISMAN_ITEMS,
 ];
 
 const SKILLS = [
@@ -823,6 +1030,13 @@ const SKILLS = [
     category: "crafting" as const,
     description:
       "Bind monster essence into boss keys, augmentations, and enchantments. Every tier is attemptable from level 1 with success falling off by tier gap.",
+  },
+  {
+    skillId: "leathercrafting",
+    name: "Leathercrafting",
+    category: "crafting" as const,
+    description:
+      "Cure monster hides into tiered leather and stitch it into belts, bags, and light armor. A craft-only skill: hides come from troll, wyvern, and dragon loot.",
   },
 ];
 
@@ -913,7 +1127,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       });
     }
   }
-  for (const entry of [...SKILL_TASK_BALANCE_DEFAULTS, ...COMBAT_BALANCE_DEFAULTS, ...INFUSION_BALANCE_DEFAULTS]) {
+  for (const entry of [...SKILL_TASK_BALANCE_DEFAULTS, ...COMBAT_BALANCE_DEFAULTS, ...HP_REGEN_BALANCE_DEFAULTS, ...LEATHER_BALANCE_DEFAULTS, ...INFUSION_BALANCE_DEFAULTS]) {
     const existing = await ctx.db
       .query("gameBalance")
       .withIndex("by_key", (q) => q.eq("key", entry.key))
@@ -1448,6 +1662,200 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     });
   }
 
+  // Trophy talismans: 1000-drop sinks for otherwise-unused monster drops,
+  // plus same-tier ingots. Legacy (stageless) recipes like boss keys: the
+  // product chain rule requires a contiguous family from tier 1, but this
+  // line starts at tier 4.
+  const ingotT = refinedIds(INGOT_LINE);
+  const talismanRecipes: Array<{
+    recipeId: string;
+    outputItemId: string;
+    tier: number;
+    name: string;
+    dropItemId: string;
+  }> = [
+    { recipeId: "forge-rat-fang-talisman", outputItemId: "rat-fang-talisman", tier: 4, name: "Forge Rat Fang Talisman", dropItemId: "moonlit-rat-fang" },
+    { recipeId: "forge-goblin-thorn-talisman", outputItemId: "goblin-thorn-talisman", tier: 5, name: "Forge Goblin Thorn Talisman", dropItemId: "goblin-thorn-charm" },
+    { recipeId: "forge-heartwood-talisman", outputItemId: "heartwood-talisman", tier: 6, name: "Forge Heartwood Talisman", dropItemId: "orc-heartwood-shard" },
+    { recipeId: "forge-ember-scale-talisman", outputItemId: "ember-scale-talisman", tier: 7, name: "Forge Ember Scale Talisman", dropItemId: "dragon-ember-scale" },
+  ];
+  for (const talisman of talismanRecipes) {
+    const recipe = {
+      recipeId: talisman.recipeId,
+      skillId: "forging",
+      tier: talisman.tier,
+      name: talisman.name,
+      description: `Forge a trophy talisman from 1000 monster drops and tier ${talisman.tier} ingots.`,
+      durationMs: talisman.tier * 45_000,
+      experienceReward: talisman.tier * 50,
+      outputFamily: "forging-talisman",
+      enabled: true,
+      updatedAt: now,
+    };
+    const existing = await ctx.db
+      .query("recipes")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", talisman.recipeId))
+      .first();
+    if (existing) await ctx.db.patch(existing._id, recipe);
+    else await ctx.db.insert("recipes", { ...recipe, createdAt: now });
+
+    const oldIngredients = await ctx.db
+      .query("recipeIngredients")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", talisman.recipeId))
+      .collect();
+    for (const row of oldIngredients) await ctx.db.delete(row._id);
+    await ctx.db.insert("recipeIngredients", {
+      recipeId: talisman.recipeId,
+      itemId: itemIdFor(itemById, talisman.dropItemId),
+      quantity: 1000,
+    });
+    await ctx.db.insert("recipeIngredients", {
+      recipeId: talisman.recipeId,
+      itemId: itemIdFor(itemById, ingotT[talisman.tier - 1]),
+      quantity: 2,
+    });
+
+    const oldTalismanOutputs = await ctx.db
+      .query("recipeOutputs")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", talisman.recipeId))
+      .collect();
+    for (const row of oldTalismanOutputs) await ctx.db.delete(row._id);
+    await ctx.db.insert("recipeOutputs", {
+      recipeId: talisman.recipeId,
+      itemId: itemIdFor(itemById, talisman.outputItemId),
+      quantity: 1,
+    });
+  }
+
+  // Leatherwork recipes: stageless legacy recipes (like talismans and boss
+  // keys) because hides come from combat loot, not a paired gathering skill,
+  // so the refinement/product chain rules cannot apply. Crafting-tier gates
+  // still apply via skillTierDefinitions. Every line upgrades stepwise
+  // (tier N consumes the tier N-1 piece), so tiers extend as data-only rows.
+  const leatherRecipes: Array<{
+    recipeId: string;
+    outputItemId: string;
+    tier: Tier;
+    name: string;
+    description: string;
+    outputFamily: string;
+    ingredients: Array<{ itemId: string; quantity: number }>;
+  }> = [];
+  for (const tier of TIERS) {
+    for (const source of LEATHER_SOURCES) {
+      const leatherId = `${source.prefix}-leather-t${tier}`;
+      leatherRecipes.push({
+        recipeId: leatherId,
+        outputItemId: leatherId,
+        tier,
+        name: `Cure ${source.name} Leather T${tier}`,
+        description:
+          tier === 1
+            ? `Cure ${source.hideItemId} hides into workable tier 1 leather.`
+            : `Upgrade ${source.name} leather to tier ${tier} with fresh hides.`,
+        outputFamily: `leather-${source.monster}`,
+        ingredients: [
+          { itemId: source.hideItemId, quantity: 3 },
+          ...(tier === 1
+            ? []
+            : [{ itemId: `${source.prefix}-leather-t${tier - 1}`, quantity: 1 }]),
+        ],
+      });
+      const beltId = `${source.prefix}-belt-t${tier}`;
+      leatherRecipes.push({
+        recipeId: beltId,
+        outputItemId: beltId,
+        tier,
+        name: `Stitch ${source.name} Belt T${tier}`,
+        description: `Stitch a tier ${tier} ${source.monster}-hide belt. Higher tiers hold more consumables.`,
+        outputFamily: `leather-belt-${source.monster}`,
+        ingredients: [
+          { itemId: leatherId, quantity: 2 },
+          ...(tier === 1
+            ? []
+            : [{ itemId: `${source.prefix}-belt-t${tier - 1}`, quantity: 1 }]),
+        ],
+      });
+      for (const piece of LEATHER_ARMOR_PIECES) {
+        const armorId = `${source.prefix}-${piece.suffix}-t${tier}`;
+        leatherRecipes.push({
+          recipeId: armorId,
+          outputItemId: armorId,
+          tier,
+          name: `Stitch ${source.name} ${piece.name} T${tier}`,
+          description: `Stitch tier ${tier} ${source.monster}-hide ${piece.name.toLowerCase()} from cured leather.`,
+          outputFamily: `leather-armor-${source.monster}-${piece.slot}`,
+          ingredients: [
+            { itemId: leatherId, quantity: 2 },
+            ...(tier === 1
+              ? []
+              : [{ itemId: `${source.prefix}-${piece.suffix}-t${tier - 1}`, quantity: 1 }]),
+          ],
+        });
+      }
+    }
+    const bagId = `traveler-bag-t${tier}`;
+    leatherRecipes.push({
+      recipeId: bagId,
+      outputItemId: bagId,
+      tier,
+      name: `Stitch Traveler's Bag T${tier}`,
+      description: `Stitch a tier ${tier} carry bag from all three cured leathers. +${tier * 10} inventory slots while equipped.`,
+      outputFamily: "leather-bag",
+      ingredients: [
+        ...LEATHER_SOURCES.map((source) => ({
+          itemId: `${source.prefix}-leather-t${tier}`,
+          quantity: 2,
+        })),
+        ...(tier === 1 ? [] : [{ itemId: `traveler-bag-t${tier - 1}`, quantity: 1 }]),
+      ],
+    });
+  }
+  for (const recipe of leatherRecipes) {
+    const row = {
+      recipeId: recipe.recipeId,
+      skillId: "leathercrafting",
+      tier: recipe.tier,
+      name: recipe.name,
+      description: recipe.description,
+      durationMs: recipe.tier * 45_000,
+      experienceReward: recipe.tier * 50,
+      outputFamily: recipe.outputFamily,
+      enabled: true,
+      updatedAt: now,
+    };
+    const existingRecipe = await ctx.db
+      .query("recipes")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+      .first();
+    if (existingRecipe) await ctx.db.patch(existingRecipe._id, row);
+    else await ctx.db.insert("recipes", { ...row, createdAt: now });
+
+    const oldLeatherIngredients = await ctx.db
+      .query("recipeIngredients")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+      .collect();
+    for (const oldRow of oldLeatherIngredients) await ctx.db.delete(oldRow._id);
+    for (const ingredient of recipe.ingredients) {
+      await ctx.db.insert("recipeIngredients", {
+        recipeId: recipe.recipeId,
+        itemId: itemIdFor(itemById, ingredient.itemId),
+        quantity: ingredient.quantity,
+      });
+    }
+
+    const oldLeatherOutputs = await ctx.db
+      .query("recipeOutputs")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+      .collect();
+    for (const oldRow of oldLeatherOutputs) await ctx.db.delete(oldRow._id);
+    await ctx.db.insert("recipeOutputs", {
+      recipeId: recipe.recipeId,
+      itemId: itemIdFor(itemById, recipe.outputItemId),
+      quantity: 1,
+    });
+  }
+
   // Legacy flavor augmentations (monster drops + tokens, stat bonuses).
   // Retired in favor of chained boss-token lines below; rows stay for
   // existing applied augments and refunds.
@@ -1483,7 +1891,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     name: string;
     description: string;
     allowedEquipmentSlots: Array<
-      "head" | "chest" | "mainHand" | "legs" | "feet"
+      "head" | "chest" | "mainHand" | "legs" | "feet" | "belt"
     >;
     requiredMaterialItemId: Id<"items">;
     requiredMaterialQuantity: number;
@@ -1535,7 +1943,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
           `Attune armor to ${imbue} for +${tier * AUGMENT_DEFENSE_PER_TIER} ` +
           `base defense and a ${imbue} ward against matching hits.` +
           chainNote,
-        allowedEquipmentSlots: ["head", "chest", "legs", "feet"],
+        allowedEquipmentSlots: ["head", "chest", "legs", "feet", "belt"],
         requiredMaterialItemId: itemIdFor(
           itemById,
           `forest-boss-token-${tier}`
@@ -1610,7 +2018,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       lootTableId: tableId,
       itemId: itemIdFor(itemById, materialId),
       weight: 1,
-      dropChance: 1,
+      dropChance: 0.35,
       minQuantity: 1,
       maxQuantity: 1,
       guaranteed: false,

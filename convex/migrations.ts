@@ -22,6 +22,8 @@ import {
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 import { COMBAT_BALANCE_DEFAULTS } from "./items";
+import { HP_REGEN_BALANCE_DEFAULTS } from "./playerHp";
+import { LEATHER_BALANCE_DEFAULTS } from "./leatherwork";
 import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
@@ -218,7 +220,7 @@ export const backfillCombatBalance = internalMutation({
   args: {},
   handler: async (ctx) => {
     let created = 0;
-    for (const entry of COMBAT_BALANCE_DEFAULTS) {
+    for (const entry of [...COMBAT_BALANCE_DEFAULTS, ...HP_REGEN_BALANCE_DEFAULTS, ...LEATHER_BALANCE_DEFAULTS]) {
       const existing = await ctx.db.query("gameBalance")
         .withIndex("by_key", (q) => q.eq("key", entry.key)).first();
       if (existing) continue;

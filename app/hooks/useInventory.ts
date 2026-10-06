@@ -42,3 +42,17 @@ export function useCombatBoost() {
 export function useEnchantEquipment() {
   return useMutation(api.infusion.enchantEquipment);
 }
+
+export function useConsumableSlots(playerId: Id<"players"> | null) {
+  return useQuery({
+    ...convexQuery(
+      api.consumableSlots.getConsumableSlots,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
+}
+
+export function useSetConsumableSlot() {
+  return useMutation(api.consumableSlots.setConsumableSlot);
+}

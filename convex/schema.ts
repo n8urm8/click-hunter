@@ -108,6 +108,9 @@ export default defineSchema({
     starterWeapon: v.optional(v.string()),
     // True when the player must pick a starter kit (creation/rebirth flow).
     pendingStarterPick: v.optional(v.boolean()),
+    // Persistent HP between fights. Undefined means full (migration fallback).
+    currentHp: v.optional(v.number()),
+    currentHpUpdatedAt: v.optional(v.number()),
     // Metadata
     createdAt: v.number(),
     lastUpdated: v.number(),
@@ -883,6 +886,19 @@ export default defineSchema({
   })
     .index("by_playerId", ["playerId"])
     .index("by_playerId_and_nodeId", ["playerId", "nodeId"]),
+
+  // Equipped auto-consumable slots. Slot 0 is always unlocked; slots 1-2
+  // unlock via skilling passive nodes. Server auto-consumes 1 inventory unit
+  // when the slot's buff expires while the active task matches the item.
+  playerConsumableSlots: defineTable({
+    playerId: v.id("players"),
+    slotIndex: v.number(),
+    itemId: v.id("items"),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_and_slotIndex", ["playerId", "slotIndex"]),
 
   // Server-authoritative manual boss fights. The client renders HP bars and
   // sends intents (start/strike); all damage rolls and win/loss settlement

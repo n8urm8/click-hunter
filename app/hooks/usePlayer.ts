@@ -134,6 +134,20 @@ export function useRecordFight() {
 }
 
 /**
+ * Hook for the persistent HP bar (CON regen + boost regen included).
+ */
+export function useHpStatus(playerId: Id<"players"> | null) {
+  return useQuery({
+    ...convexQuery(
+      api.combat.getHpStatus,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+    refetchInterval: 5000,
+  });
+}
+
+/**
  * Hook for claiming hidden spot reward
  */
 export function useClaimHiddenSpotReward() {

@@ -22,6 +22,7 @@ import { useSkillPanel } from "~/hooks/useSkills";
 import { formatPercent, infusionSuccessChance } from "~/lib/infusion";
 import { useEnqueueSkillAction } from "~/hooks/useTasks";
 import { ItemIcon } from "~/components/game/ItemIcon";
+import { ConsumableSlots } from "~/components/inventory/ConsumableSlots";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
 import {
   COMBAT_EFFECT_TYPES,
@@ -62,12 +63,16 @@ const SLOT_LABELS: Record<EquipmentSlot, string> = {
   feet: "Feet",
   accessory1: "Accessory 1",
   accessory2: "Accessory 2",
+  amulet: "Amulet",
+  belt: "Belt",
   bag: "Bag",
   craftingEquipment: "Crafting Equipment",
 };
 
 const SLOT_LAYOUT: Record<EquipmentSlot, string> = {
+  belt: "col-start-1 row-start-1",
   head: "col-start-2 row-start-1",
+  amulet: "col-start-3 row-start-1",
   chest: "col-start-2 row-start-2",
   mainHand: "col-start-1 row-start-2",
   offHand: "col-start-3 row-start-2",
@@ -1154,6 +1159,7 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
                   );
                 })}
               </div>
+              <ConsumableSlots playerId={playerId} />
             </div>
 
             <div className="flex min-h-0 flex-col">

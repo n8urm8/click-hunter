@@ -71,6 +71,8 @@ export const EQUIPMENT_SLOT_VALUES = [
   "feet",
   "accessory1",
   "accessory2",
+  "amulet",
+  "belt",
   "bag",
   "craftingEquipment",
 ] as const;

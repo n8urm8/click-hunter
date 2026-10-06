@@ -6,6 +6,8 @@ import { components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { Doc } from "./_generated/dataModel";
 import { readPlayerCombatProfile } from "./combat";
+import { resolveCurrentHp, readHpRegenBalance, writePlayerHp } from "./playerHp";
+import { tickEquippedConsumables } from "./consumableSlots";
 import { settleCombatFight } from "./loot";
 import { consumeBossKey } from "./infusion";
 import {
@@ -68,7 +70,8 @@ async function applyPendingMonsterDamage(
   session: BossSession,
   monsterAttackSpeed: number,
   monsterAttack: number,
-  now: number
+  now: number,
+  regenPerSecond = 0
 ) {
   const intervalMs = Math.max(500, 1000 / monsterAttackSpeed);
   const elapsedMs = Math.max(0, now - session.lastStrikeAt);
@@ -87,6 +90,12 @@ async function applyPendingMonsterDamage(
   for (let i = 0; i < hits; i += 1) {
     playerHp -= rollMonsterHit(monsterAttack, ward);
     if (playerHp <= 0) break;
+  }
+  // CON + heal-over-time regen ticks alongside monster hits so weak bosses
+  // can't grind you down when your build out-regens them.
+  if (playerHp > 0 && regenPerSecond > 0 && elapsedMs > 0) {
+    const maxHp = Math.max(1, session.playerMaxHp);
+    playerHp = Math.min(maxHp, playerHp + (regenPerSecond * elapsedMs) / 1000);
   }
   return { playerHp: Math.max(0, Math.ceil(playerHp)), hits };
 }
@@ -171,10 +180,25 @@ export const startBossFight = mutation({
     }
 
     const monster = monsterDerivedStats(boss);
-    const profile = await readPlayerCombatProfile(ctx, player, Date.now());
+    const now = Date.now();
+    await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
+    const profile = await readPlayerCombatProfile(ctx, player, now);
     const { combatStats, ward } = profile;
     const bossElement = bossElementForTier(tier);
-    const now = Date.now();
+    const maxHp = Math.max(1, Math.ceil(combatStats.health));
+    const regenBalance = await readHpRegenBalance(ctx);
+    const hpState = resolveCurrentHp(
+      player,
+      maxHp,
+      profile.effectiveStats.con,
+      regenBalance,
+      now,
+      false
+    );
+    if (hpState.currentHp <= 0) {
+      throw new Error("You are defeated — wait to recover before challenging a boss.");
+    }
+    await writePlayerHp(ctx, playerId, hpState.currentHp, hpState.maxHp, now);
     const sessionId = await ctx.db.insert("bossSessions", {
       playerId,
       bossId: boss.bossId,
@@ -185,8 +209,8 @@ export const startBossFight = mutation({
       monsterAttackSpeed: monster.attackSpeed,
       monsterElement: bossElement,
       monsterWard: ward[bossElement] ?? 0,
-      playerHp: Math.max(1, Math.ceil(combatStats.health)),
-      playerMaxHp: Math.max(1, Math.ceil(combatStats.health)),
+      playerHp: Math.ceil(hpState.currentHp),
+      playerMaxHp: hpState.maxHp,
       settlementKey: `${playerId}:boss-session:${crypto.randomUUID()}`,
       status: "open",
       strikes: 0,
@@ -249,7 +273,10 @@ export const strikeBoss = mutation({
     }
 
     const now = Date.now();
+    await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
     const profile = await readPlayerCombatProfile(ctx, player, now);
+    const totalRegen =
+      profile.conRegenPerSecond + (profile.boosts?.regenPerSecond ?? 0);
     const cooldownMs = Math.ceil(1000 / profile.combatStats.attackSpeed);
     const status = await rateLimiter.limit(ctx, "manualAttack", {
       key: playerId,
@@ -271,7 +298,8 @@ export const strikeBoss = mutation({
       session,
       session.monsterAttackSpeed,
       session.monsterAttack,
-      now
+      now,
+      totalRegen
     );
     if (pending.playerHp <= 0) {
       await settleCombatFight(ctx, {
@@ -287,6 +315,7 @@ export const strikeBoss = mutation({
         status: "lost",
         lastStrikeAt: now,
       });
+      await writePlayerHp(ctx, playerId, 0, session.playerMaxHp, now);
       const closed = await ctx.db.get(session._id);
       return {
         ...toClientState(closed!),
@@ -319,6 +348,7 @@ export const strikeBoss = mutation({
         strikes: session.strikes + 1,
         lastStrikeAt: now,
       });
+      await writePlayerHp(ctx, playerId, pending.playerHp, session.playerMaxHp, now);
       const closed = await ctx.db.get(session._id);
       return {
         ...toClientState(closed!),
@@ -340,6 +370,7 @@ export const strikeBoss = mutation({
       strikes: session.strikes + 1,
       lastStrikeAt: now,
     });
+    await writePlayerHp(ctx, playerId, pending.playerHp, session.playerMaxHp, now);
     const updated = await ctx.db.get(session._id);
     return {
       ...toClientState(updated!),
@@ -386,11 +417,17 @@ export const checkBossFight = mutation({
       };
     }
     const now = Date.now();
+    const player = await requirePlayer(ctx, playerId);
+    await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
+    const regenProfile = await readPlayerCombatProfile(ctx, player, now);
+    const regenTotal =
+      regenProfile.conRegenPerSecond + (regenProfile.boosts?.regenPerSecond ?? 0);
     const pending = await applyPendingMonsterDamage(
       session,
       session.monsterAttackSpeed,
       session.monsterAttack,
-      now
+      now,
+      regenTotal
     );
     if (pending.playerHp >= session.playerHp) {
       return {
@@ -413,6 +450,7 @@ export const checkBossFight = mutation({
         status: "lost",
         lastStrikeAt: now,
       });
+      await writePlayerHp(ctx, playerId, 0, session.playerMaxHp, now);
       const closed = await ctx.db.get(session._id);
       return {
         ...toClientState(closed!),
@@ -424,6 +462,7 @@ export const checkBossFight = mutation({
       playerHp: pending.playerHp,
       lastStrikeAt: now,
     });
+    await writePlayerHp(ctx, playerId, pending.playerHp, session.playerMaxHp, now);
     const updated = await ctx.db.get(session._id);
     return {
       ...toClientState(updated!),

@@ -34,6 +34,7 @@ export const PASSIVE_EFFECT_TYPES = [
   "skill-xp-multiplier",
   "skill-speed-multiplier",
   "elemental-damage-percent",
+  "consumable-slot",
 ] as const;
 export type PassiveEffectType = (typeof PASSIVE_EFFECT_TYPES)[number];
 
@@ -47,7 +48,14 @@ export const PASSIVE_POINT_BALANCE_DEFAULT = {
   key: "passivePointInterval",
   value: 5,
   description:
-    "Character levels per passive skill point (1 point per interval, earned above the starting-level baseline)",
+    "Legacy flat pacing: character levels per passive skill point. Only used on databases seeded before triangular gap pacing (passivePointGapStep).",
+} as const;
+
+export const PASSIVE_POINT_GAP_STEP_DEFAULT = {
+  key: "passivePointGapStep",
+  value: 3,
+  description:
+    "Triangular point pacing: each successive passive point costs this many more effective levels than the last (point n costs step × n levels above the starting-level baseline)",
 } as const;
 
 const DEFAULT_STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1 };
@@ -75,6 +83,74 @@ function readPointInterval(value: unknown) {
     : PASSIVE_POINT_BALANCE_DEFAULT.value;
 }
 
+function readPointGapStep(value: unknown) {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 1 &&
+    value <= 100
+    ? value
+    : PASSIVE_POINT_GAP_STEP_DEFAULT.value;
+}
+
+export type PassivePointSchedule =
+  | { mode: "flat"; interval: number }
+  | { mode: "triangular"; step: number };
+
+export async function getPassivePointSchedule(
+  ctx: DatabaseCtx
+): Promise<PassivePointSchedule> {
+  const stepRow = await ctx.db
+    .query("gameBalance")
+    .withIndex("by_key", (q) => q.eq("key", PASSIVE_POINT_GAP_STEP_DEFAULT.key))
+    .first();
+  if (stepRow !== null) {
+    return { mode: "triangular", step: readPointGapStep(stepRow.value) };
+  }
+  // Legacy databases seeded before triangular pacing keep flat intervals.
+  return {
+    mode: "flat",
+    interval: readPointInterval(await getBalanceValue(ctx, PASSIVE_POINT_BALANCE_DEFAULT.key)),
+  };
+}
+
+/**
+ * Points earned above the baseline. Triangular: point n costs step × n
+ * effective levels (cumulative step·n(n+1)/2), so gaps grow 3, 6, 9… at the
+ * default step. Closed-form solve with an exact integer correction.
+ */
+export function earnedPointsForSchedule(
+  level: number,
+  baseLevel: number,
+  schedule: PassivePointSchedule
+): number {
+  if (schedule.mode === "flat") {
+    return Math.max(
+      0,
+      Math.floor(level / schedule.interval) -
+        Math.floor(baseLevel / schedule.interval)
+    );
+  }
+  const effective = Math.max(0, Math.floor(level) - Math.floor(baseLevel));
+  const step = schedule.step;
+  let earned = Math.floor(
+    (Math.sqrt(1 + (8 * effective) / step) - 1) / 2
+  );
+  if (!Number.isSafeInteger(earned) || earned < 0) earned = 0;
+  while ((step * (earned + 1) * (earned + 2)) / 2 <= effective) earned += 1;
+  while (earned > 0 && (step * earned * (earned + 1)) / 2 > effective) earned -= 1;
+  return earned;
+}
+
+/** Effective levels the next point costs after `earned` points. */
+export function nextPointGapForSchedule(
+  earned: number,
+  schedule: PassivePointSchedule
+): number {
+  return schedule.mode === "flat"
+    ? schedule.interval
+    : schedule.step * (Math.max(0, earned) + 1);
+}
+
 function readStartingStatSum(value: unknown) {
   if (!isRecord(value)) return 5;
   let sum = 0;
@@ -99,37 +175,37 @@ export async function getPassiveBaseLevel(ctx: DatabaseCtx) {
   return readStartingStatSum(startingStatsValue) + skills.length;
 }
 
-export async function getPassivePointInterval(ctx: DatabaseCtx) {
-  return readPointInterval(
-    await getBalanceValue(ctx, PASSIVE_POINT_BALANCE_DEFAULT.key)
-  );
+async function pointsFromUnlocks(
+  ctx: DatabaseCtx,
+  player: Doc<"players">,
+  unlocks: Doc<"playerPassives">[]
+) {
+  const [level, baseLevel, schedule] = await Promise.all([
+    calculateCharacterLevel(ctx, player),
+    getPassiveBaseLevel(ctx),
+    getPassivePointSchedule(ctx),
+  ]);
+  const earned = earnedPointsForSchedule(level, baseLevel, schedule);
+  return {
+    level,
+    baseLevel,
+    schedule,
+    nextGap: nextPointGapForSchedule(earned, schedule),
+    earned,
+    spent: unlocks.length,
+    available: Math.max(0, earned - unlocks.length),
+  };
 }
 
 export async function getPassivePoints(
   ctx: DatabaseCtx,
   player: Doc<"players">
 ) {
-  const [level, baseLevel, interval, unlocks] = await Promise.all([
-    calculateCharacterLevel(ctx, player),
-    getPassiveBaseLevel(ctx),
-    getPassivePointInterval(ctx),
-    ctx.db
-      .query("playerPassives")
-      .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
-      .collect(),
-  ]);
-  const earned = Math.max(
-    0,
-    Math.floor(level / interval) - Math.floor(baseLevel / interval)
-  );
-  return {
-    level,
-    baseLevel,
-    interval,
-    earned,
-    spent: unlocks.length,
-    available: Math.max(0, earned - unlocks.length),
-  };
+  const unlocks = await ctx.db
+    .query("playerPassives")
+    .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
+    .collect();
+  return pointsFromUnlocks(ctx, player, unlocks);
 }
 
 export type PassiveBonuses = {
@@ -144,6 +220,7 @@ export type PassiveBonuses = {
   skillXpMultipliers: { all: number; gathering: number; crafting: number };
   skillSpeedMultipliers: { all: number; gathering: number; crafting: number };
   elements: Record<ElementKind, number>;
+  consumableSlots: number;
 };
 
 export const EMPTY_PASSIVE_BONUSES: PassiveBonuses = {
@@ -158,6 +235,7 @@ export const EMPTY_PASSIVE_BONUSES: PassiveBonuses = {
   skillXpMultipliers: { all: 1, gathering: 1, crafting: 1 },
   skillSpeedMultipliers: { all: 1, gathering: 1, crafting: 1 },
   elements: { light: 0, dark: 0, water: 0, fire: 0, wind: 0, earth: 0 },
+  consumableSlots: 0,
 };
 
 function isStatKey(value: unknown): value is keyof PassiveBonuses["stats"] {
@@ -228,6 +306,11 @@ function applyNodeToBonuses(
       }
       break;
     }
+    case "consumable-slot":
+      if (Number.isFinite(amount) && amount > 0) {
+        bonuses.consumableSlots += Math.floor(amount);
+      }
+      break;
     default:
       break;
   }
@@ -267,23 +350,7 @@ async function pointsForUnlocks(
   player: Doc<"players">,
   unlocks: Doc<"playerPassives">[]
 ) {
-  const [level, baseLevel, interval] = await Promise.all([
-    calculateCharacterLevel(ctx, player),
-    getPassiveBaseLevel(ctx),
-    getPassivePointInterval(ctx),
-  ]);
-  const earned = Math.max(
-    0,
-    Math.floor(level / interval) - Math.floor(baseLevel / interval)
-  );
-  return {
-    level,
-    baseLevel,
-    interval,
-    earned,
-    spent: unlocks.length,
-    available: Math.max(0, earned - unlocks.length),
-  };
+  return pointsFromUnlocks(ctx, player, unlocks);
 }
 
 // ─── Seed data (PoE-like web: 5 weapon arms + skilling arm) ──────────────────
@@ -498,6 +565,8 @@ function seedNodes(): SeedNode[] {
       { nodeId: "skilling-7", branch: "skilling", name: "Flow State", description: "All skill actions complete ~2% faster.", effectType: "skill-speed-multiplier", effectScope: "all", effectAmount: 1.02, requires: [] },
       { nodeId: "skilling-8", branch: "skilling", name: "Battle Wisdom", description: "+3% combat experience.", effectType: "xp-multiplier", effectAmount: 1.03, requires: [] },
     ]),
+    // NOTE: skilling-9/10 (consumable-slot unlocks) were retired when belts
+    // took over the consumable belt. seedPassiveContent disables leftovers.
     ...elementalNodes(),
   ];
 }
@@ -549,6 +618,16 @@ export async function seedPassiveContent(ctx: MutationCtx) {
       lastUpdated: now,
     });
   }
+  const gapStepRow = await ctx.db
+    .query("gameBalance")
+    .withIndex("by_key", (q) => q.eq("key", PASSIVE_POINT_GAP_STEP_DEFAULT.key))
+    .first();
+  if (!gapStepRow) {
+    await ctx.db.insert("gameBalance", {
+      ...PASSIVE_POINT_GAP_STEP_DEFAULT,
+      lastUpdated: now,
+    });
+  }
 
   assertGridPathsValid();
   const branchIndex: Record<ArmBranch, number> = {
@@ -595,6 +674,19 @@ export async function seedPassiveContent(ctx: MutationCtx) {
       await ctx.db.patch(existing._id, row);
     } else {
       await ctx.db.insert("passiveNodes", { ...row, createdAt: now });
+    }
+  }
+
+  // Retired consumable-slot unlocks (belts own the belt now). Disable
+  // leftovers so old unlocks stop granting slots; playerPassives rows stay
+  // as history but match no enabled node.
+  for (const retired of ["skilling-9", "skilling-10"]) {
+    const leftover = await ctx.db
+      .query("passiveNodes")
+      .withIndex("by_nodeId", (q) => q.eq("nodeId", retired))
+      .first();
+    if (leftover && leftover.enabled) {
+      await ctx.db.patch(leftover._id, { enabled: false, updatedAt: now });
     }
   }
 }
@@ -675,7 +767,7 @@ export const unlockNode = mutation({
     const points = await getPassivePoints(ctx, player);
     if (points.available < 1) {
       throw new Error(
-        `No passive points available (earn 1 every ${points.interval} character levels)`
+        `No passive points available (next point costs ${points.nextGap} character levels)`
       );
     }
     await ctx.db.insert("playerPassives", {

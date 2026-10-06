@@ -10,6 +10,7 @@ import {
   Dumbbell,
   Droplet,
   Feather,
+  FlaskConical,
   Flame,
   Gauge,
   GraduationCap,
@@ -233,6 +234,8 @@ function nodeIconFor(node: TreeNodeLike): LucideIcon {
       return GraduationCap;
     case "skill-speed-multiplier":
       return Timer;
+    case "consumable-slot":
+      return FlaskConical;
     default:
       return Sparkles;
   }
@@ -268,6 +271,8 @@ function formatBonus(node: {
       return `~${Math.round((node.effectAmount - 1) * 100)}% faster skill actions (${node.effectScope ?? "all"})`;
     case "elemental-damage-percent":
       return `+${Math.round(node.effectAmount * 100)}% ${node.element ?? "elemental"} damage (requires ${node.element ?? "elemental"} weapon)`;
+    case "consumable-slot":
+      return `+${node.effectAmount} equipped consumable slot`;
     default:
       return node.effectType;
   }
@@ -571,8 +576,8 @@ export function PassiveTree({ playerId, isAdmin = false }: PassiveTreeProps) {
               Passive skill web
             </h2>
             <p className="text-xs text-muted-foreground">
-              Level {points.level} · base {points.baseLevel} · earn 1 point
-              every {points.interval} levels · {points.earned} earned ·{" "}
+              Level {points.level} · base {points.baseLevel} · next point
+              costs {points.nextGap} levels · {points.earned} earned ·{" "}
               {points.spent} spent
             </p>
           </div>

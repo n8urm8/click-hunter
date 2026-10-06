@@ -4467,7 +4467,7 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
               <SeedPassiveTreeButton playerId={playerId} />
               <AdminSection
                 title="Passive skill web"
-                description="Edit PoE-like passive nodes: modest weapon-branch bonuses, skilling XP/speed, and automation unlocks. Point pacing (passivePointInterval) lives under Global balance."
+                description="Edit PoE-like passive nodes: modest weapon-branch bonuses, skilling XP/speed, and automation unlocks. Point pacing (passivePointGapStep) lives under Global balance."
                 columns={[
                   "Node ID",
                   "Branch",

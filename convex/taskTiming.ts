@@ -34,6 +34,9 @@ export const battleEncounterValidator = v.object({
   monsterName: v.string(),
   monsterMaxHealth: v.number(),
   playerMaxHealth: v.number(),
+  playerStartingHp: v.optional(v.number()),
+  playerEndingHp: v.optional(v.number()),
+  conRegenPerSecond: v.optional(v.number()),
   monsterDamagePerSecond: v.number(),
   playerDamagePerSecond: v.number(),
   playerAttackSpeed: v.optional(v.number()),
@@ -48,6 +51,11 @@ export function projectBattleHealth(
   elapsedMs: number
 ) {
   const elapsed = Math.min(Math.max(0, elapsedMs), result.durationMs);
+  const startHp =
+    typeof result.playerStartingHp === "number" &&
+    Number.isFinite(result.playerStartingHp)
+      ? result.playerStartingHp
+      : result.playerMaxHealth;
   const timing = result.attackTiming;
   const monsterDamage = timing
     ? Math.floor(elapsed / timing.playerIntervalMs) * timing.playerDamagePerHit
@@ -61,7 +69,7 @@ export function projectBattleHealth(
     )),
     currentMonsterMaxHealth: result.monsterMaxHealth,
     currentPlayerHealth: timing && elapsed === result.durationMs && !result.won ? 0 : Math.max(0, Math.ceil(
-      result.playerMaxHealth - playerDamage
+      startHp - playerDamage
     )),
     currentPlayerMaxHealth: result.playerMaxHealth,
   };
