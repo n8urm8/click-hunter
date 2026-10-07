@@ -566,6 +566,152 @@ export const backfillBosses = internalMutation({
 });
 
 /**
+ * Migration: stack duplicate reward-cache rows.
+ *
+ * Pending rewards used to create one row per settlement, so a full inventory
+ * left dozens of x1 rows for the same item. New overflows now merge by
+ * (player, item, source); this folds pre-existing duplicates the same way,
+ * keeping the earliest row per group (provenance and order preserved).
+ *
+ * Run: npx convex run migrations:consolidatePendingRewards
+ */
+export const consolidatePendingRewards = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const rewards = await ctx.db.query("pendingRewards").collect();
+    const groups = new Map<string, typeof rewards>();
+    for (const reward of rewards) {
+      if (reward.status !== "pending") continue;
+      const key = `${reward.playerId}:${reward.itemId}:${reward.sourceType}`;
+      const group = groups.get(key);
+      if (group) group.push(reward);
+      else groups.set(key, [reward]);
+    }
+
+    let consolidatedGroups = 0;
+    let mergedRows = 0;
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      group.sort((left, right) => left.createdAt - right.createdAt);
+      const [keeper, ...dupes] = group;
+      let total = keeper.quantity;
+      for (const dupe of dupes) {
+        total += dupe.quantity;
+        await ctx.db.delete(dupe._id);
+        mergedRows += 1;
+      }
+      await ctx.db.patch(keeper._id, { quantity: total });
+      consolidatedGroups += 1;
+    }
+
+    return { consolidatedGroups, mergedRows, total: rewards.length };
+  },
+});
+
+/**
+ * Migration: add the stat-based rebirth requirement and prestige bonus.
+ *
+ * Run: npx convex run migrations:backfillRebirthStatBalance
+ */
+export const backfillRebirthStatBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const entries = [
+      {
+        key: "rebirthStatLevelRequirement",
+        value: 99,
+        description:
+          "Stat value required in at least one stat to rebirth",
+      },
+      {
+        key: "rebirthStatBonusPercent",
+        value: 0.05,
+        description:
+          "Permanent bonus per rebirth to each stat at the rebirth requirement (fraction: 0.05 = +5%)",
+      },
+    ];
+    let created = 0;
+
+    for (const entry of entries) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (existing) continue;
+
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+      created += 1;
+    }
+
+    return { created };
+  },
+});
+
+/**
+ * Migration: add skill-level action speed and skill rebirth bonuses.
+ *
+ * Skill levels now speed up their own tasks, and skills at the rebirth
+ * requirement bank a permanent speed bonus like combat stats do.
+ * Also refreshes the requirement description for the any-stat-or-skill rule.
+ *
+ * Run: npx convex run migrations:backfillSkillRebirthBalance
+ */
+export const backfillSkillRebirthBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const entries = [
+      {
+        key: "rebirthStatLevelRequirement",
+        value: 99,
+        description:
+          "Stat or skill level required in at least one stat or skill to rebirth",
+      },
+      {
+        key: "rebirthSkillBonusPercent",
+        value: 0.05,
+        description:
+          "Permanent action speed bonus per rebirth to each skill at the rebirth requirement (fraction: 0.05 = +5%)",
+      },
+      {
+        key: "skillLevelSpeedBonusPerLevel",
+        value: 0.01,
+        description:
+          "Action speed bonus per skill level for that skill (fraction per level above 1: 0.01 = +1% speed per level)",
+      },
+    ];
+    let created = 0;
+    let updated = 0;
+
+    for (const entry of entries) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (!existing) {
+        await ctx.db.insert("gameBalance", {
+          ...entry,
+          lastUpdated: Date.now(),
+        });
+        created += 1;
+        continue;
+      }
+      if (existing.description !== entry.description) {
+        await ctx.db.patch(existing._id, {
+          description: entry.description,
+          lastUpdated: Date.now(),
+        });
+        updated += 1;
+      }
+    }
+
+    return { created, updated };
+  },
+});
+
+/**
  * Migration: add the Bazaar (marketplace) balance configuration.
  *
  * Run: npx convex run migrations:backfillBazaarBalance

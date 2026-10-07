@@ -91,6 +91,22 @@ export default defineSchema({
     rebirthTierThreshold: v.number(), // e.g., 5, 10, 15 - which tier unlocks next rebirth
     currentTier: v.number(), // Which tier player is currently fighting in (1+)
     maxTierReached: v.optional(v.number()), // Highest tier player has beaten — optional during migration
+    // Permanent rebirth bonuses: times each stat met the rebirth
+    // requirement when a rebirth happened. Each point adds another
+    // `rebirthStatBonusPercent` to that stat. Absent means zero.
+    rebirthStatBonuses: v.optional(
+      v.object({
+        str: v.number(),
+        dex: v.number(),
+        int: v.number(),
+        luk: v.number(),
+        con: v.number(),
+      })
+    ),
+    // Permanent rebirth bonuses per skill, keyed by skillId. Each point
+    // adds another `rebirthSkillBonusPercent` action speed to that skill.
+    // Absent means zero.
+    rebirthSkillBonuses: v.optional(v.record(v.string(), v.number())),
     // Upgrades
     autoAttackEnabled: v.boolean(),
     autoStartFightEnabled: v.boolean(),

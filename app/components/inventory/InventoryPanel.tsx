@@ -23,6 +23,7 @@ import { formatPercent, infusionSuccessChance } from "~/lib/infusion";
 import { useEnqueueSkillAction } from "~/hooks/useTasks";
 import { ItemIcon } from "~/components/game/ItemIcon";
 import { ConsumableSlots } from "~/components/inventory/ConsumableSlots";
+import { isInventoryTab, type InventoryTab } from "~/lib/gameRoutes";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
 import {
   COMBAT_EFFECT_TYPES,
@@ -83,8 +84,6 @@ const SLOT_LAYOUT: Record<EquipmentSlot, string> = {
   bag: "col-start-1 row-start-4",
   craftingEquipment: "col-start-3 row-start-4",
 };
-
-type InventoryTab = "crafting" | "equipment";
 
 function isSkillTaskEffectType(
   value: string | undefined
@@ -673,7 +672,17 @@ function PendingRewardsCard({
   );
   const [error, setError] = useState<string | null>(null);
 
-  if (rewards.length === 0) return null;
+  if (rewards.length === 0) {
+    return (
+      <div className="border border-gold/25 bg-gold/5 p-3">
+        <h3 className="font-heading text-base text-gold">Reward cache</h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Inventory overflow is held here until you have room to claim it.
+          The cache is currently empty.
+        </p>
+      </div>
+    );
+  }
 
   const handleClaim = async (rewardId: Id<"pendingRewards">) => {
     setClaimingId(rewardId);
@@ -707,7 +716,7 @@ function PendingRewardsCard({
   };
 
   return (
-    <div className="border-b border-gold/25 bg-gold/5 p-3">
+    <div className="border border-gold/25 bg-gold/5 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-heading text-base text-gold">Reward cache</h3>
@@ -846,10 +855,10 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
   const activateCombatBoost = useCombatBoost();
   const navigate = useNavigate();
   const params = useParams();
-  const routeTab =
-    params.tab === "crafting" || params.tab === "equipment"
-      ? params.tab
-      : "crafting";
+  const tabParam = params.tab ?? null;
+  const routeTab: InventoryTab = isInventoryTab(tabParam)
+    ? tabParam
+    : "crafting";
   const activeTab: InventoryTab = routeTab;
   const [draggingItemId, setDraggingItemId] = useState<Id<"playerItems"> | null>(
     null
@@ -1047,14 +1056,10 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
 
   return (
     <Card className="forest-card box-glow-green min-h-[400px] rounded-none gap-0 p-0">
-      <PendingRewardsCard
-        playerId={playerId}
-        rewards={inventory.data.pendingRewards}
-      />
       <Tabs
         value={activeTab}
         onValueChange={(value) => {
-          if (value === "crafting" || value === "equipment") {
+          if (isInventoryTab(value)) {
             setActionError(null);
             navigate(`/inventory/${value}`);
           }
@@ -1064,6 +1069,11 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
         <TabsList variant="forest" aria-label="Inventory category">
           <TabsTrigger value="crafting">Crafting</TabsTrigger>
           <TabsTrigger value="equipment">Equipment</TabsTrigger>
+          <TabsTrigger value="cache">
+            Cache
+            {inventory.data.pendingRewards.length > 0 &&
+              ` (${inventory.data.pendingRewards.length})`}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="crafting" className="p-0">
@@ -1230,6 +1240,15 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
                 />
               </div>
             </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="cache" className="p-0">
+          <div className="min-h-[368px] p-3">
+            <PendingRewardsCard
+              playerId={playerId}
+              rewards={inventory.data.pendingRewards}
+            />
           </div>
         </TabsContent>
       </Tabs>

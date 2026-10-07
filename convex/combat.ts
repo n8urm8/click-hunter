@@ -11,6 +11,11 @@ import {
   type EquipmentStatBonuses,
 } from "./items";
 import { getPassiveBonuses } from "./passiveTree";
+import {
+  getRebirthStatBonuses,
+  readRebirthStatBonusPercent,
+  rebirthStatMultiplier,
+} from "./rebirth";
 import { getActiveEventMultipliers, settleCombatFight } from "./loot";
 import { conRegenPerSecond, readHpRegenBalance, resolveCurrentHp } from "./playerHp";
 import { query } from "./_generated/server";
@@ -195,12 +200,25 @@ export async function readPlayerCombatProfile(
   const boosts = now === undefined
     ? null
     : await getActiveCombatBoosts(ctx, player._id, now, balance);
+  // Permanent prestige: each stat banked at the rebirth requirement adds
+  // another bonusPercent to that stat's effective value, so the bonus flows
+  // into everything the stat does (damage, speed, HP, defense, crit).
+  // Skips the balance read entirely for players with no banked bonuses.
+  const rebirthCounts = getRebirthStatBonuses(player);
+  const bankedTotal =
+    rebirthCounts.str +
+    rebirthCounts.dex +
+    rebirthCounts.int +
+    rebirthCounts.luk +
+    rebirthCounts.con;
+  const rebirthBonusPercent =
+    bankedTotal > 0 ? await readRebirthStatBonusPercent(ctx) : 0;
   const effectiveStats = {
-    str: player.str + bonuses.str + passives.stats.str + (boosts?.statBonus.str ?? 0),
-    dex: player.dex + bonuses.dex + passives.stats.dex + (boosts?.statBonus.dex ?? 0),
-    int: player.int + bonuses.int + passives.stats.int + (boosts?.statBonus.int ?? 0),
-    luk: player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0),
-    con: player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0),
+    str: (player.str + bonuses.str + passives.stats.str + (boosts?.statBonus.str ?? 0)) * rebirthStatMultiplier(rebirthCounts.str, rebirthBonusPercent),
+    dex: (player.dex + bonuses.dex + passives.stats.dex + (boosts?.statBonus.dex ?? 0)) * rebirthStatMultiplier(rebirthCounts.dex, rebirthBonusPercent),
+    int: (player.int + bonuses.int + passives.stats.int + (boosts?.statBonus.int ?? 0)) * rebirthStatMultiplier(rebirthCounts.int, rebirthBonusPercent),
+    luk: (player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0)) * rebirthStatMultiplier(rebirthCounts.luk, rebirthBonusPercent),
+    con: (player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0)) * rebirthStatMultiplier(rebirthCounts.con, rebirthBonusPercent),
   };
   const scalingStat = weapon?.damageStat === "dex"
     ? effectiveStats.dex

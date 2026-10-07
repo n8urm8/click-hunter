@@ -88,6 +88,11 @@ export type ActivePanel =
 
 export const activePanelAtom = atom<ActivePanel>("combat");
 
+// Skill tier filter, keyed by skillId. null = All tiers.
+// In-memory (jotai) so the last selected filter per skill persists while using the app.
+export type SkillTierFilter = number | null;
+export const skillTierFilterAtom = atom<Record<string, SkillTierFilter>>({});
+
 // Anonymous player ID (from localStorage)
 export const anonymousIdAtom = atom<string>(() => {
   if (typeof window === "undefined") return "";

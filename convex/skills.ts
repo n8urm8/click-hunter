@@ -25,6 +25,12 @@ import {
   infusionSuccessFor,
   readInfusionBalance,
 } from "./infusion";
+import {
+  getRebirthSkillBonuses,
+  readRebirthSkillBonusPercent,
+  readSkillLevelSpeedBonusPerLevel,
+  skillSpeedMultiplier,
+} from "./rebirth";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
@@ -88,6 +94,33 @@ async function getPlayerSkillRow(
       q.eq("playerId", playerId).eq("skillId", skillId)
     )
     .first();
+}
+
+/**
+ * Action speed factor for one skill: the skill's own level speeds up its
+ * tasks and banked rebirth bonuses stack on top. Only resolved while a task
+ * is actually progressing (callers skip it for completed tasks).
+ */
+async function readSkillSpeedFactor(
+  ctx: DatabaseCtx,
+  playerId: PlayerId,
+  skillId: string
+): Promise<number> {
+  const [player, skillRow, levelBonusPerLevel, rebirthBonusPercent] =
+    await Promise.all([
+      ctx.db.get(playerId),
+      getPlayerSkillRow(ctx, playerId, skillId),
+      readSkillLevelSpeedBonusPerLevel(ctx),
+      readRebirthSkillBonusPercent(ctx),
+    ]);
+  if (!player) throw new Error("Player not found");
+  const banked = getRebirthSkillBonuses(player)[skillId] ?? 0;
+  return skillSpeedMultiplier(
+    skillRow?.level ?? 1,
+    banked,
+    levelBonusPerLevel,
+    rebirthBonusPercent
+  );
 }
 
 async function ensurePlayerSkill(
@@ -1337,6 +1370,11 @@ export async function advanceSkillActionTask(
           timelineEndedAt
         )
       : null;
+  // Skill levels speed up their own tasks; banked rebirth bonuses stack on.
+  const skillSpeedFactor =
+    timeline === null
+      ? 1
+      : await readSkillSpeedFactor(ctx, task.playerId, snapshot.skillId);
 
   while (!complete && consumedMs < availableMs) {
     const progressAtCursor = task.progressMs + consumedMs;
@@ -1363,7 +1401,8 @@ export async function advanceSkillActionTask(
       const modifiers = getSkillModifiersAt(
         timeline,
         snapshot.skillCategory,
-        actionStart
+        actionStart,
+        skillSpeedFactor
       );
       currentDuration = getSkillActionDurationMs(
         snapshot.baseExperienceReward,
@@ -1707,7 +1746,8 @@ export async function advanceSkillActionTask(
     const currentModifiers = getSkillModifiersAt(
       timeline,
       snapshot.skillCategory,
-      intervalStartMs + consumedMs
+      intervalStartMs + consumedMs,
+      skillSpeedFactor
     );
     const estimatedActionDuration = getSkillActionDurationMs(
       snapshot.baseExperienceReward,

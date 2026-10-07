@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { useAtom } from "jotai";
+import { skillTierFilterAtom } from "~/store/gameStore";
 import { useNavigate, useParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
@@ -203,6 +205,65 @@ function TierBadge({
   );
 }
 
+const TIER_FILTER_OPTIONS: Array<number | null> = [
+  null,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+];
+
+function TierFilterSidebar({
+  skillName,
+  selectedTier,
+  onSelect,
+}: {
+  skillName: string;
+  selectedTier: number | null;
+  onSelect: (tier: number | null) => void;
+}) {
+  return (
+    <nav
+      aria-label={`${skillName} tier filter`}
+      className="shrink-0 md:w-24"
+    >
+      <div className="rounded-none border border-forest-light/25 bg-forest-dark/35">
+        <p className="px-2 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Tier
+        </p>
+        <ul className="flex flex-row gap-0 overflow-x-auto p-1 md:flex-col md:overflow-visible">
+          {TIER_FILTER_OPTIONS.map((tier) => {
+            const isActive =
+              tier === null ? selectedTier == null : selectedTier === tier;
+            const label = tier === null ? "All" : `Tier ${tier}`;
+            return (
+              <li key={tier === null ? "all" : `tier-${tier}`} className="w-auto shrink-0 md:w-full">
+                <button
+                  type="button"
+                  aria-pressed={isActive}
+                  aria-label={`Show ${label} ${skillName} activities`}
+                  onClick={() => onSelect(tier)}
+                  className={`block w-full rounded-none border px-2 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider transition-colors outline-none focus-visible:ring-1 focus-visible:ring-gold/40 ${
+                    isActive
+                      ? "border-forest-light/30 bg-forest-mid text-gold-light"
+                      : "border-transparent text-muted-foreground hover:bg-forest-mid/50 hover:text-foreground"
+                  }`}
+                >
+                  {label}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </nav>
+  );
+}
+
 export function SkillsPanel({ playerId }: SkillsPanelProps) {
   const panel = useSkillPanel(playerId);
   const inventory = usePlayerInventory(playerId);
@@ -210,6 +271,9 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   const taskQueue = useTaskQueue(playerId);
   const navigate = useNavigate();
   const params = useParams();
+  const [tierFilterBySkill, setTierFilterBySkill] = useAtom(
+    skillTierFilterAtom
+  );
   const routeSkillId =
     typeof params.skillId === "string" ? params.skillId : null;
   const hasQueuedTasks =
@@ -926,6 +990,11 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
         ...augmentations.map((augmentation) => augmentation.tier),
       ])
     ).sort((left, right) => left - right);
+    const selectedTier = tierFilterBySkill[skill.skillId] ?? null;
+    const visibleTierNumbers =
+      selectedTier == null
+        ? tierNumbers
+        : tierNumbers.filter((tierNumber) => tierNumber === selectedTier);
 
     return (
       <div className="space-y-5">
@@ -939,8 +1008,24 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
             No options are configured for this skill yet.
           </p>
         ) : (
-          <div className="space-y-5">
-            {tierNumbers.map((tierNumber) => {
+          <div className="flex flex-col gap-4 md:flex-row">
+            <TierFilterSidebar
+              skillName={skill.name}
+              selectedTier={selectedTier}
+              onSelect={(tier) =>
+                setTierFilterBySkill((current) => ({
+                  ...current,
+                  [skill.skillId]: tier,
+                }))
+              }
+            />
+            <div className="min-w-0 flex-1 space-y-5">
+              {visibleTierNumbers.length === 0 ? (
+                <p className="border border-forest-light/20 bg-forest-dark/25 p-3 text-xs text-muted-foreground">
+                  No options are configured for this tier yet.
+                </p>
+              ) : (
+                visibleTierNumbers.map((tierNumber) => {
               const tier = tierFor(data.tiers, skill.skillId, tierNumber);
               const unlocked =
                 (state?.level ?? 1) >= (tier?.requiredLevel ?? 1);
@@ -993,7 +1078,9 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
                   </div>
                 </section>
               );
-            })}
+                })
+              )}
+            </div>
           </div>
         )}
       </div>

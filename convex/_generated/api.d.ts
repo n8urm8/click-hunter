@@ -37,6 +37,7 @@ import type * as passiveTree from "../passiveTree.js";
 import type * as playerAuth from "../playerAuth.js";
 import type * as playerHp from "../playerHp.js";
 import type * as players from "../players.js";
+import type * as rebirth from "../rebirth.js";
 import type * as recipeValidation from "../recipeValidation.js";
 import type * as seed from "../seed.js";
 import type * as skillBonuses from "../skillBonuses.js";
@@ -84,6 +85,7 @@ declare const fullApi: ApiFromModules<{
   playerAuth: typeof playerAuth;
   playerHp: typeof playerHp;
   players: typeof players;
+  rebirth: typeof rebirth;
   recipeValidation: typeof recipeValidation;
   seed: typeof seed;
   skillBonuses: typeof skillBonuses;

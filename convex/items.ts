@@ -1150,16 +1150,19 @@ export async function grantItemToInventory(
         throw new Error("Inventory is full");
       }
     } else {
+      // Stack onto any pending row for the same item and source, even when
+      // the overflow comes from a different settlement — otherwise every
+      // full-inventory kill leaves its own x1 row in the reward cache.
+      // Source type is part of the key so the cache label stays truthful.
       const existingReward = await ctx.db
         .query("pendingRewards")
-        .withIndex("by_settlementKey", (q) =>
-          q.eq("settlementKey", overflowSource.settlementKey)
+        .withIndex("by_playerId_and_status", (q) =>
+          q.eq("playerId", playerId).eq("status", "pending")
         )
         .filter((q) =>
           q.and(
-            q.eq(q.field("playerId"), playerId),
             q.eq(q.field("itemId"), itemId),
-            q.eq(q.field("status"), "pending")
+            q.eq(q.field("sourceType"), overflowSource.sourceType)
           )
         )
         .first();

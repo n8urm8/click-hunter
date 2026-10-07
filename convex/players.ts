@@ -13,6 +13,12 @@ import {
 import { clearPlayerPassives } from "./passiveTree";
 import { readPlayerCombatProfile } from "./combat";
 import { STARTER_KITS } from "./forestCraftingSeed";
+import {
+  getRebirthSkillBonuses,
+  getRebirthStatBonuses,
+  qualifyingRebirthStats,
+  readRebirthStatRequirement,
+} from "./rebirth";
 
 // Default balance constants — must match gameBalance seeds in seed.ts
 const STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1 };
@@ -52,7 +58,7 @@ function readRebirthThresholds(value: unknown) {
   return thresholds.length > 0 ? thresholds : REBIRTH_TIER_PROGRESSION;
 }
 
-async function getBalanceValue(ctx: MutationCtx, key: string) {
+async function getBalanceValue(ctx: DatabaseCtx, key: string) {
   const row = await ctx.db
     .query("gameBalance")
     .withIndex("by_key", (q) => q.eq("key", key))
@@ -468,7 +474,45 @@ export const advanceTierProgression = mutation({
 });
 
 /**
- * Check if player can rebirth
+ * Skill rows at or above the rebirth requirement, by skillId.
+ */
+async function qualifyingRebirthSkills(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">,
+  requirement: number
+): Promise<string[]> {
+  const rows = await ctx.db
+    .query("playerSkills")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+    .collect();
+  return rows
+    .filter((row) => row.level >= requirement)
+    .map((row) => row.skillId);
+}
+
+/**
+ * Reset every skilling skill to level 1. Totals are wiped like the rest of
+ * the run's progress; rows are kept so history identity stays stable.
+ */
+async function resetAllPlayerSkills(ctx: MutationCtx, playerId: Id<"players">) {
+  const rows = await ctx.db
+    .query("playerSkills")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+    .collect();
+  for (const row of rows) {
+    await ctx.db.patch(row._id, {
+      level: 1,
+      experience: 0,
+      totalExperience: 0,
+      actionsCompleted: 0,
+      updatedAt: Date.now(),
+    });
+  }
+}
+
+/**
+ * Check if player can rebirth: at least one combat stat or skilling skill
+ * at the rebirth requirement.
  */
 export const canRebirth = query({
   args: {
@@ -476,13 +520,16 @@ export const canRebirth = query({
   },
   handler: async (ctx, { playerId }) => {
     const player = await requirePlayerRead(ctx, playerId);
-
-    return (player.maxTierReached || 1) >= player.rebirthTierThreshold;
+    const requirement = await readRebirthStatRequirement(ctx);
+    if (qualifyingRebirthStats(player, requirement).length > 0) return true;
+    const skills = await qualifyingRebirthSkills(ctx, playerId, requirement);
+    return skills.length > 0;
   },
 });
 
 /**
- * Rebirth - reset player to tier 1, increase threshold, increment rebirth count
+ * Rebirth - reset all stats and skills to level 1. Each stat or skill at
+ * the rebirth requirement earns a permanent prestige bonus to itself.
  */
 export const rebirth = mutation({
   args: {
@@ -492,9 +539,19 @@ export const rebirth = mutation({
     const player = await requirePlayer(ctx, playerId);
     await ctx.runMutation(internal.tasks.prepareRebirth, { playerId });
 
-    // Check if eligible for rebirth
-    if ((player.maxTierReached || 1) < player.rebirthTierThreshold) {
-      throw new Error("Not eligible for rebirth yet");
+    // Eligibility is purely level-based: at least one stat or skill at
+    // the requirement.
+    const requirement = await readRebirthStatRequirement(ctx);
+    const qualifyingStats = qualifyingRebirthStats(player, requirement);
+    const qualifyingSkills = await qualifyingRebirthSkills(
+      ctx,
+      playerId,
+      requirement
+    );
+    if (qualifyingStats.length === 0 && qualifyingSkills.length === 0) {
+      throw new Error(
+        `Train at least one stat or skill to level ${requirement} to rebirth`
+      );
     }
 
     const nextRebirthCount = player.rebirthCount + 1;
@@ -513,11 +570,22 @@ export const rebirth = mutation({
     );
     const nextThreshold = rebirthThresholds[thresholdIndex];
 
-    // Full wipe: all stats return to base (earned and paid alike).
-    // Permanent prestige power lives only in rebirth unlocks.
+    // Permanent prestige power: every qualifying stat and skill banks
+    // another bonus.
+    const bonuses = getRebirthStatBonuses(player);
+    for (const stat of qualifyingStats) {
+      bonuses[stat] += 1;
+    }
+    const skillBonuses = getRebirthSkillBonuses(player);
+    for (const skillId of qualifyingSkills) {
+      skillBonuses[skillId] = (skillBonuses[skillId] ?? 0) + 1;
+    }
+
+    // Full wipe: all stats and skills return to base (earned and paid alike).
     // Passive skill web fully resets each run.
     await resetAllStatUpgrades(ctx, playerId);
     await clearPlayerPassives(ctx, playerId);
+    await resetAllPlayerSkills(ctx, playerId);
 
     await ctx.db.patch(playerId, {
       str: startingStats.str,
@@ -526,6 +594,8 @@ export const rebirth = mutation({
       luk: startingStats.luk,
       con: startingStats.con,
       statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+      rebirthStatBonuses: bonuses,
+      rebirthSkillBonuses: skillBonuses,
       pendingStarterPick: true,
       gold: 0,
       totalExperience: 0,
@@ -543,6 +613,10 @@ export const rebirth = mutation({
     return {
       rebirthCount: nextRebirthCount,
       newThreshold: nextThreshold,
+      qualifyingStats,
+      qualifyingSkills,
+      rebirthStatBonuses: bonuses,
+      rebirthSkillBonuses: skillBonuses,
     };
   },
 });

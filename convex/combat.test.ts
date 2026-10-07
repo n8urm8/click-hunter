@@ -284,7 +284,7 @@ test("new and reborn players always auto attack; old clients cannot disable it",
   await expect(t.mutation(api.players.setAutoAttack, { playerId, enabled: false }))
     .rejects.toThrow("Auto attack is always enabled");
   await t.mutation(api.players.setAutoAttack, { playerId, enabled: true });
-  await t.run((ctx) => ctx.db.patch(playerId, { maxTierReached: 5 }));
+  await t.run((ctx) => ctx.db.patch(playerId, { str: 99 }));
   await t.mutation(api.players.rebirth, { playerId });
   expect((await t.run((ctx) => ctx.db.get(playerId)))?.autoAttackEnabled).toBe(true);
 });

@@ -306,7 +306,7 @@ test("cancellation settles earned battle work and removes the presence record", 
 test("rebirth cancels saved and queued battles rather than retaining pre-reset encounters", async () => {
   const { t, playerId, taskId } = await setup({ battleEncounter: encounter });
   await t.run(async (ctx) => {
-    await ctx.db.patch(playerId, { maxTierReached: 5 });
+    await ctx.db.patch(playerId, { str: 99 });
     const task = await ctx.db.get(taskId);
     if (!task) throw new Error("Missing fixture");
     const { _id, _creationTime, ...fields } = task;
@@ -398,9 +398,16 @@ test("modifier changes cannot discard or reinterpret a partially drained catch-u
   await t.mutation(api.tasks.sync, { playerId });
   expect(await t.run((ctx) => ctx.db.get(taskId)))
     .toMatchObject({ payload: { completedActions: 10_000 } });
+  // The first batch leveled the skill, so its tasks now run faster:
+  // the same catch-up window completes more than 1,000 further actions.
+  const skillLevel =
+    (await t.run((ctx) => ctx.db.query("playerSkills").unique()))?.level ?? 1;
+  expect(skillLevel).toBeGreaterThan(1);
   await t.mutation(api.tasks.sync, { playerId });
-  expect(await t.run((ctx) => ctx.db.get(taskId)))
-    .toMatchObject({ payload: { completedActions: 11_000 } });
+  const completed =
+    (await t.run((ctx) => ctx.db.get(taskId)))?.payload
+      ?.completedActions ?? 0;
+  expect(completed).toBeGreaterThan(11_000);
 });
 
 test("craft cancellation settles the finished actions and refunds only unused reservations", async () => {

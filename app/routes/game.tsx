@@ -52,10 +52,37 @@ function PlayerDataPrefetch({
         }),
       },
       {
-        label: "rebirth thresholds",
+        label: "rebirth requirement",
         promise: queryClient.prefetchQuery({
           ...convexQuery(api.seed.getGameBalance, {
-            key: "rebirthThresholds",
+            key: "rebirthStatLevelRequirement",
+          }),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
+        label: "rebirth bonus",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.seed.getGameBalance, {
+            key: "rebirthStatBonusPercent",
+          }),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
+        label: "rebirth skill bonus",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.seed.getGameBalance, {
+            key: "rebirthSkillBonusPercent",
+          }),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
+        label: "skill level speed",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.seed.getGameBalance, {
+            key: "skillLevelSpeedBonusPerLevel",
           }),
           ...convexQueryCacheOptions,
         }),

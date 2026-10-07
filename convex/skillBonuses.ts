@@ -296,7 +296,8 @@ function activeMultiplier(
 export function getSkillModifiersAt(
   timeline: SkillModifierTimeline,
   category: SkillActionCategory,
-  timestamp: number
+  timestamp: number,
+  extraSpeedMultiplier = 1
 ) {
   const speedMultiplier = Math.min(
     MAX_COMBINED_MULTIPLIER,
@@ -315,7 +316,8 @@ export function getSkillModifiersAt(
         "skill-speed-multiplier",
         category,
         timestamp
-      )
+      ) *
+      extraSpeedMultiplier
   );
   const xpMultiplier = Math.min(
     MAX_COMBINED_MULTIPLIER,
