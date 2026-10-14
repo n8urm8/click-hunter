@@ -39,6 +39,11 @@ import {
   PASSIVE_POINT_BALANCE_DEFAULT,
   seedPassiveContent,
 } from "./passiveTree";
+import { GUILD_BALANCE_DEFAULTS, populateGuildBonuses } from "./guilds";
+import { SIM_LIVE_BALANCE_DEFAULTS } from "./simLive";
+import { PVP_ARENA_BALANCE_DEFAULTS } from "./arena";
+import { RANKED_BALANCE_DEFAULTS } from "./ranked";
+import { calculateCombatLevel } from "./characterLevel";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -140,6 +145,10 @@ async function populateGameBalance(ctx: MutationCtx) {
     ...SKILL_TASK_BALANCE_DEFAULTS,
     ...TASK_SYNC_BALANCE_DEFAULTS,
     ...INFUSION_BALANCE_DEFAULTS,
+    ...GUILD_BALANCE_DEFAULTS,
+    ...SIM_LIVE_BALANCE_DEFAULTS,
+    ...PVP_ARENA_BALANCE_DEFAULTS,
+    ...RANKED_BALANCE_DEFAULTS,
   ];
   for (const entry of entries) {
     const existing = await ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", entry.key)).first();
@@ -477,6 +486,7 @@ export const populateAll = mutation({
     await populateHiddenSpots(ctx);
     await populateAchievements(ctx);
     await populateRebirthRewards(ctx);
+    await populateGuildBonuses(ctx);
     await populateChatMessages(ctx);
     const duration = Date.now() - startTime;
     return { success: true, message: `Seeded all tables in ${duration}ms` };
@@ -875,5 +885,398 @@ export const getRebirthRewards = query({
   args: {},
   handler: async (ctx) => {
     return await ctx.db.query("rebirthRewards").collect();
+  },
+});
+
+// ─── PvP arena demo lobbies ───────────────────────────────────────────────────
+
+// ─── PvP arena demo lobbies ───────────────────────────────────────────────────
+
+const ARENA_SPAR_PREFIX = "arena-spar-";
+
+type SparBot = {
+  name: string;
+  level: number;
+  stats: { str: number; dex: number; int: number; luk: number; con: number };
+  spentStakes: number;
+};
+
+/**
+ * Seed 10 demo arena lobbies (8 open + 2 settled) fought by spar bots, so the
+ * Arena page can be browsed end to end: open corners, full rooms, live
+ * countdowns, locked private rooms, spectators, and recent results.
+ *
+ * Internal harness function for the Convex CLI (deployment credentials are
+ * the authorization boundary — CLI calls carry no user identity). Requires
+ * gameBalance `simLiveEnabled === true`; flip it in Admin → General and flip
+ * it back when done.
+ *
+ * Re-running resets previous spar bots and every lobby they created first,
+ * then rebuilds deterministically. Real players and their lobbies are never
+ * touched.
+ *
+ * Usage: npx convex run --env-file docker/.env.selfhosted seed:seedArenaLobbies '{}'
+ */
+export const seedArenaLobbies = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const flag = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "simLiveEnabled"))
+      .first();
+    if (flag?.value !== true) {
+      throw new Error(
+        "Live simulation harness is disabled (gameBalance simLiveEnabled is not true)."
+      );
+    }
+    const now = Date.now();
+
+    // Reset previous spar data so re-runs never stack duplicates.
+    let resetBots = 0;
+    let resetLobbies = 0;
+    const sparIds = new Set<string>();
+    for (const player of await ctx.db.query("players").collect()) {
+      if (!player.anonymousId.startsWith(ARENA_SPAR_PREFIX)) continue;
+      sparIds.add(player._id);
+    }
+    if (sparIds.size > 0) {
+      const lobbyIds = new Set<string>();
+      for (const lobby of await ctx.db.query("arenaLobbies").collect()) {
+        if (sparIds.has(lobby.creatorId)) lobbyIds.add(lobby._id);
+      }
+      for (const row of await ctx.db.query("arenaSpectators").collect()) {
+        if (sparIds.has(row.playerId) || lobbyIds.has(row.lobbyId)) {
+          await ctx.db.delete(row._id);
+        }
+      }
+      for (const lobby of await ctx.db.query("arenaLobbies").collect()) {
+        if (lobbyIds.has(lobby._id)) {
+          await ctx.db.delete(lobby._id);
+          resetLobbies += 1;
+        }
+      }
+      for (const player of await ctx.db.query("players").collect()) {
+        if (sparIds.has(player._id)) {
+          await ctx.db.delete(player._id);
+          resetBots += 1;
+        }
+      }
+    }
+
+    const bots: SparBot[] = [
+      { name: "Briar", level: 64, stats: { str: 12, dex: 14, int: 10, luk: 12, con: 14 }, spentStakes: 100 },
+      { name: "Fenwick", level: 91, stats: { str: 20, dex: 18, int: 16, luk: 14, con: 22 }, spentStakes: 500 },
+      { name: "Moss", level: 78, stats: { str: 16, dex: 16, int: 14, luk: 12, con: 18 }, spentStakes: 250 },
+      { name: "Hob", level: 105, stats: { str: 24, dex: 20, int: 18, luk: 16, con: 26 }, spentStakes: 750 },
+      { name: "Tansy", level: 93, stats: { str: 18, dex: 22, int: 16, luk: 20, con: 16 }, spentStakes: 1100 },
+      { name: "Corvin", level: 63, stats: { str: 14, dex: 12, int: 12, luk: 10, con: 14 }, spentStakes: 100 },
+      { name: "Odette", level: 138, stats: { str: 30, dex: 26, int: 24, luk: 22, con: 34 }, spentStakes: 5000 },
+      { name: "Rook", level: 126, stats: { str: 28, dex: 24, int: 22, luk: 20, con: 30 }, spentStakes: 5000 },
+      { name: "Sable", level: 74, stats: { str: 14, dex: 16, int: 12, luk: 14, con: 16 }, spentStakes: 100 },
+      { name: "Thistle", level: 85, stats: { str: 18, dex: 16, int: 16, luk: 14, con: 20 }, spentStakes: 100 },
+      { name: "Wren", level: 82, stats: { str: 16, dex: 18, int: 14, luk: 16, con: 16 }, spentStakes: 100 },
+      { name: "Ash", level: 121, stats: { str: 26, dex: 22, int: 24, luk: 20, con: 28 }, spentStakes: 2500 },
+    ];
+    const ids: Id<"players">[] = [];
+    for (const [index, bot] of bots.entries()) {
+      ids.push(
+        await ctx.db.insert("players", {
+          anonymousId: `${ARENA_SPAR_PREFIX}${index}`,
+          name: bot.name,
+          ...bot.stats,
+          gold: Math.max(0, 5000 - bot.spentStakes),
+          totalExperience: 0,
+          rebirthCount: 0,
+          rebirthTierThreshold: 5,
+          currentTier: 1,
+          maxTierReached: 1,
+          autoAttackEnabled: true,
+          autoStartFightEnabled: false,
+          createdAt: now,
+          lastUpdated: now,
+        })
+      );
+    }
+    const bot = (index: number) => ({
+      id: ids[index],
+      name: bots[index].name,
+      level: bots[index].level,
+      combat: calculateCombatLevel(bots[index].stats),
+    });
+
+    type Corner = { bot: number; stake: number; ready: boolean };
+    const openLobby = async (
+      index: number,
+      visibility: "general" | "private",
+      first: Corner,
+      second: Corner | null,
+      extra: { password?: string; countdownInMs?: number; spectators?: number[] } = {}
+    ) => {
+      const a = bot(first.bot);
+      const createdAt = now - index * 5 * 60_000;
+      const lobbyId = await ctx.db.insert("arenaLobbies", {
+        visibility,
+        ...(extra.password === undefined ? {} : { password: extra.password }),
+        status: "waiting",
+        creatorId: a.id,
+        fighter1Id: a.id,
+        fighter1Name: a.name,
+        fighter1Stake: first.stake,
+        fighter1Level: a.level,
+        fighter1CombatLevel: a.combat,
+        fighter1Ready: first.ready,
+        ...(second === null
+          ? {}
+          : {
+              fighter2Id: bot(second.bot).id,
+              fighter2Name: bot(second.bot).name,
+              fighter2Stake: second.stake,
+              fighter2Level: bot(second.bot).level,
+              fighter2CombatLevel: bot(second.bot).combat,
+              fighter2Ready: second.ready,
+            }),
+        ...(extra.countdownInMs === undefined
+          ? {}
+          : { countdownEndsAt: now + extra.countdownInMs }),
+        settlementKey: `seed:arena:${index}`,
+        expiresAt: now + 2 * 60 * 60 * 1000,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      for (const watcher of extra.spectators ?? []) {
+        const w = bot(watcher);
+        await ctx.db.insert("arenaSpectators", {
+          lobbyId,
+          playerId: w.id,
+          playerName: w.name,
+          joinedAt: createdAt,
+        });
+      }
+      return lobbyId;
+    };
+
+    // 8 open rooms: open corners, full rooms, live countdowns, locked rooms.
+    await openLobby(0, "general", { bot: 0, stake: 100, ready: false }, null);
+    await openLobby(
+      1,
+      "general",
+      { bot: 1, stake: 250, ready: true },
+      { bot: 2, stake: 250, ready: true },
+      { countdownInMs: 8000, spectators: [7, 8] }
+    );
+    await openLobby(
+      2,
+      "general",
+      { bot: 3, stake: 500, ready: true },
+      { bot: 4, stake: 1000, ready: false },
+      { spectators: [10] }
+    );
+    await openLobby(3, "private", { bot: 5, stake: 0, ready: false }, null, {
+      password: "1234",
+    });
+    await openLobby(
+      4,
+      "private",
+      { bot: 6, stake: 5000, ready: true },
+      { bot: 7, stake: 5000, ready: true },
+      { password: "duel", countdownInMs: 8000, spectators: [0, 1, 2, 3] }
+    );
+    await openLobby(5, "general", { bot: 8, stake: 100, ready: false }, null, {
+      spectators: [11],
+    });
+    await openLobby(
+      6,
+      "general",
+      { bot: 9, stake: 100, ready: false },
+      { bot: 10, stake: 100, ready: false },
+      { spectators: [4, 5, 6] }
+    );
+    await openLobby(7, "general", { bot: 11, stake: 2500, ready: false }, null);
+
+    // 2 settled records so the Results tab has content.
+    const settled = async (
+      index: number,
+      first: Corner,
+      second: Corner,
+      result:
+        | { type: "win"; winnerBot: number; reason: "knockout" | "rounds" | "forfeit"; round: number; taxPaid: number; potPaid: number }
+        | { type: "draw"; round: number },
+      hoursAgo: number
+    ) => {
+      const a = bot(first.bot);
+      const b = bot(second.bot);
+      await ctx.db.insert("arenaLobbies", {
+        visibility: "general",
+        status: "completed",
+        creatorId: a.id,
+        fighter1Id: a.id,
+        fighter1Name: a.name,
+        fighter1Stake: first.stake,
+        fighter1Level: a.level,
+        fighter1CombatLevel: a.combat,
+        fighter1Ready: true,
+        fighter2Id: b.id,
+        fighter2Name: b.name,
+        fighter2Stake: second.stake,
+        fighter2Level: b.level,
+        fighter2CombatLevel: b.combat,
+        fighter2Ready: true,
+        round: result.round,
+        ...(result.type === "win"
+          ? {
+              winnerId: result.winnerBot === first.bot ? a.id : b.id,
+              endReason: result.reason,
+              taxPaid: result.taxPaid,
+              potPaid: result.potPaid,
+            }
+          : { endReason: "draw" as const, taxPaid: 0, potPaid: 0 }),
+        settlementKey: `seed:arena:${index}`,
+        startedAt: now - (hoursAgo + 1) * 60 * 60 * 1000,
+        endedAt: now - hoursAgo * 60 * 60 * 1000,
+        expiresAt: now + 2 * 60 * 60 * 1000,
+        createdAt: now - (hoursAgo + 1) * 60 * 60 * 1000,
+        updatedAt: now - hoursAgo * 60 * 60 * 1000,
+      });
+    };
+    await settled(
+      8,
+      { bot: 1, stake: 250, ready: true },
+      { bot: 3, stake: 250, ready: true },
+      { type: "win", winnerBot: 1, reason: "knockout", round: 14, taxPaid: 25, potPaid: 475 },
+      2
+    );
+    await settled(
+      9,
+      { bot: 4, stake: 100, ready: true },
+      { bot: 5, stake: 100, ready: true },
+      { type: "draw", round: 57 },
+      20
+    );
+
+    return {
+      success: true,
+      message: "Seeded 10 arena lobbies (8 open + 2 settled) across 12 spar bots",
+      resetBots,
+      resetLobbies,
+      bots: bots.length,
+      lobbies: 10,
+      privatePasswords: [
+        { lobby: "Corvin's friendly", password: "1234" },
+        { lobby: "Odette vs Rook high rollers", password: "duel" },
+      ],
+    };
+  },
+});
+
+const RANKED_SPAR_PREFIX = "ranked-spar-";
+
+/**
+ * Seed the ranked ladder with spar bots at spread-out point totals, so the
+ * match list, leaderboard, and previews have content before real fighters
+ * join. Same harness rules as seedArenaLobbies: internal CLI function gated
+ * by gameBalance `simLiveEnabled`, deterministic rebuild, real players never
+ * touched (separate bot prefix from the lobby seed).
+ *
+ * Usage: npx convex run --env-file docker/.env.selfhosted seed:seedRankedLeague '{}'
+ */
+export const seedRankedLeague = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const flag = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "simLiveEnabled"))
+      .first();
+    if (flag?.value !== true) {
+      throw new Error(
+        "Live simulation harness is disabled (gameBalance simLiveEnabled is not true)."
+      );
+    }
+    const now = Date.now();
+
+    let resetBots = 0;
+    let resetRows = 0;
+    const sparIds = new Set<string>();
+    for (const player of await ctx.db.query("players").collect()) {
+      if (!player.anonymousId.startsWith(RANKED_SPAR_PREFIX)) continue;
+      sparIds.add(player._id);
+    }
+    if (sparIds.size > 0) {
+      for (const battle of await ctx.db.query("rankedBattles").collect()) {
+        if (
+          sparIds.has(battle.attackerId) ||
+          sparIds.has(battle.defenderId)
+        ) {
+          await ctx.db.delete(battle._id);
+          resetRows += 1;
+        }
+      }
+      for (const row of await ctx.db.query("rankedFighters").collect()) {
+        if (sparIds.has(row.playerId)) {
+          await ctx.db.delete(row._id);
+          resetRows += 1;
+        }
+      }
+      for (const player of await ctx.db.query("players").collect()) {
+        if (sparIds.has(player._id)) {
+          await ctx.db.delete(player._id);
+          resetBots += 1;
+        }
+      }
+    }
+
+    const bots: Array<{
+      name: string;
+      level: number;
+      stats: { str: number; dex: number; int: number; luk: number; con: number };
+      points: number;
+      wins: number;
+      losses: number;
+    }> = [
+      { name: "Lark", level: 132, stats: { str: 28, dex: 26, int: 24, luk: 22, con: 30 }, points: 1350, wins: 12, losses: 3 },
+      { name: "Birch", level: 118, stats: { str: 26, dex: 24, int: 22, luk: 20, con: 26 }, points: 1240, wins: 9, losses: 4 },
+      { name: "Clover", level: 104, stats: { str: 22, dex: 22, int: 20, luk: 18, con: 24 }, points: 1180, wins: 8, losses: 5 },
+      { name: "Elm", level: 96, stats: { str: 20, dex: 20, int: 18, luk: 16, con: 22 }, points: 1105, wins: 6, losses: 4 },
+      { name: "Flint", level: 88, stats: { str: 18, dex: 18, int: 16, luk: 16, con: 20 }, points: 1020, wins: 5, losses: 5 },
+      { name: "Gale", level: 79, stats: { str: 16, dex: 16, int: 14, luk: 14, con: 18 }, points: 980, wins: 4, losses: 6 },
+      { name: "Hazel", level: 71, stats: { str: 14, dex: 14, int: 14, luk: 12, con: 16 }, points: 910, wins: 3, losses: 7 },
+      { name: "Ivy", level: 63, stats: { str: 12, dex: 14, int: 12, luk: 12, con: 14 }, points: 760, wins: 1, losses: 9 },
+    ];
+    for (const [index, bot] of bots.entries()) {
+      const playerId = await ctx.db.insert("players", {
+        anonymousId: `${RANKED_SPAR_PREFIX}${index}`,
+        name: bot.name,
+        ...bot.stats,
+        gold: 1000,
+        totalExperience: 0,
+        rebirthCount: 0,
+        rebirthTierThreshold: 5,
+        currentTier: 1,
+        maxTierReached: 1,
+        autoAttackEnabled: true,
+        autoStartFightEnabled: false,
+        createdAt: now,
+        lastUpdated: now,
+      });
+      await ctx.db.insert("rankedFighters", {
+        playerId,
+        playerName: bot.name,
+        points: bot.points,
+        wins: bot.wins,
+        losses: bot.losses,
+        draws: 0,
+        battleDay: Math.floor(now / 86_400_000),
+        battlesUsed: 0,
+        joinedAt: now - index * 60_000,
+        updatedAt: now,
+      });
+    }
+
+    return {
+      success: true,
+      message: "Seeded 8 ranked spar bots across a 760-1350 point ladder",
+      resetBots,
+      resetRows,
+      bots: bots.length,
+    };
   },
 });

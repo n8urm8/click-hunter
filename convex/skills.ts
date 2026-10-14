@@ -7,6 +7,7 @@ import {
   consumeItems,
   grantItemToInventory,
 } from "./items";
+import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
 import {
   DEFAULT_SKILL_TASK_MS_PER_XP,
   getSkillActionDurationMs,
@@ -804,6 +805,12 @@ export async function resolveSkillTask(
       earnedReward = Math.floor(xpReward * infusionBalance.infusionFailXpPercent);
     }
   }
+  const guildBonuses = await getGuildBonusesForPlayer(ctx, task.playerId);
+  if ((guildBonuses.xpBonusPercent ?? 0) > 0 && earnedReward > 0) {
+    earnedReward = Math.floor(
+      earnedReward * (1 + guildBonuses.xpBonusPercent / 100)
+    );
+  }
   const xpBase = readSkillXpBase(
     await getBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key)
   );
@@ -919,6 +926,7 @@ export async function resolveSkillTask(
     actionsCompleted: playerSkill.actionsCompleted + 1,
     updatedAt: now,
   });
+  await accrueGuildXpFromEarned(ctx, task.playerId, earnedReward);
   await ctx.db.insert("skillActionHistory", {
     playerId: task.playerId,
     taskId: task._id,
@@ -1611,6 +1619,20 @@ export async function advanceSkillActionTask(
     }
   }
 
+  // Guild XP bonus applies to the whole batch on the live settlement path,
+  // matching the legacy single-action path below.
+  if (actionCountThisCall > 0 && experienceThisCall > 0) {
+    const batchGuildBonuses = await getGuildBonusesForPlayer(
+      ctx,
+      task.playerId
+    );
+    if ((batchGuildBonuses.xpBonusPercent ?? 0) > 0) {
+      experienceThisCall = Math.floor(
+        experienceThisCall * (1 + batchGuildBonuses.xpBonusPercent / 100)
+      );
+    }
+  }
+
   if (actionCountThisCall > 0) {
     const playerSkill = await ensurePlayerSkill(
       ctx,
@@ -1649,6 +1671,7 @@ export async function advanceSkillActionTask(
       ),
       updatedAt: now,
     });
+    await accrueGuildXpFromEarned(ctx, task.playerId, experienceThisCall);
 
     const sourceType = snapshot.actionType === "gathering" ? "skill" : "crafting";
     const sourceId = snapshot.recipe?.recipeId ?? snapshot.actionId;

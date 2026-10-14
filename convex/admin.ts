@@ -465,6 +465,7 @@ export const getConfig = query({
       v.literal("items"),
       v.literal("skills"),
       v.literal("tree"),
+      v.literal("guilds"),
       v.literal("general")
     )),
   },
@@ -506,6 +507,13 @@ export const getConfig = query({
       lootTableEntries,
       lootSources,
       passiveNodes,
+      guilds,
+      guildMembers,
+      guildApplications,
+      guildBonuses,
+      guildRaids,
+      guildWeeklyObjectives,
+      guildLeaderboard,
     ] = await Promise.all([
       read("gameBalance"),
       read("upgrades"),
@@ -529,6 +537,13 @@ export const getConfig = query({
       read("lootTableEntries"),
       read("lootSources"),
       read("passiveNodes"),
+      read("guilds"),
+      read("guildMembers"),
+      read("guildApplications"),
+      read("guildBonuses"),
+      read("guildRaids"),
+      read("guildWeeklyObjectives"),
+      read("guildLeaderboard"),
     ]);
 
     return {
@@ -554,6 +569,13 @@ export const getConfig = query({
       lootTableEntries,
       lootSources,
       passiveNodes,
+      guilds,
+      guildMembers,
+      guildApplications,
+      guildBonuses,
+      guildRaids,
+      guildWeeklyObjectives,
+      guildLeaderboard,
     };
   },
 });
@@ -693,6 +715,58 @@ export const updateGameBalance = mutation({
     if (balance.key === "combatAttackSpeedMultiplier" &&
       (typeof args.value !== "number" || !Number.isFinite(args.value) || args.value <= 0)) {
       throw new Error("Combat attack speed multiplier must be a positive finite number");
+    }
+    if (balance.key === "pvpMinLevel" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1)) {
+      throw new Error("Arena minimum level must be a whole number of at least 1");
+    }
+    if (balance.key === "pvpRoundIntervalMs" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 250 || args.value > 60000)) {
+      throw new Error("Arena round interval must be a whole number of milliseconds between 250 and 60000");
+    }
+    if (balance.key === "pvpMaxRounds" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1 || args.value > 10000)) {
+      throw new Error("Arena max rounds must be a whole number between 1 and 10000");
+    }
+    if (balance.key === "pvpTaxPercent" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 0 || args.value > 100)) {
+      throw new Error("Arena tax percent must be a whole number between 0 and 100");
+    }
+    if ((balance.key === "pvpMinStake" || balance.key === "pvpMaxStake") &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 0 || args.value > 1_000_000_000)) {
+      throw new Error("Arena stakes must be whole numbers between 0 and 1000000000");
+    }
+    if (balance.key === "pvpLobbyExpiryHours" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1 || args.value > 168)) {
+      throw new Error("Arena lobby expiry must be a whole number of hours between 1 and 168");
+    }
+    if (balance.key === "pvpFightExpiryMinutes" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1 || args.value > 1440)) {
+      throw new Error("Arena fight expiry must be a whole number of minutes between 1 and 1440");
+    }
+    if (balance.key === "pvpMaxSpectators" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 0 || args.value > 1000)) {
+      throw new Error("Arena max spectators must be a whole number between 0 and 1000");
+    }
+    if (balance.key === "pvpCountdownMs" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1000 || args.value > 120000)) {
+      throw new Error("Arena countdown must be a whole number of milliseconds between 1000 and 120000");
+    }
+    if (balance.key === "rankedMinCombatLevel" &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1)) {
+      throw new Error("Ranked minimum combat level must be a whole number of at least 1");
+    }
+    if ((balance.key === "rankedStartPoints" || balance.key === "rankedKFactor" ||
+      balance.key === "rankedBattlesPerDay" || balance.key === "rankedMaxRounds" ||
+      balance.key === "rankedMatchCandidates") &&
+      (typeof args.value !== "number" || !Number.isSafeInteger(args.value) || args.value < 1 || args.value > 1000000)) {
+      throw new Error("Ranked numeric settings must be whole numbers between 1 and 1000000");
+    }
+    if (balance.key === "rankedWeeklyRewards") {
+      if (!Array.isArray(args.value) || args.value.length < 1 || args.value.length > 25 ||
+        !args.value.every((entry) => typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0 && entry <= 1_000_000_000)) {
+        throw new Error("Ranked weekly rewards must be an array of 1-25 non-negative whole gold amounts");
+      }
     }
 
     await ctx.db.patch(balance._id, {

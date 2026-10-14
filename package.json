@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "convex dev --start 'vite'",
+    "dev": "test -f ./docker/.env.selfhosted || (echo 'Missing docker/.env.selfhosted - copy docker/.env.selfhosted.example (see docs/self-hosting.md)' && exit 1); set -a; . ./docker/.env.selfhosted; set +a; convex dev --env-file ./docker/.env.selfhosted --start 'vite'",
     "dev:selfhosted": "test -f ./docker/.env.selfhosted || (echo 'Missing docker/.env.selfhosted - copy docker/.env.selfhosted.example (see docs/self-hosting.md)' && exit 1); set -a; . ./docker/.env.selfhosted; set +a; convex dev --env-file ./docker/.env.selfhosted --start 'vite'",
+    "dev:cloud": "convex dev --start 'vite'",
     "backend:push": "convex deploy --env-file ./docker/.env.selfhosted",
     "deploy:selfhosted": "set -a; . ./docker/.env.selfhosted; set +a; convex deploy --env-file ./docker/.env.selfhosted --cmd 'vite build'",
     "test": "vitest run",

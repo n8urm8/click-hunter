@@ -36,6 +36,9 @@ import {
   DEFAULT_BAZAAR_TAX_PERCENT,
 } from "./bazaar";
 import { DEFAULT_MONSTER_POWER_MULTIPLIER } from "./combat";
+import { PVP_ARENA_BALANCE_DEFAULTS } from "./arena";
+import { RANKED_BALANCE_DEFAULTS } from "./ranked";
+import { SIM_LIVE_BALANCE_DEFAULTS } from "./simLive";
 
 /**
  * Migration: add item rarity definitions and assign existing items to Common.
@@ -708,6 +711,131 @@ export const backfillSkillRebirthBalance = internalMutation({
     }
 
     return { created, updated };
+  },
+});
+
+/**
+ * Migration: retune the guild passive-XP rate from 10% to 1% and clarify it
+ * as bonus XP (never deducted from members). Only replaces the previous
+ * default, leaving any other admin-tuned value untouched.
+ *
+ * Run: npx convex run migrations:retuneGuildActivityXp
+ */
+export const retuneGuildActivityXp = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const key = "guildActivityXpPercent";
+    const description =
+      "Bonus guild XP granted alongside member combat/skill XP, as a percent of the XP earned (player keeps the full amount; 0-100)";
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", key))
+      .first();
+
+    if (!existing) {
+      await ctx.db.insert("gameBalance", {
+        key,
+        value: 1,
+        description,
+        lastUpdated: Date.now(),
+      });
+      return { created: true, updated: false };
+    }
+
+    if (existing.value !== 10) {
+      return { created: false, updated: false };
+    }
+
+    await ctx.db.patch(existing._id, {
+      value: 1,
+      description,
+      lastUpdated: Date.now(),
+    });
+    return { created: false, updated: true };
+  },
+});
+
+/**
+ * Migration: add the PvP arena balance configuration.
+ *
+ * Run: npx convex run migrations:backfillArenaBalance
+ */
+export const backfillArenaBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let created = 0;
+
+    for (const entry of PVP_ARENA_BALANCE_DEFAULTS) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (existing) continue;
+
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+      created += 1;
+    }
+
+    return { created };
+  },
+});
+
+/**
+ * Migration: add the ranked league balance configuration.
+ *
+ * Run: npx convex run migrations:backfillRankedBalance
+ */
+export const backfillRankedBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let created = 0;
+
+    for (const entry of RANKED_BALANCE_DEFAULTS) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (existing) continue;
+
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+      created += 1;
+    }
+
+    return { created };
+  },
+});
+
+/**
+ * Migration: add the live simulation harness master switch.
+ *
+ * Run: npx convex run migrations:backfillSimLiveBalance
+ */
+export const backfillSimLiveBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let created = 0;
+
+    for (const entry of SIM_LIVE_BALANCE_DEFAULTS) {
+      const existing = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (existing) continue;
+
+      await ctx.db.insert("gameBalance", {
+        ...entry,
+        lastUpdated: Date.now(),
+      });
+      created += 1;
+    }
+
+    return { created };
   },
 });
 

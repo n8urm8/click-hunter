@@ -14,7 +14,10 @@ const MAX_RECENT_MESSAGES = 50;
 const MAX_PRIVATE_CHATS = 50;
 const MAX_PRIVATE_MESSAGES_TO_SCAN = 200;
 
-type SupportedChannelType = "world" | "private";
+type SupportedChannelType = "world" | "private" | "guild" | "arena";
+
+const ARENA_CHANNEL_ID = "arena";
+const LOBBY_CHANNEL_PREFIX = "lobby:";
 
 type PrivateChatSummary = {
   playerId: Id<"players">;
@@ -45,9 +48,49 @@ async function resolveChannel(
   ctx: QueryCtx | MutationCtx,
   playerId: Id<"players">,
   channelType: string,
-  recipientId?: Id<"players">
+  recipientId?: Id<"players">,
+  lobbyId?: Id<"arenaLobbies">
 ) {
   const player = await getPlayerOrThrow(ctx, playerId);
+
+  if (channelType === "arena") {
+    if (recipientId) {
+      throw new Error("Arena chat cannot have a recipient");
+    }
+    if (lobbyId === undefined) {
+      return {
+        player,
+        channelType: "arena" as SupportedChannelType,
+        channelId: ARENA_CHANNEL_ID,
+        recipient: undefined,
+      };
+    }
+    const lobby = await ctx.db.get(lobbyId);
+    if (!lobby) {
+      throw new Error("Arena lobby not found");
+    }
+    // Lobby chat is occupants-only so private rooms never leak, and the
+    // peanut gallery can't heckle from outside.
+    const isFighter =
+      lobby.fighter1Id === playerId || lobby.fighter2Id === playerId;
+    const spectator = isFighter
+      ? null
+      : await ctx.db
+          .query("arenaSpectators")
+          .withIndex("by_lobby_and_player", (q) =>
+            q.eq("lobbyId", lobbyId).eq("playerId", playerId)
+          )
+          .first();
+    if (!isFighter && !spectator) {
+      throw new Error("Only lobby fighters and spectators can use lobby chat");
+    }
+    return {
+      player,
+      channelType: "arena" as SupportedChannelType,
+      channelId: `${LOBBY_CHANNEL_PREFIX}${lobbyId}`,
+      recipient: undefined,
+    };
+  }
 
   if (channelType === "world") {
     if (recipientId) {
@@ -57,6 +100,25 @@ async function resolveChannel(
       player,
       channelType: "world" as SupportedChannelType,
       channelId: WORLD_CHANNEL_ID,
+      recipient: undefined,
+    };
+  }
+
+  if (channelType === "guild") {
+    if (recipientId) {
+      throw new Error("Guild chat cannot have a recipient");
+    }
+    const membership = await ctx.db
+      .query("guildMembers")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .first();
+    if (!membership) {
+      throw new Error("You are not in a guild");
+    }
+    return {
+      player,
+      channelType: "guild" as SupportedChannelType,
+      channelId: String(membership.guildId),
       recipient: undefined,
     };
   }
@@ -95,13 +157,15 @@ export const listMessages = query({
     playerId: v.id("players"),
     channelType: v.string(),
     recipientId: v.optional(v.id("players")),
+    lobbyId: v.optional(v.id("arenaLobbies")),
   },
   handler: async (ctx, args) => {
     const { channelType, channelId } = await resolveChannel(
       ctx,
       args.playerId,
       args.channelType,
-      args.recipientId
+      args.recipientId,
+      args.lobbyId
     );
     await requireChannelOwner(ctx, args.playerId);
 
@@ -237,6 +301,7 @@ export const sendMessage = mutation({
     playerId: v.id("players"),
     channelType: v.string(),
     recipientId: v.optional(v.id("players")),
+    lobbyId: v.optional(v.id("arenaLobbies")),
     content: v.string(),
   },
   handler: async (ctx, args) => {
@@ -254,7 +319,8 @@ export const sendMessage = mutation({
       ctx,
       args.playerId,
       args.channelType,
-      args.recipientId
+      args.recipientId,
+      args.lobbyId
     );
     await requireChannelOwner(ctx, args.playerId);
     const chatStatus = await rateLimiter.limit(ctx, "chatMessage", {

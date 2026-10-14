@@ -7,19 +7,25 @@ import { convexQueryCacheOptions } from "../lib/queryCache";
 
 export const MAX_CHAT_MESSAGE_LENGTH = 280;
 
-export type ChatChannelType = "world" | "private";
+export type ChatChannelType = "world" | "private" | "guild" | "arena";
 
 export function useChatMessages(
   playerId: Id<"players"> | null | undefined,
   channelType: ChatChannelType,
-  recipientId: Id<"players"> | null
+  recipientId: Id<"players"> | null,
+  lobbyId?: Id<"arenaLobbies"> | null
 ) {
   const queryArgs =
-    playerId && (channelType === "world" || recipientId)
+    playerId &&
+    (channelType === "world" ||
+      channelType === "guild" ||
+      channelType === "arena" ||
+      recipientId)
       ? {
           playerId,
           channelType,
           ...(channelType === "private" && recipientId ? { recipientId } : {}),
+          ...(channelType === "arena" && lobbyId ? { lobbyId } : {}),
         }
       : "skip";
 

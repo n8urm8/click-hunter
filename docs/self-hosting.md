@@ -51,12 +51,14 @@ providers later, follow the manual Convex Auth setup.
 ## 3. Run the game against it
 
 ```bash
-pnpm dev:selfhosted
+pnpm dev
 ```
 
-This loads `docker/.env.selfhosted` for both the Convex CLI (`--env-file`) and
-Vite (`VITE_CONVEX_URL`), then runs `convex dev --start 'vite'` as usual.
-To go back to Convex Cloud at any time: `pnpm dev` (still reads `.env.local`).
+`dev` is the self-hosted flow: it loads `docker/.env.selfhosted` for both
+the Convex CLI (`--env-file`) and Vite (`VITE_CONVEX_URL`), then runs
+`convex dev --start 'vite'` as usual. (`pnpm dev:selfhosted` is the same
+command under its old name.) To use Convex Cloud instead: `pnpm dev:cloud`
+(still reads `.env.local`).
 
 ## 4. Seed / migrate data
 
@@ -100,6 +102,8 @@ docker compose up -d --build web   # http://localhost:8080
 
 - `Missing docker/.env.selfhosted` — copy the `.example` file (step 1).
 - Wipe local backend data and start over: `docker compose down -v` (deletes the volume).
-- `convex` commands hitting cloud instead of local: make sure you used the
-  `:selfhosted` script or `--env-file docker/.env.selfhosted` — bare `pnpm dev`
-  intentionally still targets cloud via `.env.local`.
+- `convex` commands hitting cloud instead of local: make sure you used a
+  self-hosted script (`pnpm dev`, `pnpm backend:push`) or
+  `--env-file docker/.env.selfhosted` — bare `convex` without the env file
+  targets cloud via `.env.local`. `pnpm dev:cloud` is the explicit
+  cloud-dev alternative.

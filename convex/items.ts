@@ -682,6 +682,17 @@ export async function getEquippedWeapon(
     )
     .first();
   if (!wielded) return null;
+  return computeWeaponStats(ctx, wielded);
+}
+
+/**
+ * Weapon stats for one explicitly provided wielded row. Shared by live
+ * equipment reads and PvP loadout resolution so both use identical math.
+ */
+export async function computeWeaponStats(
+  ctx: DatabaseCtx,
+  wielded: Doc<"playerItems">
+): Promise<EquippedWeaponStats> {
   const item = await ctx.db.get(wielded.itemId);
   if (
     !item ||
@@ -772,6 +783,23 @@ export async function getEquippedProfile(
     .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
     .take(200);
   const equipped = rows.filter((entry) => entry.equippedSlot !== undefined);
+  return computeEquipmentStats(ctx, playerId, equipped);
+}
+
+/**
+ * Equipment math over explicitly provided rows. Shared by live equipment
+ * reads and PvP loadout resolution so both use identical math. Every row is
+ * treated as equipped (callers override `equippedSlot` for loadout pieces).
+ */
+export async function computeEquipmentStats(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">,
+  equipped: Doc<"playerItems">[]
+): Promise<{
+  bonuses: EquipmentStatBonuses;
+  armor: { defense: number; speedPenalty: number };
+  ward: Record<ElementKind, number>;
+}> {
   const bonuses = { ...EMPTY_EQUIPMENT_STAT_BONUSES };
   let defense = 0;
   let speedPenalty = 0;

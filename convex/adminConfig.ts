@@ -8,6 +8,10 @@ export const ADMIN_CONFIG_TABLES = {
     "recipeIngredients", "recipeOutputs", "augmentationDefinitions", "items",
   ],
   tree: ["passiveNodes"],
+  guilds: [
+    "guilds", "guildMembers", "guildApplications", "guildBonuses",
+    "guildRaids", "guildWeeklyObjectives", "guildLeaderboard",
+  ],
   general: [
     "gameBalance", "taskDefinitions", "upgrades", "hiddenSpots", "achievements",
     "rebirthRewards", "gameEvents",

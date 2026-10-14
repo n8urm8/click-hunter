@@ -17,7 +17,9 @@ import {
   rebirthStatMultiplier,
 } from "./rebirth";
 import { getActiveEventMultipliers, settleCombatFight } from "./loot";
+import { getGuildBonusesForPlayer } from "./guilds";
 import { conRegenPerSecond, readHpRegenBalance, resolveCurrentHp } from "./playerHp";
+import type { PvpEquipmentBundle } from "./pvpLoadout";
 import { query } from "./_generated/server";
 import { requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
@@ -179,21 +181,29 @@ export async function readPlayerCombatProfile(
   player: Player,
   now?: number,
   equipmentBonuses?: EquipmentStatBonuses,
-  armorTotals?: { defense: number; speedPenalty: number }
+  armorTotals?: { defense: number; speedPenalty: number },
+  pvpEquipment?: PvpEquipmentBundle
 ) {
-  const [equipped, weapon, passives, balance] = await Promise.all([
-    equipmentBonuses !== undefined && armorTotals !== undefined
+  const skipLiveEquipment =
+    pvpEquipment !== undefined ||
+    (equipmentBonuses !== undefined && armorTotals !== undefined);
+  const [equipped, liveWeapon, passives, balance, guildBonuses] = await Promise.all([
+    skipLiveEquipment
       ? null
       : getEquippedProfile(ctx, player._id),
-    getEquippedWeapon(ctx, player._id),
+    pvpEquipment !== undefined
+      ? null
+      : getEquippedWeapon(ctx, player._id),
     getPassiveBonuses(ctx, player._id),
     readCombatBalance(ctx),
+    getGuildBonusesForPlayer(ctx, player._id),
   ]);
-  const bonuses = equipmentBonuses ?? equipped?.bonuses ?? {
+  const weapon = pvpEquipment?.weapon ?? liveWeapon;
+  const bonuses = equipmentBonuses ?? pvpEquipment?.bonuses ?? equipped?.bonuses ?? {
     str: 0, dex: 0, int: 0, luk: 0, con: 0,
   };
-  const armor = armorTotals ?? equipped?.armor ?? { defense: 0, speedPenalty: 0 };
-  const ward = equipped?.ward ?? {
+  const armor = armorTotals ?? pvpEquipment?.armor ?? equipped?.armor ?? { defense: 0, speedPenalty: 0 };
+  const ward = pvpEquipment?.ward ?? equipped?.ward ?? {
     light: 0, dark: 0, water: 0, fire: 0, wind: 0, earth: 0,
   };
   // Character queries show permanent/equipped stats without a wall-clock dependency.
@@ -213,12 +223,13 @@ export async function readPlayerCombatProfile(
     rebirthCounts.con;
   const rebirthBonusPercent =
     bankedTotal > 0 ? await readRebirthStatBonusPercent(ctx) : 0;
+  const guildStatMultiplier = 1 + (guildBonuses.statBonusPercent ?? 0) / 100;
   const effectiveStats = {
-    str: (player.str + bonuses.str + passives.stats.str + (boosts?.statBonus.str ?? 0)) * rebirthStatMultiplier(rebirthCounts.str, rebirthBonusPercent),
-    dex: (player.dex + bonuses.dex + passives.stats.dex + (boosts?.statBonus.dex ?? 0)) * rebirthStatMultiplier(rebirthCounts.dex, rebirthBonusPercent),
-    int: (player.int + bonuses.int + passives.stats.int + (boosts?.statBonus.int ?? 0)) * rebirthStatMultiplier(rebirthCounts.int, rebirthBonusPercent),
-    luk: (player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0)) * rebirthStatMultiplier(rebirthCounts.luk, rebirthBonusPercent),
-    con: (player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0)) * rebirthStatMultiplier(rebirthCounts.con, rebirthBonusPercent),
+    str: (player.str + bonuses.str + passives.stats.str + (boosts?.statBonus.str ?? 0)) * rebirthStatMultiplier(rebirthCounts.str, rebirthBonusPercent) * guildStatMultiplier,
+    dex: (player.dex + bonuses.dex + passives.stats.dex + (boosts?.statBonus.dex ?? 0)) * rebirthStatMultiplier(rebirthCounts.dex, rebirthBonusPercent) * guildStatMultiplier,
+    int: (player.int + bonuses.int + passives.stats.int + (boosts?.statBonus.int ?? 0)) * rebirthStatMultiplier(rebirthCounts.int, rebirthBonusPercent) * guildStatMultiplier,
+    luk: (player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0)) * rebirthStatMultiplier(rebirthCounts.luk, rebirthBonusPercent) * guildStatMultiplier,
+    con: (player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0)) * rebirthStatMultiplier(rebirthCounts.con, rebirthBonusPercent) * guildStatMultiplier,
   };
   const scalingStat = weapon?.damageStat === "dex"
     ? effectiveStats.dex
@@ -303,7 +314,10 @@ export async function simulateRegularBattle(
   );
   const rewards = readAutoBattleRewards(rewardsValue);
   const now = Date.now();
-  const eventMultipliers = await getActiveEventMultipliers(ctx, now);
+  const [eventMultipliers, guildBonuses] = await Promise.all([
+    getActiveEventMultipliers(ctx, now),
+    getGuildBonusesForPlayer(ctx, player._id),
+  ]);
   const profile = await readPlayerCombatProfile(ctx, player, now, equipmentBonuses, armorTotals);
   const { balance, passives, combatStats } = profile;
   const isMagical = combatStats.damageType === "magical";
@@ -408,7 +422,8 @@ export async function simulateRegularBattle(
             (tier * rewards.goldPerTier +
               Math.random() * (rewards.goldVariance + 1)) *
               eventMultipliers.goldMultiplier *
-              passives.goldMultiplier
+              passives.goldMultiplier *
+              (1 + (guildBonuses.goldBonusPercent ?? 0) / 100)
           )
         )
       : 0,
@@ -420,7 +435,8 @@ export async function simulateRegularBattle(
               Math.random() * (rewards.experienceVariance + 1)) *
               eventMultipliers.experienceMultiplier *
               (profile.boosts?.xpMultiplier ?? 1) *
-              passives.xpMultiplier
+              passives.xpMultiplier *
+              (1 + (guildBonuses.xpBonusPercent ?? 0) / 100)
           )
         )
       : 0,

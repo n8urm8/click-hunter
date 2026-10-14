@@ -17,36 +17,40 @@
 
 ---
 
-## Phase 2 — Leaderboards
+## Phase 2 — Leaderboards ✅ (direct tables; write-path unwired)
 
-> Goal: Show top players by experience, tier, and rebirth count. Uses `@convex-dev/aggregate`.
+> Goal: Show top players by experience, tier, and rebirth count.
+> Implemented with direct `leaderboardByExperience` / `leaderboardByTier` /
+> `leaderboardByRebirth` tables, not `@convex-dev/aggregate`.
 
-- [ ] **leaderboards.ts** — Convex aggregate setup for `totalExperience`, `maxTierReached`, `rebirthCount`
-- [ ] **players.ts** — Update aggregate counters when player stats change (on fight victory, rebirth)
-- [ ] **LeaderboardPanel.tsx** — New UI tab showing top 10 players per category
-- [ ] **GameLayout.tsx** — Add Leaderboard tab to navigation
+- [x] **leaderboards.ts** — `getTopByExperience` / `getTopByTier` / `getTopByRebirth` + `getPlayerRanks` queries; `updateLeaderboards` internal writer
+- [x] **LeaderboardPanel.tsx + board route** — Top-10 per category with player ranks; nav via `GameNavbar.tsx` (`/board`), not `GameLayout.tsx`
+- [ ] **players.ts** — Wire `updateLeaderboards` on fight victory / rebirth. The writer exists but has no live callers yet (noted in `leaderboards.ts:5-6`), so boards only reflect backfilled/manual rows.
 
 ---
 
-## Phase 3 — Achievements
+## Phase 3 — Achievements ✅ (conditions hardcoded)
 
 > Goal: Reward milestone moments (first kill, high tier, rebirth, rare monster).
 
-- [ ] **Schema** — Add `achievements` table (definitions) + `playerAchievements` table (unlocked state)
-- [ ] **seed.ts** — Seed achievement definitions (e.g. "Rat Slayer", "Archfiend Bane", "Tier 10 Veteran")
-- [ ] **achievements.ts** — Check conditions after each fight victory; unlock and notify
-- [ ] **AchievementsPanel.tsx** — Show locked/unlocked achievements with progress bars
+- [x] **Schema** — `achievements` table (definitions) + `playerAchievements` table (unlocked state)
+- [x] **seed.ts** — Seeds achievement definitions (`first-kill`, `tier-5/10/20`, `first-rebirth`, `tier-100-xp`)
+- [x] **achievements.ts** — `unlockAchievement`, `getPlayerAchievements`, `checkAchievementConditions` (server row wins over client claims)
+- [x] **AchievementsPanel.tsx** — Locked/unlocked list with progress count
+- [x] **AdminPanel.tsx / admin.ts** — `updateAchievement` editor
+- [ ] Follow-up: conditions are hardcoded to the 6 IDs above, not table-driven rules; no monster-specific (e.g. "Rat Slayer") or rarity-based checks.
 
 ---
 
-## Phase 4 — Rebirth rewards
+## Phase 4 — Rebirth rewards ✅
 
 > Goal: Make rebirth feel meaningful with visible, persistent bonuses.
 
-- [ ] **Schema** — Add `rebirthRewards` table (what each rebirth unlocks: multiplier, passive, unlock)
-- [ ] **seed.ts** — Seed rebirth rewards (e.g. +10% gold, +5% XP, unlock new monster types)
-- [ ] **players.ts** — Apply rebirth rewards on `rebirth()` call; store active rewards on player
-- [ ] **RebirthPanel.tsx** — Show upcoming rewards before player commits; show active bonuses
+- [x] **Schema** — `rebirthRewards` + `playerRebirthRewards` tables
+- [x] **seed.ts** — Seeds rebirth rewards (gold/XP multipliers, unlocks)
+- [x] **players.ts (`canRebirth` / `rebirth`) + rebirth.ts helpers** — Applies rewards on `rebirth()`; stores active rewards on player
+- [x] **RebirthPanel.tsx** — Shows upcoming rewards before commit + active bonuses
+- [x] **AdminPanel.tsx / admin.ts** — `updateRebirthReward` editor
 
 ---
 
@@ -103,92 +107,70 @@
 - [x] **Auto-battle** — Queue regular battles by tier for a count, online
   duration, or until stopped; boss fights never run through the queue.
 
-## Phase 7 — Monster drops and loot tables
+## Phase 7 — Monster drops and loot tables ✅
 
 > Goal: Turn monster and boss victories into configurable item acquisition.
 
-- [ ] **Schema** — Add loot-table definitions, monster/boss drop rules,
-  weighted chances, quantity ranges, and drop-resolution history.
-- [ ] **Combat reward path** — Roll drops server-side on victory, apply
-  configured guarantees and rarity rules, and deliver rewards through the
-  inventory system without bypassing capacity or ownership checks.
-- [ ] **InventoryPanel.tsx** — Show newly acquired materials and equipment,
-  including full-inventory handling and a useful reward summary.
-- [ ] **Admin API / AdminPanel.tsx** — Manage drop tables, weights, quantities,
-  and per-monster or per-boss overrides.
+- [x] **Schema** — `lootTables`, `lootSources`, `lootTableEntries`, `lootAwards` tables
+- [x] **Combat reward path** — `loot.ts:settleCombatFight` rolls drops server-side on victory (guarantees, rarity rules, idempotent `settlementKey`); called from combat/tasks/boss paths. No direct client-facing query — helper-only by design.
+- [x] **InventoryPanel.tsx (cache tab)** — Newly acquired materials/equipment, full-inventory handling, reward summary via `pendingRewards` + `claimPendingReward(s)`
+- [x] **Admin API / AdminPanel.tsx** — `create/updateLootTable`, `create/updateLootTableEntry`, `create/updateLootSource` editors + per-monster/boss overrides
 
-## Phase 8 — Equipment progression
+## Phase 8 — Equipment progression ✅
 
 > Goal: Build combat progression on the existing item and equipment-slot
 > scaffold.
 
-- [ ] **Schema** — Extend equipment definitions with configurable stats,
-  effects, rarity/quality, level requirements, and unique/equip restrictions.
-- [ ] **items.ts** — Validate equipment effects and calculate a player's
-  active loadout without trusting client-provided stats.
-- [ ] **Combat integration** — Apply equipped modifiers consistently to attack,
-  defense, rewards, and any future PvP combat snapshots.
-- [ ] **InventoryPanel.tsx** — Show equipment stats, compare candidates, and
-  surface invalid or restricted loadouts.
-- [ ] **AdminPanel.tsx** — Add editors for equipment stats, effects, rarity,
-  and slot rules.
+- [x] **Schema** — `items` + `itemRarities` with configurable stats, effects, rarity/quality, level requirements, unique/equip restrictions
+- [x] **items.ts** — `getPlayerInventory`, `equipItem/unequipItem`, `grantItemToInventory/consumeItems`, `getEquippedWeapon/getEquippedProfile`; server-side loadout calc, never trusts client stats
+- [x] **Combat integration** — Equipped modifiers (incl. enchant/augment tiers) applied via `getEquippedWeapon/Profile` to attack, defense, rewards, and PvP snapshots (`arena.ts`, `pvpLoadout.ts`)
+- [x] **InventoryPanel.tsx + Equipment.tsx + ConsumableSlots** — Equipment stats, compare candidates, invalid/restricted loadout surfacing, consumable slots
+- [x] **AdminPanel.tsx / admin.ts** — `create/updateItem`, `create/updateItemRarity` editors
 
-## Phase 9 — Crafting
+## Phase 9 — Crafting ✅ (as skills system; no `crafting.ts`)
 
 > Goal: Convert monster materials into useful equipment and consumables.
 
-- [ ] **Schema** — Add recipe definitions, ingredient requirements, outputs,
-  unlock prerequisites, and crafting history.
-- [ ] **crafting.ts** — Validate recipes, consume materials atomically,
-  produce outputs through inventory rules, and support timed crafting through
-  the task queue where appropriate.
-- [ ] **InventoryPanel.tsx** — Add recipe browsing, ingredient availability,
-  craft actions, progress, and failure/full-inventory states.
-- [ ] **AdminPanel.tsx** — Add editors for recipes, costs, outputs, unlocks,
-  and crafting durations.
+- [x] **Schema** — `recipes`, `recipeIngredients`, `recipeOutputs`, `gatheringActivities`, `augmentationDefinitions`, plus `skillDefinitions` / `skillTierDefinitions`
+- [x] **tasks.ts (`enqueueSkillAction`) + infusion.ts + recipeValidation.ts** — Atomic validate/consume/produce through inventory rules; timed gathering/crafting/augmentation via the task queue; boss-key-gated `resolveInfusionCraft` / `enchantEquipment`. There is intentionally no single `crafting.ts`.
+- [x] **SkillsPanel.tsx + InventoryPanel.tsx + Equipment.tsx** — Recipe browsing, ingredient availability, craft actions, progress, failure/full-inventory states
+- [x] **AdminPanel.tsx / admin.ts** — `create/updateSkillDefinition`, `create/updateSkillTierDefinition`, `create/updateGatheringActivity`, `create/updateRecipe`, augmentation editors
 
-## Phase 10 — Alliances and group battles
+## Phase 10 — Alliances and group battles 🔄 (as guilds; no `alliances.ts`)
 
 > Goal: Add persistent player groups and asynchronous cooperative combat.
+> Implemented as **guilds**, not alliances: `guilds.ts` + `guildRaids.ts` +
+> `guildObjectives.ts` + `GuildPanel.tsx`.
 
-- [ ] **Schema** — Add alliances, membership roles, invitations, shared
-  channels, battle rosters, participation records, and battle results.
-- [ ] **alliances.ts** — Enforce membership and role permissions for creating,
-  joining, leaving, inviting, removing, and managing an alliance.
-- [ ] **Group battles** — Build server-resolved encounters with persisted
-  participant snapshots, contribution tracking, rewards, history, and
-  idempotent result settlement.
-- [ ] **AlliancePanel.tsx / GroupBattlePanel.tsx** — Add membership,
-  roster, battle-status, result, and shared-channel views.
-- [ ] **AdminPanel.tsx** — Add controls for alliance limits, battle windows,
-  participation rules, and rewards.
+- [x] **Schema** — `guilds`, `guildMembers`, `guildApplications`, `guildBonuses`, `guildRaids`, `guildWeeklyObjectives`, `guildLeaderboard`
+- [x] **guilds.ts** — 21 exports: create/disband/leave/invite/apply/accept/decline/kick/promote/demote/deposit/withdraw + `getMyGuild/getGuildById/getMembers/getPendingApplications/getGuildBonuses/getGuildConfig/searchGuilds/getGuildLeaderboard`
+- [x] **Group battles (as raids)** — `guildRaids.ts:startRaid/joinRaid/beginRaid/strikeRaid/getGuildRaids` with persisted snapshots + `guildObjectives.ts:progressWeeklyObjectives`
+- [x] **GuildPanel.tsx + guild routes** — hall/roster/bank/raids/objectives/browse/create views (`/guild/:view`)
+- [x] **AdminPanel.tsx (guilds section)** — Guild admin editors via `admin.getConfig({ section: "guilds" })`
+- [ ] Still missing vs spec: file named `alliances.ts` / `GroupBattlePanel.tsx`, guild shared-channel chat (see group-chat item in Phase 5), admin battle-window/participation-rule controls beyond current guilds section.
 
-## Phase 11 — PvP arena
+## Phase 11 — PvP arena ✅ (lobby-based; in working tree, uncommitted)
 
 > Goal: Provide fair, asynchronous player-versus-player competition.
+> NOTE: implemented as **lobby-based duels with `tickFight` + spectators**,
+> not the async-matchmaking design in the original spec. Files exist in the
+> working tree but are still untracked (`git status`).
 
-- [ ] **Schema** — Add arena ratings, seasons, matchmaking records, combat
-  snapshots, match results, and reward claims.
-- [ ] **arena.ts** — Implement server-authoritative matchmaking, rating
-  updates, season boundaries, result settlement, and anti-tamper validation.
-- [ ] **ArenaPanel.tsx** — Show queue state, opponent/match status, history,
-  ratings, standings, and earned rewards.
-- [ ] **Leaderboards / AdminPanel.tsx** — Add seasonal rankings plus controls
-  for matchmaking windows, rating rules, and reward tables.
+- [x] **Schema** — Arena lobbies/matches/snapshots/results, ranked seasons/league, PvP loadouts
+- [x] **arena.ts** — 16 exports: `createLobby/joinLobbyAsFighter/quickMatch/leaveLobby/cancelLobby/kickFromLobby/joinAsSpectator/setReady/tickFight/forfeitFight/expireStaleLobbies` + `getPvpConfig/getOpenLobbies/getLobby/getMyLobby/getRecentResults`
+- [x] **ranked.ts + pvpLoadout.ts** — `joinRankedLeague/fightRankedBattle/settleRankedWeek` + seasonal leaderboard/opponents; `getPvpLoadout/savePvpLoadout/clearPvpLoadout`
+- [x] **ArenaPanel.tsx / RankedPanel.tsx / LoadoutPanel.tsx / DuelPlayback.tsx / LobbyChat.tsx + `/arena` route** — Queue/lobby state, opponent/match status, history, ratings, standings, rewards
+- [x] **Tests** — `arena.test.ts`, `ranked.test.ts`, `pvpLoadout.test.ts`, `chatArena.test.ts`
+- [ ] Admin matchmaking/rating/reward controls live only in general balance entries (`backfillArenaBalance`, `backfillRankedBalance`) — no dedicated arena section in `admin.getConfig` (sections: monsters/items/skills/tree/guilds/general).
 
-## Phase 12 — Alliance wars
+## Phase 12 — Alliance wars ❌ (not started)
 
 > Goal: Let alliances compete in scheduled, objective-based campaigns.
 
-- [ ] **Schema** — Add war declarations, schedules, locked rosters,
-  objectives, score events, standings, results, and reward claims.
-- [ ] **allianceWars.ts** — Validate declarations and rosters, resolve
-  asynchronous objectives and scores, close wars deterministically, and
-  settle rewards exactly once.
-- [ ] **AllianceWarsPanel.tsx** — Show upcoming wars, objectives, live
-  standings, battle history, and post-war rewards.
-- [ ] **AdminPanel.tsx** — Add controls for war cadence, objectives, scoring,
-  eligibility, and rewards.
+- [ ] **Schema** — No war tables exist (no declarations, schedules, locked rosters, objectives, score events, standings, results, reward claims)
+- [ ] **allianceWars.ts** — Does not exist
+- [ ] **AllianceWarsPanel.tsx** — Does not exist
+- [ ] **AdminPanel.tsx** — No war cadence/objective/scoring/eligibility/reward controls
 
 ### New-system architecture constraints
 
@@ -197,11 +179,44 @@
   client-only gameplay constants.
 - Task completion, loot rolls, equipment effects, crafting outputs, and
   multiplayer results must be server-authoritative and safe to retry.
-- Alliances, group battles, arena matches, and wars are planned as
+- Alliances, group battles, arena matches, and wars were planned as
   asynchronous/server-resolved systems rather than real-time combat.
+  Deviation: the shipped arena is lobby-based with `tickFight` + spectators,
+  not async matchmaking. Keep this in mind for wars design.
 - Replace anonymous-ID authorization with authenticated Convex identity checks
   before production use of alliance membership, shared rewards, or PvP
-  ownership.
+  ownership. Current state: `convex/auth.ts` is Anonymous-only;
+  `playerAuth.ts:requirePlayer` enforces ownership on anonymous sessions.
+
+---
+
+## Shipped beyond the original phases
+
+These systems exist in code but never had roadmap phases; listed here so the
+roadmap matches the repo:
+
+- **Skills / gathering / augmentation** — `skills.ts` (catalog queries) + `tasks.ts:enqueueSkillAction` + `SkillsPanel.tsx`; `backfillSkillTaskBalance`, `backfillSkillXpProgression`, `backfillSkillRebirthBalance`
+- **Passive tree** — `passiveTree.ts:getTree/unlockNode/seedDefaultTree` + `PassiveTree.tsx` + admin tree section
+- **Bazaar / marketplace** — `bazaar.ts:placeSellOrder/placeBuyOrder/fulfillOrder/cancelOrder` + `BazaarPanel.tsx` + browse/sell/buy/orders views; 5% tax via `bazaarTaxPercent`; `backfillBazaarBalance`
+- **Boss fights + infusion/enchantment** — `bossFights.ts:startBossFight/strikeBoss/checkBossFight` (boss-key gated) + `infusion.ts:enchantEquipment/resolveInfusionCraft` + `backfillBosses`, `backfillInfusionBalance`
+- **Consumables** — `consumableSlots.ts` + `ConsumableSlots.tsx`, `useSkillBoost/useCombatBoost`
+- **Zones / combat tuning** — `zones.ts` helpers + `combat.ts` profiles/simulation; `backfillCombatBalance`, `restoreMonsterPowerMultiplier`
+- **Guild raids + weekly objectives** — `guildRaids.ts`, `guildObjectives.ts`; `retuneGuildActivityXp`
+- **Ranked seasons** — `ranked.ts` + `RankedPanel.tsx`; `backfillRankedBalance`, `backfillArenaBalance`
+- **Sim / perf harness** — `simLive.ts`, `simShared.ts`, `simHarness.test.ts`, `simLive.test.ts`, `performance.test.ts`, `docs/sim-testing.md`
+- **Arena lobby chat** — `LobbyChat.tsx` + `chatArena.test.ts` (arena-scoped; World/Private chat in `chat.ts` remains the only global chat)
+
+---
+
+## Remaining work (ordered)
+
+1. **Commit the working tree** — `arena.ts`, `ranked.ts`, `guilds.ts`, `guildRaids.ts`, `pvpLoadout.ts`, `crons.ts`, `simLive.ts`, `/arena` + `/guild` routes and panels are untracked; 32 files modified.
+2. **Phase 12 alliance wars** — only phase with zero code (see above).
+3. **Group chat** (Phase 5 open item) — channel-keyed storage exists; add membership/shared-channel/unread mutations + UI.
+4. **Leaderboard write-path** (Phase 2 open item) — call `updateLeaderboards` from fight-victory/rebirth settlement.
+5. **Real auth** — replace Anonymous provider before production use of guilds/rewards/PvP.
+6. **Polish** — `app/lib/logger.ts:49` Sentry TODO; `InventoryPanel.tsx` crafting empty-state copy predates loot; table-drive achievement conditions; dedicated admin arena section if PvP tuning outgrows general balance.
+7. **Repo hygiene** — `dist/` is committed; `.gitignore` covers `build/` but not `dist/`.
 
 ---
 
@@ -213,3 +228,13 @@
 | 2026-09-08 | `migrations:backfillAdminRoles`     | Assign the temporary admin role to existing development players   |
 | 2026-09-09 | `migrations:backfillStatUpgradePurchaseCounts` | Initialize paid stat-upgrade purchase counts for legacy records |
 | 2026-09-11 | `migrations:backfillTaskQueueConfig`, `migrations:backfillTaskDefinitions` | Seed task queue balances and the built-in auto-battle definition |
+| — | `migrations:backfillCombatBalance`, `migrations:restoreMonsterPowerMultiplier` | Seed combat/attack-speed settings; restore monster power to 1.0 |
+| — | `migrations:backfillInfusionBalance`, `migrations:backfillPlayerItemAugmentTiers` | Seed infusion costs; backfill augment tiers |
+| — | `migrations:backfillSkillTaskBalance`, `migrations:backfillSkillXpProgression`, `migrations:backfillSkillRebirthBalance` | Seed skill task/XP/rebirth tuning |
+| — | `migrations:backfillBosses`, `migrations:backfillBossUnlockLevelPerTier` | Seed bosses + per-tier unlock levels |
+| — | `migrations:backfillItemRarities`, `migrations:backfillInventorySlotCapacity` | Seed rarities; backfill inventory capacity |
+| — | `migrations:backfillRebirthStatBalance` | Seed rebirth stat tuning |
+| — | `migrations:backfillArenaBalance`, `migrations:backfillRankedBalance` | Seed arena/ranked tuning (working tree) |
+| — | `migrations:backfillBazaarBalance` | Seed bazaar tax tuning |
+| — | `migrations:backfillSimLiveBalance` | Seed sim-harness tuning |
+| — | `migrations:consolidatePendingRewards`, `migrations:retuneGuildActivityXp` | Consolidate pending rewards; retune guild activity XP |

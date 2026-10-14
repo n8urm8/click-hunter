@@ -5,6 +5,8 @@ import type { CombatZone } from "./zones";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
 import { grantInfusionDrops } from "./infusion";
 import { getPassiveBonuses } from "./passiveTree";
+import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
+import { progressWeeklyObjectives } from "./guildObjectives";
 import {
   getSkillXpRequiredForLevel,
   readSkillXpBase,
@@ -389,9 +391,10 @@ export async function settleCombatFight(
       .first();
     if (!monster) throw new Error("Monster not found");
     const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
-    const [combatBoosts, passives] = await Promise.all([
+    const [combatBoosts, passives, guildBonuses] = await Promise.all([
       getActiveCombatBoosts(ctx, args.playerId, Date.now()),
       getPassiveBonuses(ctx, args.playerId),
+      getGuildBonusesForPlayer(ctx, args.playerId),
     ]);
     if (
       args.rewardOverride &&
@@ -402,12 +405,14 @@ export async function settleCombatFight(
     ) {
       throw new Error("Fight reward override is invalid");
     }
+    const guildGoldMult = 1 + (guildBonuses.goldBonusPercent ?? 0) / 100;
+    const guildXpMult = 1 + (guildBonuses.xpBonusPercent ?? 0) / 100;
     const goldEarned = args.won
       ? args.rewardOverride?.goldEarned ??
         Math.max(
           0,
           Math.floor(
-            monster.goldDrop * args.tier * eventMultipliers.goldMultiplier * passives.goldMultiplier
+            monster.goldDrop * args.tier * eventMultipliers.goldMultiplier * passives.goldMultiplier * guildGoldMult
           )
         )
       : 0;
@@ -420,7 +425,8 @@ export async function settleCombatFight(
               args.tier *
               eventMultipliers.experienceMultiplier *
               combatBoosts.xpMultiplier *
-              passives.xpMultiplier
+              passives.xpMultiplier *
+              guildXpMult
           )
         )
       : 0;
@@ -431,6 +437,12 @@ export async function settleCombatFight(
         lastUpdated: Date.now(),
       });
       await awardCombatStatXp(ctx, args.playerId, experienceEarned);
+      await accrueGuildXpFromEarned(ctx, args.playerId, experienceEarned);
+      await progressWeeklyObjectives(ctx, args.playerId, {
+        wins: 1,
+        gold: goldEarned,
+        xp: experienceEarned,
+      });
       await recordTierProgress(ctx, player, args.tier);
     }
     const loot = await resolveLoot(ctx, args);
@@ -497,12 +509,15 @@ export async function settleCombatFight(
     args.tier *
     boss.rewardMultiplier;
   const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
-  const [combatBoosts, passives] = await Promise.all([
+  const [combatBoosts, passives, guildBonuses] = await Promise.all([
     getActiveCombatBoosts(ctx, args.playerId, Date.now()),
     getPassiveBonuses(ctx, args.playerId),
+    getGuildBonusesForPlayer(ctx, args.playerId),
   ]);
+  const guildGoldMult = 1 + (guildBonuses.goldBonusPercent ?? 0) / 100;
+  const guildXpMult = 1 + (guildBonuses.xpBonusPercent ?? 0) / 100;
   const goldEarned = args.won
-    ? Math.max(0, Math.floor(baseGold * eventMultipliers.goldMultiplier * passives.goldMultiplier))
+    ? Math.max(0, Math.floor(baseGold * eventMultipliers.goldMultiplier * passives.goldMultiplier * guildGoldMult))
     : 0;
   const experienceEarned = args.won
     ? Math.max(
@@ -511,7 +526,8 @@ export async function settleCombatFight(
           baseExperience *
             eventMultipliers.experienceMultiplier *
             combatBoosts.xpMultiplier *
-            passives.xpMultiplier
+            passives.xpMultiplier *
+            guildXpMult
         )
       )
     : 0;
@@ -523,6 +539,12 @@ export async function settleCombatFight(
       lastUpdated: Date.now(),
     });
     await awardCombatStatXp(ctx, args.playerId, experienceEarned);
+    await accrueGuildXpFromEarned(ctx, args.playerId, experienceEarned);
+    await progressWeeklyObjectives(ctx, args.playerId, {
+      wins: 1,
+      gold: goldEarned,
+      xp: experienceEarned,
+    });
     await recordTierProgress(ctx, player, args.tier);
   }
 

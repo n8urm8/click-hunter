@@ -15,6 +15,8 @@ export const GAME_PATHS = {
   inventory: "/inventory",
   rebirth: "/rebirth",
   board: "/board",
+  guild: "/guild",
+  arena: "/arena",
   admin: "/admin",
   profile: "/profile",
 } as const;
@@ -43,9 +45,44 @@ export function inventoryPath(tab: InventoryTab): string {
   return `${GAME_PATHS.inventory}/${tab}`;
 }
 
+export type GuildView =
+  | "hall"
+  | "roster"
+  | "bank"
+  | "raids"
+  | "objectives"
+  | "browse"
+  | "create";
+
+export const GUILD_VIEWS: GuildView[] = [
+  "hall",
+  "roster",
+  "bank",
+  "raids",
+  "objectives",
+  "browse",
+  "create",
+];
+
+export function isGuildView(value: string | null): value is GuildView {
+  return (
+    value === "hall" ||
+    value === "roster" ||
+    value === "bank" ||
+    value === "raids" ||
+    value === "objectives" ||
+    value === "browse" ||
+    value === "create"
+  );
+}
+
+export function guildPath(view: GuildView): string {
+  return `${GAME_PATHS.guild}/${view}`;
+}
+
 /**
  * Which top-level nav item owns a pathname. Used to highlight
- * Combat/Skills/Shop/Inventory/Rebirth/Board/Admin.
+ * Combat/Skills/Shop/Inventory/Rebirth/Board/Guild/Admin.
  */
 export type NavPanel =
   | "combat"
@@ -55,6 +92,8 @@ export type NavPanel =
   | "bazaar"
   | "rebirth"
   | "leaderboard"
+  | "guild"
+  | "arena"
   | "admin"
   | "profile";
 
@@ -66,6 +105,8 @@ export function navPanelForPath(pathname: string): NavPanel | null {
   if (pathname.startsWith("/inventory")) return "inventory";
   if (pathname.startsWith("/rebirth")) return "rebirth";
   if (pathname.startsWith("/board")) return "leaderboard";
+  if (pathname.startsWith("/guild")) return "guild";
+  if (pathname.startsWith("/arena")) return "arena";
   if (pathname.startsWith("/admin")) return "admin";
   if (pathname.startsWith("/profile")) return "profile";
   return null;

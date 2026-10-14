@@ -28,7 +28,7 @@ test("each admin section preserves its records and reads only its declared table
     const data = await ctx.runQuery(api.admin.getConfig, { playerId });
     return { data, metrics: await ctx.meta.getTransactionMetrics() };
   });
-  expect(full.metrics.databaseQueries.used).toBe(23);
+  expect(full.metrics.databaseQueries.used).toBe(30);
   const sections = Object.keys(ADMIN_CONFIG_TABLES) as AdminConfigSection[];
 
   for (const section of sections) {

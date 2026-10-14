@@ -20,6 +20,8 @@ import BazaarPage from "./routes/bazaar";
 import InventoryPage from "./routes/inventory";
 import RebirthPage from "./routes/rebirth";
 import BoardPage from "./routes/board";
+import GuildPage from "./routes/guild";
+import ArenaPage from "./routes/arena";
 import AdminPage from "./routes/admin";
 import { CONVEX_QUERY_GC_TIME } from "./lib/queryCache";
 import { GAME_PATHS } from "./lib/gameRoutes";
@@ -59,6 +61,14 @@ const router = createBrowserRouter([
       { path: "inventory/:tab", Component: InventoryPage },
       { path: "rebirth", Component: RebirthPage },
       { path: "board", Component: BoardPage },
+      {
+        path: "guild",
+        Component: () => (
+          <Navigate to={`${GAME_PATHS.guild}/hall`} replace />
+        ),
+      },
+      { path: "guild/:view", Component: GuildPage },
+      { path: "arena", Component: ArenaPage },
       { path: "admin", Component: AdminPage },
       { path: "profile", Component: Profile },
     ],

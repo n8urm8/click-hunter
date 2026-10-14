@@ -6,6 +6,7 @@ import { requirePlayer } from "./playerAuth";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 import { consumeItems } from "./items";
 import { grantItemToInventory } from "./items";
+import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
 import {
   applySkillExperience,
   readSkillXpBase,
@@ -310,9 +311,15 @@ export const enchantEquipment = mutation({
     const chance = infusionSuccessFor(skillRow.level, next, balance);
     const success = Math.random() < chance;
     const baseReward = 50 * next;
-    const earned = success
+    let earned = success
       ? baseReward
       : Math.floor(baseReward * balance.infusionFailXpPercent);
+    const enchantGuildBonuses = await getGuildBonusesForPlayer(ctx, playerId);
+    if ((enchantGuildBonuses.xpBonusPercent ?? 0) > 0 && earned > 0) {
+      earned = Math.floor(
+        earned * (1 + enchantGuildBonuses.xpBonusPercent / 100)
+      );
+    }
     const xpBase = readSkillXpBase(
       (
         await ctx.db
@@ -335,6 +342,7 @@ export const enchantEquipment = mutation({
       actionsCompleted: skillRow.actionsCompleted + 1,
       updatedAt: now,
     });
+    await accrueGuildXpFromEarned(ctx, playerId, earned);
 
     if (success) {
       await ctx.db.patch(owned._id, { enchantLevel: next, updatedAt: now });

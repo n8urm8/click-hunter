@@ -13,6 +13,7 @@ import { cn } from "~/lib/utils";
 import {
   GAME_PATHS,
   bazaarPath,
+  guildPath,
   inventoryPath,
   navPanelForPath,
 } from "~/lib/gameRoutes";
@@ -42,6 +43,8 @@ const PANEL_ITEMS: Array<{
   { to: bazaarPath("browse"), label: "Bazaar", matchPrefix: "/bazaar" },
   { to: GAME_PATHS.rebirth, label: "Rebirth", matchPrefix: "/rebirth", end: true },
   { to: GAME_PATHS.board, label: "Board", matchPrefix: "/board" },
+  { to: guildPath("hall"), label: "Guild", matchPrefix: "/guild" },
+  { to: GAME_PATHS.arena, label: "Arena", matchPrefix: "/arena" },
   { to: GAME_PATHS.admin, label: "Admin", matchPrefix: "/admin" },
 ];
 
@@ -53,6 +56,8 @@ const PANEL_LABELS: Record<string, string> = {
   bazaar: "Bazaar",
   rebirth: "Rebirth",
   leaderboard: "Board",
+  guild: "Guild",
+  arena: "Arena",
   admin: "Admin",
   profile: "Profile",
 };

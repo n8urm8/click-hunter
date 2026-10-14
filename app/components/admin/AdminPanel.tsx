@@ -287,7 +287,7 @@ function AdminSection({
   );
 }
 
-type AdminTab = "players" | "monsters" | "items" | "skills" | "tree" | "general";
+type AdminTab = "players" | "monsters" | "items" | "skills" | "tree" | "guilds" | "general";
 
 const ADMIN_TAB_PARAM = "adminTab";
 const DEFAULT_ADMIN_TAB: AdminTab = "players";
@@ -297,6 +297,7 @@ const ADMIN_TABS: Array<{ value: AdminTab; label: string }> = [
   { value: "items", label: "Items" },
   { value: "skills", label: "Skills" },
   { value: "tree", label: "Tree" },
+  { value: "guilds", label: "Guilds" },
   { value: "general", label: "General" },
 ];
 
@@ -4493,6 +4494,76 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
                     />
                   ))}
               </AdminSection>
+            </>
+          )}
+        </ConfigSection>
+
+        <ConfigSection
+          playerId={playerId}
+          section="guilds"
+          active={activeTab === "guilds"}
+        >
+          {(config) => (
+            <>
+              <section className="space-y-2">
+                <div>
+                  <h3 className="font-heading text-lg text-gold glow-gold">Guilds</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Live guilds, membership counts, and bank balances. Per-level
+                    bonuses are seeded content; creation costs and XP pacing live
+                    under General balance.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  {(config.data.guilds ?? []).map((guild) => (
+                    <div
+                      key={guild._id}
+                      className="forest-card flex items-center justify-between px-4 py-2"
+                    >
+                      <span className="text-sm">
+                        {guild.name} [{guild.tag}] — Lv {guild.level} ·{" "}
+                        {guild.xp.toLocaleString()} XP ·{" "}
+                        {guild.gold.toLocaleString()}g bank
+                      </span>
+                    </div>
+                  ))}
+                  {(config.data.guilds ?? []).length === 0 && (
+                    <p className="text-sm text-muted-foreground">
+                      No guilds yet.
+                    </p>
+                  )}
+                </div>
+              </section>
+              <section className="space-y-2">
+                <div>
+                  <h3 className="font-heading text-lg text-gold glow-gold">
+                    Guild level bonuses
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Passive member bonuses and caps per guild level.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  {[...(config.data.guildBonuses ?? [])]
+                    .sort((left, right) => left.level - right.level)
+                    .map((bonus) => (
+                      <div
+                        key={bonus._id}
+                        className="forest-card flex items-center justify-between px-4 py-2"
+                      >
+                        <span className="text-sm font-semibold">
+                          Level {bonus.level}
+                        </span>
+                        <span className="font-mono text-xs text-gold">
+                          +{bonus.goldBonusPercent}% gold · +{bonus.xpBonusPercent}%
+                          XP · +{bonus.statBonusPercent}% stats ·{" "}
+                          {bonus.maxMembers} members · {bonus.raidSlots} raid
+                          slots
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              </section>
             </>
           )}
         </ConfigSection>

@@ -13,6 +13,7 @@ import {
   usePrivateChats,
   useSendChatMessage,
 } from "~/hooks/useChat";
+import { useMyGuild } from "~/hooks/useGuild";
 import type { ChatChannelType } from "~/hooks/useChat";
 import {
   Tabs,
@@ -20,6 +21,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "~/components/ui/tabs";
+import { ChatMessageContent } from "~/components/game/ChatMessageContent";
 import type { Id } from "../../../convex/_generated/dataModel";
 
 const BOTTOM_THRESHOLD_PX = 12;
@@ -70,6 +72,8 @@ export function ChatBox({ player }: ChatBoxProps) {
     recipient?.id ?? null
   );
   const privateChats = usePrivateChats(player._id);
+  const myGuild = useMyGuild(player._id);
+  const inGuild = myGuild.data !== null && myGuild.data !== undefined;
   const markPrivateChatRead = useMarkPrivateChatRead();
   const sendMessage = useSendChatMessage();
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -214,7 +218,11 @@ export function ChatBox({ player }: ChatBoxProps) {
     }
   };
 
-  const hasRecipient = activeChannel === "world" || recipient !== null;
+  const hasRecipient =
+    activeChannel === "world" ||
+    activeChannel === "guild" ||
+    activeChannel === "arena" ||
+    recipient !== null;
   const canSend =
     hasRecipient && draft.trim().length > 0 && draft.length <= MAX_CHAT_MESSAGE_LENGTH;
   const hasUnreadPrivateMessages =
@@ -225,7 +233,12 @@ export function ChatBox({ player }: ChatBoxProps) {
       <Tabs
         value={activeChannel}
         onValueChange={(value) => {
-          if (value === "world" || value === "private") {
+          if (
+            value === "world" ||
+            value === "private" ||
+            value === "guild" ||
+            value === "arena"
+          ) {
             handleChannelChange(value);
           }
         }}
@@ -233,6 +246,8 @@ export function ChatBox({ player }: ChatBoxProps) {
       >
         <TabsList variant="forest" aria-label="Chat channel">
           <TabsTrigger value="world">World</TabsTrigger>
+          <TabsTrigger value="arena">Arena</TabsTrigger>
+          {inGuild && <TabsTrigger value="guild">Guild</TabsTrigger>}
           <TabsTrigger value="private">
             <span className="inline-flex items-center">
               Private
@@ -348,7 +363,7 @@ export function ChatBox({ player }: ChatBoxProps) {
                       {isOwnMessage ? (
                         <>
                           <span className="whitespace-pre-wrap break-words">
-                            {message.content}
+                            <ChatMessageContent content={message.content} />
                           </span>{" "}
                           <span className="text-muted-foreground">:</span>
                           <time
@@ -394,7 +409,7 @@ export function ChatBox({ player }: ChatBoxProps) {
                           </time>
                           <span className="text-muted-foreground">:</span>{" "}
                           <span className="whitespace-pre-wrap break-words">
-                            {message.content}
+                            <ChatMessageContent content={message.content} />
                           </span>
                         </>
                       )}

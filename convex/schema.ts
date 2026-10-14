@@ -67,6 +67,77 @@ const passiveBranchValidator = v.union(
   v.literal("skilling"),
   v.literal("elemental")
 );
+const guildRoleValidator = v.union(
+  v.literal("master"),
+  v.literal("officer"),
+  v.literal("member"),
+  v.literal("recruit")
+);
+const guildApplicationTypeValidator = v.union(
+  v.literal("invite"),
+  v.literal("application")
+);
+const guildApplicationStatusValidator = v.union(
+  v.literal("pending"),
+  v.literal("accepted"),
+  v.literal("declined"),
+  v.literal("expired")
+);
+const guildRaidStatusValidator = v.union(
+  v.literal("forming"),
+  v.literal("active"),
+  v.literal("completed"),
+  v.literal("failed")
+);
+const arenaLobbyVisibilityValidator = v.union(
+  v.literal("general"),
+  v.literal("private")
+);
+const arenaLobbyStatusValidator = v.union(
+  v.literal("waiting"),
+  v.literal("active"),
+  v.literal("completed"),
+  v.literal("cancelled"),
+  v.literal("expired")
+);
+// Combat snapshot frozen at fight start. Damage rolls read only this, so
+// gear/level changes mid-fight can't move the result. `handicap` is the
+// reserved hook for future stat/gear balancing (always 1 until then).
+const arenaFighterSnapshotValidator = v.object({
+  maxHp: v.number(),
+  attack: v.number(),
+  defense: v.number(),
+  magicalDefense: v.number(),
+  critChance: v.number(),
+  critDamageMultiplier: v.number(),
+  damageType: v.string(),
+  weaponElement: v.optional(v.string()),
+  // Defender-side elemental ward against the opponent's weapon element.
+  ward: v.number(),
+  level: v.number(),
+  handicap: v.number(),
+});
+// Bounded per-round log (capped server-side); spectators render the tail.
+const arenaRoundValidator = v.object({
+  round: v.number(),
+  damage1to2: v.number(),
+  damage2to1: v.number(),
+  crit1: v.boolean(),
+  crit2: v.boolean(),
+  fighter1Hp: v.number(),
+  fighter2Hp: v.number(),
+});
+// Corner gear frozen at fight start (same merged rows the snapshot math
+// uses), so viewers see what actually fought even if loadouts change later.
+const arenaFighterGearValidator = v.object({
+  slot: equipmentSlotValidator,
+  playerItemId: v.id("playerItems"),
+  itemName: v.string(),
+  itemSlug: v.string(),
+  itemFamily: v.optional(v.string()),
+  category: v.optional(v.string()),
+  enchantLevel: v.optional(v.number()),
+});
 
 export default defineSchema({
   players: defineTable({
@@ -944,6 +1015,255 @@ export default defineSchema({
   })
     .index("by_playerId_and_status", ["playerId", "status"])
     .index("by_settlementKey", ["settlementKey"]),
+
+  // Guilds / Alliances
+  guilds: defineTable({
+    name: v.string(),
+    tag: v.string(),
+    description: v.string(),
+    ownerId: v.id("players"),
+    gold: v.number(),
+    xp: v.number(),
+    level: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_name", ["name"])
+    .index("by_tag", ["tag"])
+    .index("by_ownerId", ["ownerId"]),
+
+  guildMembers: defineTable({
+    guildId: v.id("guilds"),
+    playerId: v.id("players"),
+    role: guildRoleValidator,
+    joinedAt: v.number(),
+    contributionXp: v.number(),
+    contributionGold: v.number(),
+    lastActiveAt: v.number(),
+  })
+    .index("by_guildId", ["guildId"])
+    .index("by_playerId", ["playerId"])
+    .index("by_guildId_and_role", ["guildId", "role"]),
+
+  guildApplications: defineTable({
+    guildId: v.id("guilds"),
+    playerId: v.id("players"),
+    type: guildApplicationTypeValidator,
+    status: guildApplicationStatusValidator,
+    message: v.optional(v.string()),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_guildId_and_status", ["guildId", "status"])
+    .index("by_playerId_and_status", ["playerId", "status"]),
+
+  guildBonuses: defineTable({
+    level: v.number(),
+    goldBonusPercent: v.number(),
+    xpBonusPercent: v.number(),
+    statBonusPercent: v.number(),
+    maxMembers: v.number(),
+    raidSlots: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_level", ["level"]),
+
+  guildRaids: defineTable({
+    guildId: v.id("guilds"),
+    bossId: v.string(),
+    tier: v.number(),
+    status: guildRaidStatusValidator,
+    participants: v.array(v.object({
+      playerId: v.id("players"),
+      playerName: v.string(),
+      damageDealt: v.number(),
+    })),
+    bossHp: v.number(),
+    bossMaxHp: v.number(),
+    startedAt: v.optional(v.number()),
+    endedAt: v.optional(v.number()),
+    expiresAt: v.number(),
+    rewardGold: v.number(),
+    rewardXp: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_guildId_and_status", ["guildId", "status"])
+    .index("by_status_and_expiresAt", ["status", "expiresAt"]),
+
+  guildWeeklyObjectives: defineTable({
+    guildId: v.id("guilds"),
+    weekStart: v.number(),
+    objectives: v.array(v.object({
+      objectiveId: v.string(),
+      target: v.number(),
+      progress: v.number(),
+      rewardGold: v.number(),
+      rewardXp: v.number(),
+      claimed: v.boolean(),
+    })),
+    totalProgress: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_guildId_and_weekStart", ["guildId", "weekStart"]),
+
+  guildLeaderboard: defineTable({
+    guildId: v.id("guilds"),
+    guildName: v.string(),
+    guildTag: v.string(),
+    level: v.number(),
+    xp: v.number(),
+    memberCount: v.number(),
+    totalContributionXp: v.number(),
+    lastUpdated: v.number(),
+  })
+    .index("by_level_xp", ["level", "xp"])
+    .index("by_lastUpdated", ["lastUpdated"]),
+
+  // PvP arena. Lobbies double as match records: waiting -> active ->
+  // completed/cancelled/expired. Stakes are escrowed from fighter gold on
+  // create/join and settled exactly once. The lobby `password` is write-only:
+  // no query ever returns it (projections strip it; joins check equality).
+  arenaLobbies: defineTable({
+    visibility: arenaLobbyVisibilityValidator,
+    password: v.optional(v.string()),
+    status: arenaLobbyStatusValidator,
+    creatorId: v.id("players"),
+    // Either fighter slot may be empty: the creator can be a spectator after
+    // succession, and newcomers fill the first empty slot. A fight only
+    // starts when both slots are filled.
+    fighter1Id: v.optional(v.id("players")),
+    fighter1Name: v.optional(v.string()),
+    fighter1Stake: v.optional(v.number()),
+    fighter1Level: v.optional(v.number()),
+    // Combat-only level (str+dex+int+luk+con, no skills) for quick-match
+    // pairing. Snapshotted at join like fighterNLevel.
+    fighter1CombatLevel: v.optional(v.number()),
+    fighter1Ready: v.optional(v.boolean()),
+    fighter2Id: v.optional(v.id("players")),
+    fighter2Name: v.optional(v.string()),
+    fighter2Stake: v.optional(v.number()),
+    fighter2Level: v.optional(v.number()),
+    fighter2CombatLevel: v.optional(v.number()),
+    fighter2Ready: v.optional(v.boolean()),
+    // Set when both fighters are ready; the fight starts once this timestamp
+    // passes (via any viewer's tick). Either unready clears it.
+    countdownEndsAt: v.optional(v.number()),
+    // Live fight state (meaningful while status is active).
+    fighter1Hp: v.optional(v.number()),
+    fighter1MaxHp: v.optional(v.number()),
+    fighter2Hp: v.optional(v.number()),
+    fighter2MaxHp: v.optional(v.number()),
+    fighter1Snapshot: v.optional(arenaFighterSnapshotValidator),
+    fighter2Snapshot: v.optional(arenaFighterSnapshotValidator),
+    fighter1Gear: v.optional(v.array(arenaFighterGearValidator)),
+    fighter2Gear: v.optional(v.array(arenaFighterGearValidator)),
+    round: v.optional(v.number()),
+    lastRoundAt: v.optional(v.number()),
+    roundIntervalMs: v.optional(v.number()),
+    maxRounds: v.optional(v.number()),
+    recentRounds: v.optional(v.array(arenaRoundValidator)),
+    winnerId: v.optional(v.id("players")),
+    endReason: v.optional(
+      v.union(
+        v.literal("knockout"),
+        v.literal("rounds"),
+        v.literal("forfeit"),
+        v.literal("draw")
+      )
+    ),
+    taxPaid: v.optional(v.number()),
+    potPaid: v.optional(v.number()),
+    settlementKey: v.string(),
+    startedAt: v.optional(v.number()),
+    endedAt: v.optional(v.number()),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_status", ["status"])
+    .index("by_status_and_visibility", ["status", "visibility"])
+    .index("by_creator", ["creatorId"])
+    .index("by_settlementKey", ["settlementKey"]),
+
+  // Arena spectators. Separate table so the lobby row never grows with the
+  // crowd; fighters are on the lobby row and never need spectator rows.
+  arenaSpectators: defineTable({
+    lobbyId: v.id("arenaLobbies"),
+    playerId: v.id("players"),
+    playerName: v.string(),
+    joinedAt: v.number(),
+  })
+    .index("by_lobby", ["lobbyId"])
+    .index("by_lobby_and_player", ["lobbyId", "playerId"])
+    .index("by_player", ["playerId"]),
+
+  // Ranked league (async Elo ladder, separate from wagered lobbies).
+  // Membership is opt-in at the combat-level gate; battles resolve instantly
+  // server-side with no opponent presence, spectators, or stakes.
+  rankedFighters: defineTable({
+    playerId: v.id("players"),
+    playerName: v.string(),
+    points: v.number(),
+    wins: v.number(),
+    losses: v.number(),
+    draws: v.number(),
+    // Daily battle allowance, tracked against the UTC day number.
+    battleDay: v.number(),
+    battlesUsed: v.number(),
+    joinedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_player", ["playerId"])
+    .index("by_points", ["points"]),
+
+  // Settled ranked battles, both perspectives, for recent-history views.
+  rankedBattles: defineTable({
+    attackerId: v.id("players"),
+    attackerName: v.string(),
+    defenderId: v.id("players"),
+    defenderName: v.string(),
+    attackerWon: v.boolean(),
+    draw: v.boolean(),
+    rounds: v.number(),
+    attackerPointsBefore: v.number(),
+    attackerPointsAfter: v.number(),
+    defenderPointsBefore: v.number(),
+    defenderPointsAfter: v.number(),
+    // Signed from the attacker's perspective (negative on a loss).
+    pointSwing: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_attacker", ["attackerId"])
+    .index("by_defender", ["defenderId"])
+    .index("by_createdAt", ["createdAt"]),
+
+  // Weekly settlement records: top-10 payouts of the week that just ended.
+  rankedSeasons: defineTable({
+    weekStart: v.number(),
+    standings: v.array(
+      v.object({
+        playerId: v.id("players"),
+        playerName: v.string(),
+        points: v.number(),
+        placement: v.number(),
+        rewardGold: v.number(),
+      })
+    ),
+    fightersReset: v.number(),
+    settledAt: v.number(),
+  }).index("by_weekStart", ["weekStart"]),
+
+  // PvP loadouts: one row per saved slot. Absent slots (or no rows at all)
+  // fall back to currently equipped gear when a PvP fight snapshots.
+  pvpLoadoutSlots: defineTable({
+    playerId: v.id("players"),
+    slot: equipmentSlotValidator,
+    playerItemId: v.id("playerItems"),
+    updatedAt: v.number(),
+  })
+    .index("by_player", ["playerId"])
+    .index("by_player_and_slot", ["playerId", "slot"]),
 
   ...authTables,
 });

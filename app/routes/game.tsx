@@ -164,6 +164,16 @@ function PlayerDataPrefetch({
         }),
       },
       {
+        label: "arena chat",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.chat.listMessages, {
+            playerId,
+            channelType: "arena",
+          }),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
         label: "private chats",
         promise: queryClient.prefetchQuery({
           ...convexQuery(api.chat.listPrivateChats, { playerId }),
@@ -176,6 +186,34 @@ function PlayerDataPrefetch({
           ...convexQuery(api.achievements.getPlayerAchievements, {
             playerId,
           }),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
+        label: "my guild",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.guilds.getMyGuild, { playerId }),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
+        label: "arena config",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.arena.getPvpConfig, {}),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
+        label: "arena lobbies",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.arena.getOpenLobbies, { playerId }),
+          ...convexQueryCacheOptions,
+        }),
+      },
+      {
+        label: "guild leaderboard",
+        promise: queryClient.prefetchQuery({
+          ...convexQuery(api.guilds.getGuildLeaderboard, { limit: 20 }),
           ...convexQueryCacheOptions,
         }),
       },

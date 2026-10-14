@@ -65,7 +65,7 @@ test("neither gameplay shell prefetches admin data", () => {
   }
 });
 
-test.each(["players", "monsters", "items", "skills", "tree", "general"])(
+test.each(["players", "monsters", "items", "skills", "tree", "guilds", "general"])(
   "the %s tab enables only its own snapshot",
   (tab) => {
     mocks.tab = tab;
@@ -86,8 +86,8 @@ test("visited inactive editors remain mounted without enabled queries", () => {
   const markup = renderToStaticMarkup(<AdminPanel playerId={playerId} />);
   expect(markup).toContain("Skill definitions");
   expect(markup).toContain("Passive skill web");
-  expect(markup.match(/role="tabpanel"/g)).toHaveLength(6);
-  expect(markup.match(/\shidden=""/g)).toHaveLength(5);
+  expect(markup.match(/role="tabpanel"/g)).toHaveLength(7);
+  expect(markup.match(/\shidden=""/g)).toHaveLength(6);
   expect(markup).toContain("[&amp;[hidden]]:hidden");
   for (const [options] of mocks.useQuery.mock.calls) {
     expect(options.enabled).toBe(options.queryKey[2] === "general");
