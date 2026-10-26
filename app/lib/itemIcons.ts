@@ -8,6 +8,7 @@ import gemIcon from "../assets/icons/gem.svg";
 import helmetIcon from "../assets/icons/helmet.svg";
 import herbsIcon from "../assets/icons/herbs.svg";
 import ingotIcon from "../assets/icons/ingot.png";
+import leatherIcon from "../assets/icons/leather.svg";
 import legsIcon from "../assets/icons/legs.png";
 import logIcon from "../assets/icons/log.svg";
 import maceIcon from "../assets/icons/mace.png";
@@ -56,6 +57,13 @@ const MONSTER_TROPHY_ITEM_IDS = new Set([
   "archfiend-horn",
 ]);
 
+/** Hides/scales are leathercrafting inputs, not generic monster trophies. */
+const LEATHER_HIDE_ITEM_IDS = new Set([
+  "troll-moss-hide",
+  "wyvern-moon-scale",
+  "dragon-ember-scale",
+]);
+
 function detectWeaponKind(item: ItemIconInput): WeaponKind | null {
   const haystacks = [
     item.itemFamily ?? "",
@@ -84,7 +92,7 @@ function equipmentIcon(item: ItemIconInput): string {
     case "bag":
       return backpackIcon;
     case "belt":
-      return gemIcon;
+      return leatherIcon;
     case "accessory1":
     case "accessory2":
     case "amulet":
@@ -100,6 +108,22 @@ function equipmentIcon(item: ItemIconInput): string {
 }
 
 function craftingIcon(item: ItemIconInput): string {
+  const rawItemId = (item.itemId ?? "").toLowerCase();
+  const rawNameSlug = (item.name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-");
+  // Hide/scale drops and cured leather share the leather material icon.
+  // Partial loot projections only carry a name, so check the slug too.
+  if (
+    LEATHER_HIDE_ITEM_IDS.has(rawItemId) ||
+    LEATHER_HIDE_ITEM_IDS.has(rawNameSlug) ||
+    item.itemFamily?.startsWith("leather-")
+  ) {
+    return leatherIcon;
+  }
+
   switch (item.itemFamily) {
     case "harvesting-resource":
       return herbsIcon;
@@ -142,6 +166,8 @@ function craftingIcon(item: ItemIconInput): string {
       return ingotIcon;
     case "alchemy":
       return alchemyPotionIcon;
+    case "leathercrafting":
+      return leatherIcon;
     default:
       break;
   }

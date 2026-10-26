@@ -64,6 +64,11 @@ command under its old name.) To use Convex Cloud instead: `pnpm dev:cloud`
 
 Fresh seed: open the app → Admin panel → run the reseed action (same as cloud).
 
+For content added after the first seed, run `pnpm deploy:migrations`. It includes
+`migrate:leathercrafting`, an insert-only backfill that adds the leathercrafting
+skill, items, recipes, balance keys, and hide drops without touching existing
+rows (see `docs/adr/0001-leathercrafting-backfill.md`).
+
 Copy data from Convex Cloud (run while you still have cloud access):
 
 ```bash

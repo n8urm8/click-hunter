@@ -191,7 +191,7 @@ test("player saves, seeding and resets invalidate their affected snapshots", asy
 });
 
 test("shared catalog dependencies refresh every affected section, scoped to the admin", async () => {
-  expect(adminSectionsForTables(["items"])).toEqual(["monsters", "items", "skills"]);
+  expect(adminSectionsForTables(["items"])).toEqual(["monsters", "items", "skills", "abilities"]);
   expect(adminSectionsForTables(["skillDefinitions"])).toEqual(["skills", "players"]);
   expect(adminSectionsForTables(["recipeIngredients", "recipeOutputs"])).toEqual(["skills"]);
   const otherPlayerId = "other" as Id<"players">;

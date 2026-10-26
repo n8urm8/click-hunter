@@ -19,6 +19,7 @@ export type CombatStats = {
   int: number;
   luk: number;
   con: number;
+  wis?: number;
 };
 
 export type Character = { _id: Id<"players"> } & CombatStats;
@@ -26,11 +27,11 @@ export type Character = { _id: Id<"players"> } & CombatStats;
 const MAX_SKILL_ROWS = 300;
 
 /**
- * Combat portion of the character level: the sum of the five combat stat
- * levels.
+ * Combat portion of the character level: the sum of the six combat stat
+ * levels (including wisdom, optional for backward compatibility).
  */
 export function calculateCombatLevel(stats: CombatStats): number {
-  return stats.str + stats.dex + stats.int + stats.luk + stats.con;
+  return stats.str + stats.dex + stats.int + stats.luk + stats.con + (stats.wis ?? 1);
 }
 
 /**

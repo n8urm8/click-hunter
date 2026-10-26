@@ -10,7 +10,17 @@
     "backend:push": "convex deploy --env-file ./docker/.env.selfhosted",
     "deploy:selfhosted": "set -a; . ./docker/.env.selfhosted; set +a; convex deploy --env-file ./docker/.env.selfhosted --cmd 'vite build'",
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "migrate:wisdom": "convex run migrations:backfillWisdom --env-file ./docker/.env.selfhosted",
+    "migrate:rebirthAbilities": "convex run migrations:backfillRebirthAbilityBonuses --env-file ./docker/.env.selfhosted",
+    "migrate:startingStatsWisdom": "convex run migrations:backfillStartingStatsWisdom --env-file ./docker/.env.selfhosted",
+    "migrate:leathercrafting": "convex run migrations:backfillLeathercrafting --env-file ./docker/.env.selfhosted",
+    "migrate:staffWeapons": "convex run migrations:rebalanceStaffWeapons --env-file ./docker/.env.selfhosted",
+    "migrate:starterAbilities": "convex run migrations:backfillStarterAbilities --env-file ./docker/.env.selfhosted",
+    "migrate:arenaKeys": "convex run migrations:dropArenaLobbySettlementKeys --env-file ./docker/.env.selfhosted",
+    "migrate:all": "pnpm run migrate:wisdom && pnpm run migrate:rebirthAbilities && pnpm run migrate:startingStatsWisdom && pnpm run migrate:leathercrafting && pnpm run migrate:staffWeapons && pnpm run migrate:starterAbilities && pnpm run migrate:arenaKeys",
+    "seed:abilities": "convex run seed:seedAbilitiesContent --env-file ./docker/.env.selfhosted",
+    "deploy:migrations": "pnpm run migrate:all && pnpm run seed:abilities"
   },
   "dependencies": {
     "@auth/core": "^0.41.3",

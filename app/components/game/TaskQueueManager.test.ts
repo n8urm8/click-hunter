@@ -10,14 +10,15 @@ const mocks = vi.hoisted(() => ({
   heartbeat: vi.fn(async () => null),
   effects: [] as Array<() => void | (() => void)>,
   connected: true,
-  queue: {
+  plan: {
     data: {
       serverTime: 0, presenceIntervalMs: 10_000, settlementIntervalMs: 30_000,
+      hasQueued: false,
       active: null as null | {
         taskType: "timed" | "battle"; canProgressOffline: boolean;
-        nextSettlementAt: number | null; currentMonsterName: string; tier: number;
+        definitionId: string; displayName: string;
+        nextSettlementAt: number | null; currentMonsterName: string | null; tier: number | null;
       },
-      queued: [] as Array<{ id: string }>,
     },
   },
 }));
@@ -34,7 +35,7 @@ vi.mock("~/store/gameStore", () => ({ eventTrackerAtom: {} }));
 vi.mock("~/hooks/useTasks", () => ({
   useSyncTaskQueue: () => mocks.sync,
   useTaskHeartbeat: () => mocks.heartbeat,
-  useTaskQueue: () => mocks.queue,
+  useTaskPlan: () => mocks.plan,
 }));
 
 const playerId = "test-player" as Id<"players">;
@@ -46,9 +47,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.effects.length = 0;
   mocks.connected = true;
-  mocks.queue.data = {
+  mocks.plan.data = {
     serverTime: 0, presenceIntervalMs: 10_000, settlementIntervalMs: 30_000,
-    active: null, queued: [],
+    hasQueued: false, active: null,
   };
   mocks.sync.mockImplementation(async () => ({
     serverTime: Date.now(), nextSettlementAt: null, requiresPresence: false,
@@ -177,12 +178,13 @@ test("server clock calibration prevents immediate retry loops with client clock 
 test("a queue change wakes an idle manager", async () => {
   mountManager();
   await vi.advanceTimersByTimeAsync(0);
-  mocks.queue.data = {
-    ...mocks.queue.data,
+  mocks.plan.data = {
+    ...mocks.plan.data,
     serverTime: Date.now(),
     active: {
-      taskType: "timed", canProgressOffline: true,
-      nextSettlementAt: Date.now() + 5_000, currentMonsterName: "", tier: 1,
+      taskType: "timed", canProgressOffline: true, definitionId: "offline",
+      displayName: "Offline",
+      nextSettlementAt: Date.now() + 5_000, currentMonsterName: null, tier: null,
     },
   };
   mocks.effects[0]();
@@ -191,9 +193,10 @@ test("a queue change wakes an idle manager", async () => {
 });
 
 test("an old snapshot with the same timestamp cannot trigger a sync loop", async () => {
-  mocks.queue.data.serverTime = Date.now();
-  mocks.queue.data.active = {
-    taskType: "battle", canProgressOffline: false,
+  mocks.plan.data.serverTime = Date.now();
+  mocks.plan.data.active = {
+    taskType: "battle", canProgressOffline: false, definitionId: "auto_battle",
+    displayName: "Auto-battle",
     nextSettlementAt: Date.now(), currentMonsterName: "Rat", tier: 1,
   };
   mocks.sync.mockImplementation(async () => ({

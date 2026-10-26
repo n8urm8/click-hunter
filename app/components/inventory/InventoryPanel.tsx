@@ -19,6 +19,7 @@ import {
 } from "~/hooks/useInventory";
 import { ItemIcon } from "~/components/game/ItemIcon";
 import { ConsumableSlots } from "~/components/inventory/ConsumableSlots";
+import { AbilitiesPanel } from "~/components/inventory/AbilitiesPanel";
 import {
   AugmentationControls,
   EnchantmentControls,
@@ -380,6 +381,7 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
         <TabsList variant="forest" aria-label="Inventory category">
           <TabsTrigger value="crafting">Crafting</TabsTrigger>
           <TabsTrigger value="equipment">Equipment</TabsTrigger>
+          <TabsTrigger value="abilities">Abilities</TabsTrigger>
           <TabsTrigger value="cache">
             Cache
             {inventory.data.pendingRewards.length > 0 &&
@@ -552,6 +554,10 @@ export function InventoryPanel({ playerId }: InventoryPanelProps) {
               </div>
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="abilities" className="p-0">
+          <AbilitiesPanel playerId={playerId} />
         </TabsContent>
 
         <TabsContent value="cache" className="p-0">

@@ -934,6 +934,14 @@ function CharacterEditorCard({
             {selectedPlayer ? (
               <form onSubmit={handleSubmit}>
                 <fieldset disabled={isSaving} className="space-y-5">
+                <CharacterField label="Player ID">
+                  <TextInput
+                    value={selectedPlayer._id}
+                    readOnly
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="font-mono"
+                  />
+                </CharacterField>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <CharacterField label="Name" className="sm:col-span-2">
                     <TextInput

@@ -12,6 +12,14 @@ export type PlayerWithDerivedStats = Doc<"players"> &
     critDamageMultiplier: number;
     attackSpeedMultiplier: number;
     damageType: "physical" | "magical";
+    effectiveStats?: {
+      str: number;
+      dex: number;
+      int: number;
+      luk: number;
+      con: number;
+      wis?: number;
+    };
   };
 
 /**
@@ -25,10 +33,13 @@ export function usePlayer(enabled: boolean = true) {
   });
 
   const player = playerQuery.data;
+  // Base stat levels (player.str, player.dex, ...) are the source of truth
+  // for levels, breakpoints, and XP. Rebirth bonuses never change them —
+  // they only scale `effectiveStats`, which combat math consumes. Do NOT
+  // spread effectiveStats over the base fields.
   const data: PlayerWithDerivedStats | null | undefined = player
     ? {
         ...player,
-        ...player.effectiveStats,
         ...player.combatStats,
         autoAttackEnabled: true,
         level: player.characterLevel,

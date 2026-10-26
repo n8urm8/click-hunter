@@ -21,9 +21,14 @@ import {
 } from "./tasks";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
-import { COMBAT_BALANCE_DEFAULTS } from "./items";
+import { COMBAT_BALANCE_DEFAULTS, DEX_SPEED_COEFF_DEFAULT, inferWeaponType } from "./items";
 import { HP_REGEN_BALANCE_DEFAULTS } from "./playerHp";
 import { LEATHER_BALANCE_DEFAULTS } from "./leatherwork";
+import {
+  seedLeathercraftingContent,
+  STAFF_BASE_DAMAGE_PER_TIER,
+  STARTER_STAFF_BASE_DAMAGE,
+} from "./forestCraftingSeed";
 import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
@@ -39,6 +44,9 @@ import { DEFAULT_MONSTER_POWER_MULTIPLIER } from "./combat";
 import { PVP_ARENA_BALANCE_DEFAULTS } from "./arena";
 import { RANKED_BALANCE_DEFAULTS } from "./ranked";
 import { SIM_LIVE_BALANCE_DEFAULTS } from "./simLive";
+import type { WeaponType } from "./itemTypes";
+import { readStarterAbilityIds } from "./players";
+import { readWisdomBalance } from "./wisdom";
 
 /**
  * Migration: add item rarity definitions and assign existing items to Common.
@@ -235,6 +243,22 @@ export const backfillCombatBalance = internalMutation({
 });
 
 /**
+ * Drop the retired out-of-combat regen multiplier: HP regen now ticks at one
+ * rate in and out of fights (see playerHp.ts). Safe to re-run.
+ * Run: npx convex run migrations:removeOutOfCombatRegenMultiplier
+ */
+export const removeOutOfCombatRegenMultiplier = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db.query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "combatOutOfCombatRegenMultiplier")).first();
+    if (!existing) return { deleted: false };
+    await ctx.db.delete(existing._id);
+    return { deleted: true };
+  },
+});
+
+/**
  * Add missing infusion settings (essence/keys/enchanting) without touching
  * live tuning. Run: npx convex run migrations:backfillInfusionBalance
  */
@@ -307,6 +331,48 @@ export const restoreMonsterPowerMultiplier = internalMutation({
 
     await ctx.db.patch(existing._id, {
       value: DEFAULT_MONSTER_POWER_MULTIPLIER,
+      description,
+      lastUpdated: Date.now(),
+    });
+    return { created: false, updated: true };
+  },
+});
+
+/**
+ * Rebalance Dexterity's attack-speed contribution. Lowers the seeded
+ * `combatDexSpeedCoeff` from the old 0.1 default to 0.01, which only matches
+ * the previous default: any other value is treated as live admin tuning and
+ * left untouched. Creates the setting when missing. Idempotent.
+ *
+ * Run: npx convex run migrations:rebalanceDexSpeedCoeff
+ */
+export const rebalanceDexSpeedCoeff = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const key = "combatDexSpeedCoeff";
+    const description = "Attacks per second gained per dex above 10";
+    const previousDefault = 0.1;
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", key))
+      .first();
+
+    if (!existing) {
+      await ctx.db.insert("gameBalance", {
+        key,
+        value: DEX_SPEED_COEFF_DEFAULT,
+        description,
+        lastUpdated: Date.now(),
+      });
+      return { created: true, updated: false };
+    }
+
+    if (existing.value !== previousDefault) {
+      return { created: false, updated: false };
+    }
+
+    await ctx.db.patch(existing._id, {
+      value: DEX_SPEED_COEFF_DEFAULT,
       description,
       lastUpdated: Date.now(),
     });
@@ -784,6 +850,30 @@ export const backfillArenaBalance = internalMutation({
 });
 
 /**
+ * Migration: clear the dead arena lobby settlement keys.
+ *
+ * Arena lobbies carried a `settlementKey` that nothing ever read — arena
+ * fights settle their own pot and record no fight history. The field is no
+ * longer written; this clears the legacy values so the column can be
+ * dropped from the schema afterwards.
+ *
+ * Run: npx convex run migrations:dropArenaLobbySettlementKeys
+ */
+export const dropArenaLobbySettlementKeys = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let cleared = 0;
+    const lobbies = await ctx.db.query("arenaLobbies").collect();
+    for (const lobby of lobbies) {
+      if (lobby.settlementKey === undefined) continue;
+      await ctx.db.patch(lobby._id, { settlementKey: undefined });
+      cleared += 1;
+    }
+    return { cleared, scanned: lobbies.length };
+  },
+});
+
+/**
  * Migration: add the ranked league balance configuration.
  *
  * Run: npx convex run migrations:backfillRankedBalance
@@ -884,5 +974,252 @@ export const backfillBazaarBalance = internalMutation({
     }
 
     return { created };
+  },
+});
+
+/**
+ * Migration: add wisdom stat to existing players.
+ * Sets wis=1 and statXp.wis=0 for all players.
+ *
+ * Run: npx convex run migrations:backfillWisdom
+ */
+export const backfillWisdom = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const players = await ctx.db.query("players").collect();
+    let updated = 0;
+
+    for (const player of players) {
+      const needsWis = player.wis === undefined;
+      const needsWisXp = player.statXp?.wis === undefined;
+
+      if (needsWis || needsWisXp) {
+        await ctx.db.patch(player._id, {
+          wis: player.wis ?? 1,
+          statXp: {
+            str: player.statXp?.str ?? 0,
+            dex: player.statXp?.dex ?? 0,
+            int: player.statXp?.int ?? 0,
+            luk: player.statXp?.luk ?? 0,
+            con: player.statXp?.con ?? 0,
+            wis: player.statXp?.wis ?? 0,
+          },
+          lastUpdated: Date.now(),
+        });
+        updated += 1;
+      }
+    }
+
+    return { updated };
+  },
+});
+
+/**
+ * Migration: add rebirthAbilityBonuses field to existing players.
+ * Sets empty object for all players.
+ *
+ * Run: npx convex run migrations:backfillRebirthAbilityBonuses
+ */
+export const backfillRebirthAbilityBonuses = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const players = await ctx.db.query("players").collect();
+    let updated = 0;
+
+    for (const player of players) {
+      if (player.rebirthAbilityBonuses === undefined) {
+        await ctx.db.patch(player._id, {
+          rebirthAbilityBonuses: {},
+          lastUpdated: Date.now(),
+        });
+        updated += 1;
+      }
+    }
+
+    return { updated };
+  },
+});
+
+/**
+ * Migration: add leathercrafting content to deployments seeded before it
+ * existed (skill, tiers, leather items, recipes, balance keys, hide drops).
+ *
+ * Insert-only: existing rows, admin edits, and other forest crafting content
+ * are never patched or deleted. Safe to re-run.
+ *
+ * Run: npx convex run migrations:backfillLeathercrafting
+ */
+export const backfillLeathercrafting = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const summary = await seedLeathercraftingContent(ctx);
+    const inserted = Object.values(summary).reduce(
+      (total, count) => total + count,
+      0
+    );
+    return { success: true, inserted, ...summary };
+  },
+});
+
+/**
+ * Migration: tag every seedable weapon with its weapon class and rebalance
+ * staves to the new low base damage (25% under the previous values).
+ *
+ * Staff damage is overwritten (not scaled) so re-running is a no-op:
+ *   - Worn Staff: STARTER_STAFF_BASE_DAMAGE
+ *   - Crafted staffs: STAFF_BASE_DAMAGE_PER_TIER × craftingTier
+ *
+ * Run: npx convex run migrations:rebalanceStaffWeapons
+ */
+export const rebalanceStaffWeapons = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const items = await ctx.db.query("items").collect();
+    const now = Date.now();
+    let weaponTypesBackfilled = 0;
+    let staffDamageUpdated = 0;
+
+    for (const item of items) {
+      const weaponType = inferWeaponType(item);
+      const patch: {
+        weaponType?: WeaponType;
+        baseDamage?: number;
+        updatedAt: number;
+      } = { updatedAt: now };
+
+      if (item.weaponType === undefined && weaponType !== null) {
+        patch.weaponType = weaponType;
+        weaponTypesBackfilled += 1;
+      }
+
+      if (weaponType === "staff") {
+        const target =
+          item.itemId === "worn-staff"
+            ? STARTER_STAFF_BASE_DAMAGE
+            : typeof item.craftingTier === "number" &&
+                Number.isSafeInteger(item.craftingTier) &&
+                item.craftingTier > 0
+              ? STAFF_BASE_DAMAGE_PER_TIER * item.craftingTier
+              : undefined;
+        if (target !== undefined && item.baseDamage !== target) {
+          patch.baseDamage = target;
+          staffDamageUpdated += 1;
+        }
+      }
+
+      if (patch.weaponType !== undefined || patch.baseDamage !== undefined) {
+        await ctx.db.patch(item._id, patch);
+      }
+    }
+
+    return { weaponTypesBackfilled, staffDamageUpdated, totalItems: items.length };
+  },
+});
+
+/**
+ * Migration: grant the starter ability to existing characters whose starter
+ * kit is configured to grant one (e.g. staff -> arcane_bolt) but who were
+ * created before abilities were wired up. Learns the ability and equips it in
+ * the lowest free slot, up to the configured slot cap (`wisdomMaxSlots`).
+ * Idempotent.
+ *
+ * Run: npx convex run migrations:backfillStarterAbilities
+ */
+export const backfillStarterAbilities = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const balanceRow = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "starterAbilityIds"))
+      .first();
+    const starterAbilities = readStarterAbilityIds(balanceRow?.value);
+    const { maxSlots } = await readWisdomBalance(ctx);
+    const players = await ctx.db.query("players").collect();
+    const now = Date.now();
+    let learned = 0;
+    let equipped = 0;
+    let skipped = 0;
+
+    for (const player of players) {
+      const abilityId = player.starterWeapon
+        ? starterAbilities[player.starterWeapon]
+        : undefined;
+      if (!abilityId) continue;
+
+      const definition = await ctx.db
+        .query("abilities")
+        .withIndex("by_abilityId", (q) => q.eq("abilityId", abilityId))
+        .first();
+      if (!definition || !definition.enabled) {
+        skipped += 1;
+        continue;
+      }
+
+      const existing = await ctx.db
+        .query("playerAbilities")
+        .withIndex("by_playerId_and_abilityId", (q) =>
+          q.eq("playerId", player._id).eq("abilityId", abilityId)
+        )
+        .first();
+      if (!existing) {
+        await ctx.db.insert("playerAbilities", {
+          playerId: player._id,
+          abilityId,
+          level: 1,
+          experience: 0,
+          totalExperience: 0,
+          learnedAt: now,
+          updatedAt: now,
+        });
+        learned += 1;
+      }
+
+      const equippedRows = await ctx.db
+        .query("playerEquippedAbilities")
+        .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
+        .collect();
+      if (equippedRows.some((row) => row.abilityId === abilityId)) continue;
+
+      const usedSlots = new Set(equippedRows.map((row) => row.slot));
+      let slot = 0;
+      while (usedSlots.has(slot)) slot += 1;
+      if (slot >= maxSlots) continue;
+      await ctx.db.insert("playerEquippedAbilities", {
+        playerId: player._id,
+        slot,
+        abilityId,
+        equippedAt: now,
+      });
+      equipped += 1;
+    }
+
+    return { learned, equipped, skipped, totalPlayers: players.length };
+  },
+});
+
+/**
+ * Migration: add startingStats with wisdom to gameBalance if missing.
+ *
+ * Run: npx convex run migrations:backfillStartingStatsWisdom
+ */
+export const backfillStartingStatsWisdom = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "startingStats"))
+      .first();
+
+    if (existing && existing.value && typeof existing.value === "object") {
+      const stats = existing.value as Record<string, number>;
+      if (stats.wis === undefined) {
+        await ctx.db.patch(existing._id, {
+          value: { ...stats, wis: 1 },
+          lastUpdated: Date.now(),
+        });
+        return { updated: true };
+      }
+    }
+    return { updated: false };
   },
 });

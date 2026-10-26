@@ -63,6 +63,10 @@ test("unauthenticated and cross-session callers are rejected", async () => {
     .rejects.toThrow("different signed-in session");
   await expect(intruder.query(api.tasks.getQueue, { playerId }))
     .rejects.toThrow("different signed-in session");
+  await expect(base.query(api.tasks.getActivePlan, { playerId }))
+    .rejects.toThrow("Authentication required");
+  await expect(intruder.query(api.tasks.getActivePlan, { playerId }))
+    .rejects.toThrow("different signed-in session");
   // Owner works.
   expect((await t.mutation(api.tasks.sync, { playerId })).serverTime)
     .toEqual(expect.any(Number));

@@ -193,6 +193,7 @@ test("sync still settles offline progress without returning a duplicate snapshot
   expect(await t.mutation(api.tasks.sync, { playerId })).toEqual({
     serverTime: 10_000, nextSettlementAt: 20_000, requiresPresence: false,
     settlementIntervalMs: 30_000, presenceIntervalMs: 10_000,
+    skillSettlementGapMs: 300_000,
   });
   expect(await t.run((ctx) => ctx.db.get(taskId))).toMatchObject({ progressMs: 10_000 });
 });

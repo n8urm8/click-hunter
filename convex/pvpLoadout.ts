@@ -10,6 +10,7 @@ import {
   getEquippedWeapon,
   type EquippedWeaponStats,
   type EquipmentStatBonuses,
+  type ResolvedEquipment,
 } from "./items";
 import type { ElementKind } from "./itemTypes";
 import { EQUIPMENT_SLOT_VALUES, type EquipmentSlot } from "./itemTypes";
@@ -27,13 +28,11 @@ const loadoutSlotValidator = v.union(
  * equipped gear (per slot), or plain current gear when nothing is saved.
  * Arena and ranked snapshots resolve through here so fights always use the
  * loadout when one exists.
+ *
+ * The shape is the shared equipment model — the same one a live combat
+ * profile builds.
  */
-export type PvpEquipmentBundle = {
-  bonuses: EquipmentStatBonuses;
-  armor: { defense: number; speedPenalty: number };
-  ward: Record<ElementKind, number>;
-  weapon: EquippedWeaponStats;
-};
+export type PvpEquipmentBundle = ResolvedEquipment;
 
 /**
  * Merge saved loadout pieces over currently equipped gear, one row per

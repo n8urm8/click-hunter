@@ -34,6 +34,28 @@ export const GUILD_BALANCE_DEFAULTS = [
   { key: "guildActivityXpPercent", value: 1, description: "Bonus guild XP granted alongside member combat/skill XP, as a percent of the XP earned (player keeps the full amount; 0-100)" },
   { key: "guildRaidFormationHours", value: 6, description: "Hours a raid stays in forming before it can be started" },
   { key: "guildRaidDurationHours", value: 24, description: "Hours an active raid lasts before expiring" },
+  { key: "guildRaidRoundIntervalMs", value: 2000, description: "Milliseconds between automatic raid combat rounds (all living members hit, then the dragon retaliates)" },
+  { key: "guildRaidPartySize", value: 4, description: "Max guildmates per raid party lobby (1-4)" },
+  { key: "guildRaidPowerMultiplier", value: 4, description: "Raid dragon stat multiplier over the same-tier solo boss (dragon starts ~T1 boss x4)" },
+  { key: "guildRaidTailSwipeEvery", value: 4, description: "Rounds between dragon tail-swipe AoE attacks (hits all party members)" },
+  { key: "guildRaidTailSwipeMultiplier", value: 0.7, description: "Tail swipe damage as a fraction of the dragon basic attack" },
+  { key: "guildRaidBreathEvery", value: 6, description: "Rounds between dragon elemental-breath AoE attacks" },
+  { key: "guildRaidBreathMultiplier", value: 1.3, description: "Elemental breath damage as a fraction of the dragon basic attack" },
+  { key: "guildRaidSkinThreshold1", value: 66, description: "First HP percent threshold that triggers the dragon tough-skin defensive buff" },
+  { key: "guildRaidSkinThreshold2", value: 33, description: "Second HP percent threshold that triggers the dragon tough-skin defensive buff" },
+  { key: "guildRaidSkinReductionPercent", value: 50, description: "Incoming player damage reduction while tough skin is active (0-90)" },
+  { key: "guildRaidSkinDurationRounds", value: 3, description: "Rounds the tough-skin buff lasts after each trigger" },
+  { key: "guildRaidMinDamageForXp", value: 1, description: "Minimum damage a raider must deal in a party to earn boss-tier XP" },
+  { key: "guildRaidSaturdayGateEnabled", value: 1, description: "When 1, raid summon/party/fight mutations only run on Saturday UTC (0 disables the gate for tests/admin)" },
+  // TODO(summon-cost): decide dragon summoning cost. Candidates: guild bank
+  // gold, per-member boss keys, weekly free first summon with escalating cost.
+  // Currently 0 (free) until economy tuning lands.
+  { key: "guildRaidSummonGoldCost", value: 0, description: "TODO: gold cost from the guild bank to summon a raid dragon (0 = free for now)" },
+  // TODO(raid-rewards): current split is full solo-boss gold+XP to each
+  // qualifying damager plus boss loot-table rolls to the guild stash on kill.
+  // Revisit split vs damage-share and weekly lockouts after playtesting.
+  { key: "guildRaidRewardGoldMultiplier", value: 1, description: "TODO: multiplier on the solo-boss gold paid to each qualifying raider" },
+  { key: "guildRaidRewardXpMultiplier", value: 1, description: "TODO: multiplier on the solo-boss XP paid to each qualifying raider" },
   { key: "guildCreateMinLevel", value: 100, description: "Minimum character level required to found a guild" },
   { key: "guildJoinMinLevel", value: 50, description: "Minimum character level required to join a guild" },
 ] as const;

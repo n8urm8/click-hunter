@@ -4,7 +4,7 @@ import { useConvexConnectionState } from "convex/react";
 import { getTaskServerNow, observeTaskServerTime } from "~/lib/taskClock";
 import type { Id } from "../../../convex/_generated/dataModel";
 import {
-  useTaskQueue,
+  useTaskPlan,
   useSyncTaskQueue,
   useTaskHeartbeat,
 } from "~/hooks/useTasks";
@@ -21,19 +21,19 @@ type QueueEvent =
 export function TaskQueueManager({ playerId }: TaskQueueManagerProps) {
   const sync = useSyncTaskQueue();
   const heartbeat = useTaskHeartbeat();
-  const taskQueue = useTaskQueue(playerId);
+  const taskPlan = useTaskPlan(playerId);
   const { isWebSocketConnected } = useConvexConnectionState();
   const [event, setEventTracker] = useAtom(eventTrackerAtom);
-  const queueRef = useRef(taskQueue.data);
+  const planRef = useRef(taskPlan.data);
   const connectedRef = useRef(isWebSocketConnected);
   const wakeRef = useRef<(() => void) | null>(null);
   const reconnectRef = useRef<(() => void) | null>(null);
   const queueEventRef = useRef<QueueEvent | null>(null);
 
   useEffect(() => {
-    queueRef.current = taskQueue.data;
+    planRef.current = taskPlan.data;
     wakeRef.current?.();
-  }, [taskQueue.data]);
+  }, [taskPlan.data]);
 
   useEffect(() => {
     connectedRef.current = isWebSocketConnected;
@@ -41,7 +41,7 @@ export function TaskQueueManager({ playerId }: TaskQueueManagerProps) {
   }, [isWebSocketConnected]);
 
   useEffect(() => {
-    const activeTask = taskQueue.data?.active;
+    const activeTask = taskPlan.data?.active;
     const nextQueueEvent: QueueEvent | null =
       activeTask?.taskType === "battle"
         ? {
@@ -86,7 +86,7 @@ export function TaskQueueManager({ playerId }: TaskQueueManagerProps) {
     if (wasShowingTask) {
       setEventTracker({ type: "idle" });
     }
-  }, [event, setEventTracker, taskQueue.data?.active]);
+  }, [event, setEventTracker, taskPlan.data?.active]);
 
   useEffect(() => {
     let disposed = false;
@@ -97,22 +97,21 @@ export function TaskQueueManager({ playerId }: TaskQueueManagerProps) {
     let settledSyncRequest = 0;
     let retryAt = 0;
     let syncPlan: Awaited<ReturnType<typeof sync>> | null = null;
-    let settledQueue: typeof queueRef.current;
+    let settledPlan: typeof planRef.current;
 
     const schedule = () => {
       if (timer !== undefined) window.clearTimeout(timer);
       if (disposed || inFlight || !connectedRef.current || !navigator.onLine) return;
-      const queue = queueRef.current;
       const plan = syncPlan &&
-        (!queue || queue === settledQueue || queue.serverTime < syncPlan.serverTime)
+        (!planRef.current || planRef.current === settledPlan || planRef.current.serverTime < syncPlan.serverTime)
         ? syncPlan
-        : queue
+        : planRef.current
           ? {
-              ...queue,
-              nextSettlementAt: queue.active?.nextSettlementAt ??
-                (queue.queued.length > 0 ? getTaskServerNow() : null),
-              requiresPresence: Boolean(queue.active &&
-                (queue.active.taskType === "battle" || !queue.active.canProgressOffline)),
+              ...planRef.current,
+              nextSettlementAt: planRef.current.active?.nextSettlementAt ??
+                (planRef.current.hasQueued ? getTaskServerNow() : null),
+              requiresPresence: Boolean(planRef.current.active &&
+                (planRef.current.active.taskType === "battle" || !planRef.current.active.canProgressOffline)),
             }
           : null;
       const due = syncRequest !== settledSyncRequest
@@ -147,7 +146,7 @@ export function TaskQueueManager({ playerId }: TaskQueueManagerProps) {
       try {
         if (operation === "sync") {
           const currentSyncRequest = syncRequest;
-          settledQueue = queueRef.current;
+          settledPlan = planRef.current;
           syncPlan = await sync({ playerId });
           if (disposed) return;
           observeTaskServerTime(syncPlan.serverTime);
@@ -156,13 +155,13 @@ export function TaskQueueManager({ playerId }: TaskQueueManagerProps) {
           await heartbeat({ playerId, presenceOnly: true });
         }
         nextPresenceAt = getTaskServerNow() +
-          (syncPlan?.presenceIntervalMs ?? queueRef.current?.presenceIntervalMs ?? 0);
+          (syncPlan?.presenceIntervalMs ?? planRef.current?.presenceIntervalMs ?? 0);
         retryAt = 0;
       } catch (error) {
         if (!disposed) {
           console.error(`Task queue ${operation} failed:`, error);
           retryAt = getTaskServerNow() +
-            (syncPlan?.settlementIntervalMs ?? queueRef.current?.settlementIntervalMs ?? 1_000);
+            (syncPlan?.settlementIntervalMs ?? planRef.current?.settlementIntervalMs ?? 1_000);
         }
       } finally {
         inFlight = false;

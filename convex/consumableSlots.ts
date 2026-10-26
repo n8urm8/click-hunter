@@ -10,9 +10,18 @@ import { MAX_SKILL_MODIFIER_MULTIPLIER } from "./skillBonuses";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 
 export const BASE_CONSUMABLE_SLOTS = 1;
-export const MAX_CONSUMABLE_SLOTS = 3;
 
 type DatabaseCtx = QueryCtx | MutationCtx;
+
+/**
+ * The hard cap on equipped consumable slots. It is a balance value
+ * (`maxConsumableSlots`); the belt and passives decide how many of those
+ * slots are unlocked.
+ */
+export async function getMaxConsumableSlots(ctx: DatabaseCtx): Promise<number> {
+  const balance = await readLeatherBalance(ctx);
+  return balance.maxConsumableSlots;
+}
 
 export async function getConsumableSlotCount(
   ctx: DatabaseCtx,
@@ -32,7 +41,7 @@ export async function getConsumableSlotCount(
     ? Math.max(0, Math.floor(bonuses.consumableSlots))
     : 0;
   return Math.min(
-    MAX_CONSUMABLE_SLOTS,
+    balance.maxConsumableSlots,
     Math.max(BASE_CONSUMABLE_SLOTS, beltSlots, BASE_CONSUMABLE_SLOTS + passiveExtra)
   );
 }
@@ -250,11 +259,14 @@ export async function tickEquippedConsumables(
   now: number
 ): Promise<{ activated: string[] }> {
   if (context.kind === "idle") return { activated: [] };
-  const slotCount = await getConsumableSlotCount(ctx, playerId);
+  const [slotCount, maxSlots] = await Promise.all([
+    getConsumableSlotCount(ctx, playerId),
+    getMaxConsumableSlots(ctx),
+  ]);
   const slots = await ctx.db
     .query("playerConsumableSlots")
     .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-    .take(MAX_CONSUMABLE_SLOTS + 1);
+    .take(maxSlots + 1);
   const activated: string[] = [];
   for (const slot of slots) {
     if (slot.slotIndex < 0 || slot.slotIndex >= slotCount) continue;
@@ -277,11 +289,14 @@ export const getConsumableSlots = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
     await requirePlayerRead(ctx, playerId);
-    const slotCount = await getConsumableSlotCount(ctx, playerId);
+    const [slotCount, maxSlots] = await Promise.all([
+      getConsumableSlotCount(ctx, playerId),
+      getMaxConsumableSlots(ctx),
+    ]);
     const slots = await ctx.db
       .query("playerConsumableSlots")
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-      .take(MAX_CONSUMABLE_SLOTS + 1);
+      .take(maxSlots + 1);
     const byIndex = new Map(slots.map((slot) => [slot.slotIndex, slot]));
     const result = [];
     for (let index = 0; index < slotCount; index += 1) {
@@ -301,10 +316,10 @@ export const getConsumableSlots = query({
     }
     return {
       slotCount,
-      maxSlots: MAX_CONSUMABLE_SLOTS,
+      maxSlots,
       slots: result,
       locked: Array.from(
-        { length: MAX_CONSUMABLE_SLOTS - slotCount },
+        { length: Math.max(0, maxSlots - slotCount) },
         (_, i) => slotCount + i
       ),
     };
@@ -321,11 +336,14 @@ export const setConsumableSlot = mutation({
   handler: async (ctx, { playerId, slotIndex, itemDefId }) => {
     await requirePlayer(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
-    const slotCount = await getConsumableSlotCount(ctx, playerId);
+    const [slotCount, maxSlots] = await Promise.all([
+      getConsumableSlotCount(ctx, playerId),
+      getMaxConsumableSlots(ctx),
+    ]);
     if (!Number.isSafeInteger(slotIndex) || slotIndex < 0 || slotIndex >= slotCount) {
       throw new Error(`Consumable slot ${slotIndex} is not unlocked`);
     }
-    if (slotIndex >= MAX_CONSUMABLE_SLOTS) {
+    if (slotIndex >= maxSlots) {
       throw new Error("Too many consumable slots");
     }
     if (itemDefId === undefined) {
@@ -350,7 +368,7 @@ export const setConsumableSlot = mutation({
     const siblings = await ctx.db
       .query("playerConsumableSlots")
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-      .take(MAX_CONSUMABLE_SLOTS + 1);
+      .take(maxSlots + 1);
     for (const sibling of siblings) {
       if (sibling.slotIndex !== slotIndex && sibling.itemId === item._id) {
         throw new Error("That consumable is already equipped in another slot");

@@ -73,6 +73,13 @@ const damageTypeValidator = v.union(
   v.literal("physical"),
   v.literal("magical")
 );
+const weaponTypeValidator = v.union(
+  v.literal("sword"),
+  v.literal("dagger"),
+  v.literal("mace"),
+  v.literal("bow"),
+  v.literal("staff")
+);
 const elementValidator = v.union(
   v.literal("light"),
   v.literal("dark"),
@@ -465,6 +472,7 @@ export const getConfig = query({
       v.literal("items"),
       v.literal("skills"),
       v.literal("tree"),
+      v.literal("abilities"),
       v.literal("guilds"),
       v.literal("general")
     )),
@@ -507,11 +515,16 @@ export const getConfig = query({
       lootTableEntries,
       lootSources,
       passiveNodes,
+      abilities,
       guilds,
       guildMembers,
       guildApplications,
       guildBonuses,
       guildRaids,
+      guildStashItems,
+      guildRaidXpGrants,
+      guildRaidClaims,
+      guildRaidStandings,
       guildWeeklyObjectives,
       guildLeaderboard,
     ] = await Promise.all([
@@ -537,11 +550,16 @@ export const getConfig = query({
       read("lootTableEntries"),
       read("lootSources"),
       read("passiveNodes"),
+      read("abilities"),
       read("guilds"),
       read("guildMembers"),
       read("guildApplications"),
       read("guildBonuses"),
       read("guildRaids"),
+      read("guildStashItems"),
+      read("guildRaidXpGrants"),
+      read("guildRaidClaims"),
+      read("guildRaidStandings"),
       read("guildWeeklyObjectives"),
       read("guildLeaderboard"),
     ]);
@@ -569,11 +587,16 @@ export const getConfig = query({
       lootTableEntries,
       lootSources,
       passiveNodes,
+      abilities,
       guilds,
       guildMembers,
       guildApplications,
       guildBonuses,
       guildRaids,
+      guildStashItems,
+      guildRaidXpGrants,
+      guildRaidClaims,
+      guildRaidStandings,
       guildWeeklyObjectives,
       guildLeaderboard,
     };
@@ -1062,6 +1085,7 @@ export const createItem = mutation({
     attackSpeed: v.optional(v.union(v.number(), v.null())),
     damageStat: v.optional(v.union(damageStatValidator, v.null())),
     damageType: v.optional(v.union(damageTypeValidator, v.null())),
+    weaponType: v.optional(v.union(weaponTypeValidator, v.null())),
     element: v.optional(v.union(elementValidator, v.null())),
     baseDefense: v.optional(v.union(v.number(), v.null())),
     speedPenalty: v.optional(v.union(v.number(), v.null())),
@@ -1125,6 +1149,10 @@ export const createItem = mutation({
       args.damageType === undefined || args.damageType === null
         ? undefined
         : args.damageType;
+    const weaponType =
+      args.weaponType === undefined || args.weaponType === null
+        ? undefined
+        : args.weaponType;
     const element =
       args.element === undefined || args.element === null
         ? undefined
@@ -1167,6 +1195,7 @@ export const createItem = mutation({
       ...(attackSpeed === undefined ? {} : { attackSpeed }),
       ...(damageStat === undefined ? {} : { damageStat }),
       ...(damageType === undefined ? {} : { damageType }),
+      ...(weaponType === undefined ? {} : { weaponType }),
       ...(element === undefined ? {} : { element }),
       ...(baseDefense === undefined ? {} : { baseDefense }),
       ...(speedPenalty === undefined ? {} : { speedPenalty }),
@@ -1214,6 +1243,7 @@ export const updateItem = mutation({
     attackSpeed: v.optional(v.union(v.number(), v.null())),
     damageStat: v.optional(v.union(damageStatValidator, v.null())),
     damageType: v.optional(v.union(damageTypeValidator, v.null())),
+    weaponType: v.optional(v.union(weaponTypeValidator, v.null())),
     element: v.optional(v.union(elementValidator, v.null())),
     baseDefense: v.optional(v.union(v.number(), v.null())),
     speedPenalty: v.optional(v.union(v.number(), v.null())),
@@ -1291,6 +1321,8 @@ export const updateItem = mutation({
       args.damageStat === undefined ? existing.damageStat : args.damageStat;
     const damageType =
       args.damageType === undefined ? existing.damageType : args.damageType;
+    const weaponType =
+      args.weaponType === undefined ? existing.weaponType : args.weaponType;
     const element =
       args.element === undefined
         ? (ELEMENT_VALUES as readonly string[]).includes(
@@ -1349,6 +1381,9 @@ export const updateItem = mutation({
       ...(damageType === undefined || damageType === null
         ? {}
         : { damageType }),
+      ...(weaponType === undefined || weaponType === null
+        ? {}
+        : { weaponType }),
       ...(element === undefined || element === null ? {} : { element }),
       ...(baseDefense === undefined ? {} : { baseDefense }),
       ...(speedPenalty === undefined ? {} : { speedPenalty }),

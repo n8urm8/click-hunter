@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
@@ -18,6 +18,7 @@ import {
   useBeginRaid,
   useClaimObjectiveReward,
   useCreateGuild,
+  useCreateRaidParty,
   useDeclineApplication,
   useDepositGold,
   useDemoteMember,
@@ -27,15 +28,19 @@ import {
   useGuildMembers,
   useGuildRaids,
   useGuildSearch,
+  useGuildStash,
   useJoinRaid,
   useKickMember,
   useLeaveGuild,
   useMyGuild,
   usePendingApplications,
   usePromoteMember,
+  useRaidLeaderboard,
+  useRaidStatus,
   useStartRaid,
-  useStrikeRaid,
+  useTickRaid,
   useWeeklyObjectives,
+  useWithdrawFromGuildStash,
   useWithdrawGold,
 } from "~/hooks/useGuild";
 
@@ -440,13 +445,17 @@ function BankView({ player }: { player: GuildPlayer }) {
 
 function RaidsView({ player }: { player: GuildPlayer }) {
   const raids = useGuildRaids(player._id);
+  const raidStatus = useRaidStatus(player._id);
+  const raidBoard = useRaidLeaderboard(player._id);
+  const stash = useGuildStash(player._id);
   const startRaid = useStartRaid();
+  const createParty = useCreateRaidParty();
   const joinRaid = useJoinRaid();
   const beginRaid = useBeginRaid();
-  const strikeRaid = useStrikeRaid();
+  const tickRaid = useTickRaid();
+  const withdrawStash = useWithdrawFromGuildStash();
   const [tier, setTier] = useState("1");
   const [error, setError] = useState<string | null>(null);
-  const [lastHit, setLastHit] = useState<string | null>(null);
 
   const run = async (fn: () => Promise<unknown>) => {
     setError(null);
@@ -458,10 +467,47 @@ function RaidsView({ player }: { player: GuildPlayer }) {
     }
   };
 
+  // Automatic combat: the server simulates every due round per tick and there
+  // is no manual battling. To keep four guildmates from all writing the same
+  // lobby, one member drives it (lowest player id in the party); the others
+  // take over if that leader stalls, and the server's not-due guard makes any
+  // stray tick cheap.
+  const raidsRef = useRef(raids.data ?? []);
+  raidsRef.current = raids.data ?? [];
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const at = Date.now();
+      for (const raid of raidsRef.current) {
+        if (raid.status !== "active") continue;
+        const interval = raid.roundIntervalMs ?? 2000;
+        const last = raid.lastTickAt ?? raid.startedAt ?? 0;
+        if (at - last < interval) continue;
+        const ids = raid.participants.map((p) => p.playerId as string);
+        const leader = ids.length > 0 ? [...ids].sort()[0] : null;
+        const abandoned = at - last > interval * 3;
+        if (leader !== player._id && !abandoned) continue;
+        void tickRaid({ playerId: player._id, raidId: raid._id }).catch(
+          () => {}
+        );
+      }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [player._id, tickRaid]);
+
   return (
     <div className="space-y-4">
+      {!raidStatus.isPending && raidStatus.data && !raidStatus.data.isSaturday && (
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground">
+            Raid dragons unlock on Saturday (UTC). Lobbies reset to tier 1
+            each week — climb as high as your guild can.
+          </p>
+        </Card>
+      )}
       <Card className="p-4">
-        <h4 className="mb-2 text-sm font-semibold">Start a raid (officers)</h4>
+        <h4 className="mb-2 text-sm font-semibold">
+          Summon a dragon (officers) · open a party (any member)
+        </h4>
         <div className="flex gap-2">
           <input
             type="number"
@@ -476,9 +522,25 @@ function RaidsView({ player }: { player: GuildPlayer }) {
               run(() => startRaid({ playerId: player._id, tier: Number(tier) }))
             }
           >
-            Start
+            Summon
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() =>
+              run(() =>
+                createParty({ playerId: player._id, tier: Number(tier) })
+              )
+            }
+          >
+            Party
           </Button>
         </div>
+        {!raidStatus.isPending && raidStatus.data?.summonCost !== undefined && raidStatus.data.summonCost > 0 && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Summoning costs {raidStatus.data.summonCost.toLocaleString()} guild
+            gold.
+          </p>
+        )}
       </Card>
 
       {raids.isPending ? (
@@ -505,9 +567,10 @@ function RaidsView({ player }: { player: GuildPlayer }) {
                 className="mt-2"
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                {raid.participants.length} hunters ·{" "}
-                {raid.rewardGold.toLocaleString()}g /{" "}
-                {raid.rewardXp.toLocaleString()} XP split on victory
+                {raid.participants.length}/4 hunters · boss-tier XP for every
+                damager · kill loot to the guild stash
+                {raid.status === "superseded" &&
+                  " · already slain by another party — stand down"}
               </p>
               <div className="mt-2 flex flex-wrap gap-1">
                 {raid.status === "forming" && (
@@ -533,29 +596,18 @@ function RaidsView({ player }: { player: GuildPlayer }) {
                   </>
                 )}
                 {raid.status === "active" && (
-                  <Button
-                    size="xs"
-                    onClick={async () => {
-                      const result = (await run(() =>
-                        strikeRaid({ playerId: player._id, raidId: raid._id })
-                      )) as { damage: number; completed: boolean } | null;
-                      if (result) {
-                        setLastHit(
-                          `You dealt ${result.damage} damage${
-                            result.completed ? " — raid complete!" : ""
-                          }`
-                        );
-                      }
-                    }}
-                  >
-                    Strike
-                  </Button>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Fighting automatically — round {raid.raidRound ?? 0}.
+                  </p>
                 )}
               </div>
               <div className="mt-2 space-y-1">
                 {raid.participants.map((p) => (
                   <p key={p.playerId} className="text-xs text-muted-foreground">
                     {p.playerName} — {p.damageDealt.toLocaleString()} damage
+                    {p.maxHp !== undefined &&
+                      ` · ${Math.max(0, Math.ceil(p.hp ?? 0)).toLocaleString()} / ${Math.ceil(p.maxHp).toLocaleString()} HP`}
+                    {p.alive === false && " · down"}
                   </p>
                 ))}
               </div>
@@ -566,7 +618,66 @@ function RaidsView({ player }: { player: GuildPlayer }) {
           )}
         </div>
       )}
-      {lastHit && <p className="text-sm text-gold-light">{lastHit}</p>}
+      <Card className="p-4">
+        <h4 className="mb-2 text-sm font-semibold">Guild stash (kill loot)</h4>
+        {stash.isPending ? (
+          <p className="text-sm text-muted-foreground">Loading stash...</p>
+        ) : stash.data?.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Empty — slay a raid dragon to fill it.
+          </p>
+        ) : (
+          <div className="space-y-1">
+            {stash.data?.map((row) => (
+              <div
+                key={row._id}
+                className="flex items-center justify-between gap-2"
+              >
+                <p className="text-xs text-muted-foreground">
+                  {row.itemName} × {row.quantity.toLocaleString()}
+                </p>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() =>
+                    run(() =>
+                      withdrawStash({
+                        playerId: player._id,
+                        stashId: row._id,
+                        quantity: row.quantity,
+                      })
+                    )
+                  }
+                >
+                  Withdraw
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      <Card className="p-4">
+        <h4 className="mb-2 text-sm font-semibold">
+          Raid leaderboard (highest tier + damage)
+        </h4>
+        {raidBoard.isPending ? (
+          <p className="text-sm text-muted-foreground">Loading board...</p>
+        ) : raidBoard.data?.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No raids this week yet.
+          </p>
+        ) : (
+          <div className="space-y-1">
+            {raidBoard.data?.map((entry, i) => (
+              <p key={entry.guildId} className="text-xs text-muted-foreground">
+                #{i + 1} [{entry.guildTag}] {entry.guildName} — tier{" "}
+                {entry.highestTierKilled} ·{" "}
+                {entry.totalDamage.toLocaleString()} damage
+              </p>
+            ))}
+          </div>
+        )}
+      </Card>
       <SectionError message={error} />
     </div>
   );

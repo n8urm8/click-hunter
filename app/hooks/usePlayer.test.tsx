@@ -11,7 +11,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 beforeEach(() => vi.clearAllMocks());
 
-test("player stats and the character summary retain server equipment calculations without reclamping speed", () => {
+test("player stats keep base levels while effectiveness stays separate", () => {
   mocks.useQuery.mockReturnValue({
     data: {
       _id: "player", name: "Hunter", str: 1, dex: 1, int: 1, luk: 1, con: 1,
@@ -27,8 +27,9 @@ test("player stats and the character summary retain server equipment calculation
   });
   const player = usePlayer().data;
   expect(player).toMatchObject({
-    autoAttackEnabled: true, attackSpeed: 0.325, dex: 2, level: 5, attack: 7.2,
+    autoAttackEnabled: true, attackSpeed: 0.325, dex: 1, level: 5, attack: 7.2,
   });
+  expect(player).toMatchObject({ effectiveStats: { dex: 2 } });
   if (!player) throw new Error("Missing player");
   const markup = renderToStaticMarkup(<PlayerStatsSummary player={player} />);
   expect(markup).toContain("0.33/s");

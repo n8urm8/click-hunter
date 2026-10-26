@@ -3,10 +3,12 @@ import { v } from "convex/values";
 import { authTables } from "@convex-dev/auth/server";
 import { combatZoneValidator } from "./zones";
 import { battleEncounterValidator } from "./taskTiming";
+import { abilityCombatStateValidator } from "./abilityCombat";
 import {
   EQUIPMENT_SLOT_VALUES,
   ITEM_EFFECT_STAT_VALUES,
   ITEM_CATEGORY_VALUES,
+  WEAPON_TYPE_VALUES,
 } from "./itemTypes";
 
 const itemCategoryValidator = v.union(
@@ -26,6 +28,9 @@ const damageStatValidator = v.union(
 const damageTypeValidator = v.union(
   v.literal("physical"),
   v.literal("magical")
+);
+const weaponTypeValidator = v.union(
+  ...WEAPON_TYPE_VALUES.map((value) => v.literal(value))
 );
 const buffVariantValidator = v.union(
   v.literal("base"),
@@ -58,6 +63,28 @@ const lootPurposeValidator = v.union(
   v.literal("augmentation"),
   v.literal("boss-catalyst")
 );
+
+// Ability system validators
+const abilityTypeValidator = v.union(
+  v.literal("attack"),
+  v.literal("heal"),
+  v.literal("buff_offense"),
+  v.literal("buff_defense"),
+  v.literal("utility")
+);
+const abilityTargetValidator = v.union(
+  v.literal("self"),
+  v.literal("enemy"),
+  v.literal("ally")
+);
+const abilityWeaponTypeValidator = v.union(
+  v.literal("sword"),
+  v.literal("dagger"),
+  v.literal("mace"),
+  v.literal("bow"),
+  v.literal("staff"),
+  v.literal("any")
+);
 const passiveBranchValidator = v.union(
   v.literal("sword"),
   v.literal("dagger"),
@@ -87,8 +114,54 @@ const guildRaidStatusValidator = v.union(
   v.literal("forming"),
   v.literal("active"),
   v.literal("completed"),
-  v.literal("failed")
+  v.literal("failed"),
+  // Another lobby claimed this tier's kill first. The stopped lobby keeps
+  // its damage for the leaderboard and still pays XP, but earns no stash.
+  v.literal("superseded")
 );
+// Snapshot of one raider inside a raid lobby. Frozen at fight start so
+// gear/level changes mid-fight can't move the result.
+const guildRaidPartyMemberValidator = v.object({
+  playerId: v.id("players"),
+  playerName: v.string(),
+  damageDealt: v.number(),
+  hp: v.optional(v.number()),
+  maxHp: v.optional(v.number()),
+  defense: v.optional(v.number()),
+  magicalDefense: v.optional(v.number()),
+  ward: v.optional(v.number()),
+  alive: v.optional(v.boolean()),
+  attack: v.optional(v.number()),
+  critChance: v.optional(v.number()),
+  critMultiplier: v.optional(v.number()),
+  // Frozen equipped-ability state (round-based cooldowns) for auto-cast
+  // during raid ticks.
+  abilityState: v.optional(abilityCombatStateValidator),
+});
+// Frozen raid tuning captured when a lobby begins. Hot auto-combat ticks read
+// this off the row instead of re-scanning gameBalance on every poll.
+const guildRaidTuningValidator = v.object({
+  formationHours: v.number(),
+  durationHours: v.number(),
+  roundIntervalMs: v.number(),
+  partySize: v.number(),
+  powerMultiplier: v.number(),
+  tailEvery: v.number(),
+  tailMult: v.number(),
+  breathEvery: v.number(),
+  breathMult: v.number(),
+  skinT1: v.number(),
+  skinT2: v.number(),
+  skinReduction: v.number(),
+  skinDuration: v.number(),
+  minDamage: v.number(),
+  saturdayGate: v.number(),
+  summonCost: v.number(),
+  rewardGoldMult: v.number(),
+  rewardXpMult: v.number(),
+  bossGoldPerTier: v.number(),
+  bossExperiencePerTier: v.number(),
+});
 const arenaLobbyVisibilityValidator = v.union(
   v.literal("general"),
   v.literal("private")
@@ -155,6 +228,7 @@ export default defineSchema({
     int: v.number(),
     luk: v.number(),
     con: v.number(),
+    wis: v.optional(v.number()), // Wisdom: 6th combat stat for abilities (optional for migration)
     // Progression
     gold: v.number(),
     totalExperience: v.number(),
@@ -172,12 +246,17 @@ export default defineSchema({
         int: v.number(),
         luk: v.number(),
         con: v.number(),
+        wis: v.optional(v.number()),
       })
     ),
     // Permanent rebirth bonuses per skill, keyed by skillId. Each point
     // adds another `rebirthSkillBonusPercent` action speed to that skill.
     // Absent means zero.
     rebirthSkillBonuses: v.optional(v.record(v.string(), v.number())),
+    // Permanent rebirth bonuses per ability, keyed by abilityId. Each point
+    // adds another `rebirthAbilityBonusPercent` power/cooldown reduction to that ability.
+    // Absent means zero.
+    rebirthAbilityBonuses: v.optional(v.record(v.string(), v.number())),
     // Upgrades
     autoAttackEnabled: v.boolean(),
     autoStartFightEnabled: v.boolean(),
@@ -189,6 +268,7 @@ export default defineSchema({
         int: v.number(),
         luk: v.number(),
         con: v.number(),
+        wis: v.optional(v.number()),
       })
     ),
     // Chosen starter weapon ID (reselectable at each rebirth).
@@ -245,6 +325,9 @@ export default defineSchema({
     attackSpeed: v.optional(v.number()),
     damageStat: v.optional(damageStatValidator),
     damageType: v.optional(damageTypeValidator),
+    // Main-hand weapon class (sword/dagger/mace/bow/staff). Gates which
+    // abilities can be cast while this weapon is equipped.
+    weaponType: v.optional(weaponTypeValidator),
     // Elemental damage tag (mainHand weapons only). Tags the weapon's base
     // damage with an element so elemental passive bonuses can scale it.
     element: v.optional(v.string()),
@@ -1012,6 +1095,10 @@ export default defineSchema({
     strikes: v.number(),
     startedAt: v.number(),
     lastStrikeAt: v.number(),
+    // Frozen equipped-ability state for auto-casting over the real-time
+    // timeline. Absent for sessions begun before abilities existed / by
+    // players with nothing equipped.
+    abilityState: v.optional(abilityCombatStateValidator),
   })
     .index("by_playerId_and_status", ["playerId", "status"])
     .index("by_settlementKey", ["settlementKey"]),
@@ -1073,11 +1160,10 @@ export default defineSchema({
     bossId: v.string(),
     tier: v.number(),
     status: guildRaidStatusValidator,
-    participants: v.array(v.object({
-      playerId: v.id("players"),
-      playerName: v.string(),
-      damageDealt: v.number(),
-    })),
+    // One lobby = one row, max guildRaidPartySize entries. Multiple rows may
+    // share (guildId, weekStart, tier): each lobbies its own dragon-HP copy
+    // and reconciles on finish (first kill claims the tier, wipes chip it).
+    participants: v.array(guildRaidPartyMemberValidator),
     bossHp: v.number(),
     bossMaxHp: v.number(),
     startedAt: v.optional(v.number()),
@@ -1086,9 +1172,90 @@ export default defineSchema({
     rewardGold: v.number(),
     rewardXp: v.number(),
     createdAt: v.number(),
+    // Weekly summon scoping. Bosses reset to T1 every Saturday: weekStart is
+    // the Saturday 00:00 UTC timestamp for this lobby. Optional for rows
+    // written before weekly resets existed.
+    weekStart: v.optional(v.number()),
+    summonedBy: v.optional(v.id("players")),
+    // Element dealt by this raid dragon (cycles per tier like solo bosses).
+    dragonElement: v.optional(v.string()),
+    // Dragon combat state (meaningful while status is active).
+    raidRound: v.optional(v.number()),
+    skinUntilRound: v.optional(v.number()),
+    skinThresholdsHit: v.optional(v.array(v.number())),
+    // Last auto-tick time. tickRaid advances every full roundIntervalMs
+    // since this timestamp; anyone viewing may tick (no manual battling).
+    lastTickAt: v.optional(v.number()),
+    roundIntervalMs: v.optional(v.number()),
+    // Frozen tuning + dragon attack captured at beginRaid so auto-combat ticks
+    // never touch gameBalance/bosses on the hot path. Optional for rows begun
+    // before snapshots existed (tick falls back to a live read).
+    raidTuning: v.optional(guildRaidTuningValidator),
+    dragonAttack: v.optional(v.number()),
   })
     .index("by_guildId_and_status", ["guildId", "status"])
-    .index("by_status_and_expiresAt", ["status", "expiresAt"]),
+    .index("by_status_and_expiresAt", ["status", "expiresAt"])
+    .index("by_weekStart", ["weekStart"])
+    .index("by_guildId_and_weekStart_and_tier", ["guildId", "weekStart", "tier"]),
+
+  // One row per (guild, week, tier) once a lobby lands the killing blow.
+  // The stop signal for other in-flight lobbies and the tier-unlock marker.
+  // A point read replaces the old scan across every lobby row for the tier.
+  guildRaidClaims: defineTable({
+    guildId: v.id("guilds"),
+    weekStart: v.number(),
+    tier: v.number(),
+    raidId: v.id("guildRaids"),
+    claimedAt: v.number(),
+  }).index("by_guildId_and_weekStart_and_tier", [
+    "guildId",
+    "weekStart",
+    "tier",
+  ]),
+
+  // One aggregate row per (guild, week): the raid leaderboard source. Updated
+  // only when a lobby settles, so live per-tick damage writes never invalidate
+  // the leaderboard subscription.
+  guildRaidStandings: defineTable({
+    guildId: v.id("guilds"),
+    weekStart: v.number(),
+    highestTierKilled: v.number(),
+    totalDamage: v.number(),
+    killTime: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_weekStart", ["weekStart"])
+    .index("by_guildId_and_weekStart", ["guildId", "weekStart"]),
+
+  // Guild item stash. Kill loot goes here, not to player inventories.
+  // No stash limits: stackable items fill existing stacks up to maxStackSize
+  // then spill into new rows (multiple stacks allowed); non-stackable items
+  // get one row per unit.
+  guildStashItems: defineTable({
+    guildId: v.id("guilds"),
+    itemId: v.id("items"),
+    quantity: v.number(),
+    acquiredAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_guildId", ["guildId"])
+    .index("by_guildId_and_itemId", ["guildId", "itemId"]),
+
+  // Once-per-player-per-tier-per-week raid XP dedup. Everyone who deals
+  // damage earns boss-tier XP/Gold once; repeat lobbies still count damage
+  // for the leaderboard but pay no repeat XP (anti-farm).
+  guildRaidXpGrants: defineTable({
+    guildId: v.id("guilds"),
+    weekStart: v.number(),
+    tier: v.number(),
+    playerId: v.id("players"),
+    partyId: v.id("guildRaids"),
+    xp: v.number(),
+    gold: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_guild_week_tier_player", ["guildId", "weekStart", "tier", "playerId"])
+    .index("by_guild_week", ["guildId", "weekStart"]),
 
   guildWeeklyObjectives: defineTable({
     guildId: v.id("guilds"),
@@ -1156,6 +1323,9 @@ export default defineSchema({
     fighter2MaxHp: v.optional(v.number()),
     fighter1Snapshot: v.optional(arenaFighterSnapshotValidator),
     fighter2Snapshot: v.optional(arenaFighterSnapshotValidator),
+    // Frozen equipped-ability state (round-based cooldowns) for auto-cast.
+    fighter1AbilityState: v.optional(abilityCombatStateValidator),
+    fighter2AbilityState: v.optional(abilityCombatStateValidator),
     fighter1Gear: v.optional(v.array(arenaFighterGearValidator)),
     fighter2Gear: v.optional(v.array(arenaFighterGearValidator)),
     round: v.optional(v.number()),
@@ -1174,7 +1344,10 @@ export default defineSchema({
     ),
     taxPaid: v.optional(v.number()),
     potPaid: v.optional(v.number()),
-    settlementKey: v.string(),
+    // Deprecated: arena lobbies never settled through the fight-history seam.
+    // Legacy rows keep the key until migrations:dropArenaLobbySettlementKeys
+    // clears it; the field is no longer written.
+    settlementKey: v.optional(v.string()),
     startedAt: v.optional(v.number()),
     endedAt: v.optional(v.number()),
     expiresAt: v.number(),
@@ -1183,8 +1356,7 @@ export default defineSchema({
   })
     .index("by_status", ["status"])
     .index("by_status_and_visibility", ["status", "visibility"])
-    .index("by_creator", ["creatorId"])
-    .index("by_settlementKey", ["settlementKey"]),
+    .index("by_creator", ["creatorId"]),
 
   // Arena spectators. Separate table so the lobby row never grows with the
   // crowd; fighters are on the lobby row and never need spectator rows.
@@ -1264,6 +1436,63 @@ export default defineSchema({
   })
     .index("by_player", ["playerId"])
     .index("by_player_and_slot", ["playerId", "slot"]),
+
+  // Abilities: definitions of all learnable abilities
+  abilities: defineTable({
+    abilityId: v.string(),
+    name: v.string(),
+    description: v.string(),
+    type: abilityTypeValidator,
+    target: abilityTargetValidator,
+    weaponType: abilityWeaponTypeValidator,
+    element: v.optional(v.string()),
+    basePower: v.number(),
+    powerScalingPerLevel: v.number(),
+    cooldownMs: v.number(),
+    castTimeMs: v.optional(v.number()),
+    manaCost: v.optional(v.number()),
+    hpCost: v.optional(v.number()),
+    buffDurationMs: v.optional(v.number()),
+    buffStat: v.optional(v.string()),
+    buffValue: v.optional(v.number()),
+    buffIsPercent: v.optional(v.boolean()),
+    maxLevel: v.optional(v.number()),
+    icon: v.optional(v.string()),
+    tier: v.number(),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_abilityId", ["abilityId"])
+    .index("by_type", ["type"])
+    .index("by_weaponType", ["weaponType"])
+    .index("by_tier", ["tier"])
+    .index("by_enabled", ["enabled"]),
+
+  // Player learned abilities with level and XP
+  playerAbilities: defineTable({
+    playerId: v.id("players"),
+    abilityId: v.string(),
+    level: v.number(),
+    experience: v.number(),
+    totalExperience: v.number(),
+    learnedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_and_abilityId", ["playerId", "abilityId"])
+    .index("by_abilityId", ["abilityId"]),
+
+  // Player equipped abilities (active loadout, max 4 slots)
+  playerEquippedAbilities: defineTable({
+    playerId: v.id("players"),
+    slot: v.number(),
+    abilityId: v.string(),
+    equippedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_playerId_and_slot", ["playerId", "slot"])
+    .index("by_playerId_and_abilityId", ["playerId", "abilityId"]),
 
   ...authTables,
 });

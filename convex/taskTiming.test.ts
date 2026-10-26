@@ -5,6 +5,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import * as combat from "./combat";
+import { getEquippedProfile } from "./items";
 import { projectBattleHealth, readTaskSyncSettings } from "./taskTiming";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -103,8 +104,10 @@ test("routine presence only reads the player, presence and grace; gameplay stays
 test("encounters are rolled once, early syncs preserve them and rewards settle exactly once", async () => {
   const simulate = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(encounter);
   const { t, playerId, taskId } = await setup();
+  // The wait is the encounter itself, not a slice of it: the deadline is the
+  // 60s encounter end, so no settlement is needed before it resolves.
   expect(await t.mutation(api.tasks.sync, { playerId }))
-    .toMatchObject({ serverTime: 0, nextSettlementAt: 30_000, requiresPresence: true });
+    .toMatchObject({ serverTime: 0, nextSettlementAt: 60_000, requiresPresence: true });
   for (const now of [10_000, 20_000]) {
     vi.setSystemTime(now);
     await t.mutation(api.tasks.heartbeat, { playerId, presenceOnly: true });
@@ -164,24 +167,60 @@ test("ending a duration run mid-encounter grants no full-fight reward", async ()
   expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(0);
 });
 
-test("recovery excludes elapsed time and begins a fresh encounter afterward", async () => {
+test("defeat ends the hunt instead of recovering into the next encounter", async () => {
   const simulate = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(encounter);
   const { t, playerId, taskId } = await setup({
     targetBattles: 2, battleEncounter: { ...encounter, won: false, durationMs: 10_000 },
   });
   await t.mutation(api.tasks.sync, { playerId });
   vi.setSystemTime(10_000);
-  expect(await t.mutation(api.tasks.sync, { playerId }))
-    .toMatchObject({ nextSettlementAt: 15_000 });
-  expect(await t.run((ctx) => ctx.db.get(taskId)))
-    .toMatchObject({ completedBattles: 1, onlineCreditMs: 0, respawnUntil: 15_000 });
-  vi.setSystemTime(15_000);
   await t.mutation(api.tasks.sync, { playerId });
-  expect(simulate).toHaveBeenCalledTimes(1);
+  // No new encounter is rolled: the loss closes the run.
+  expect(simulate).not.toHaveBeenCalled();
+  expect(await t.run((ctx) => ctx.db.get(taskId))).toBeNull();
+  const queue = await t.query(api.tasks.getQueue, { playerId });
+  expect(queue.active).toBeNull();
+  expect(queue.history[0]).toMatchObject({
+    taskId, status: "failed", completedBattles: 1,
+  });
+  expect(queue.history[0].result).toMatchObject({ reason: "Defeated" });
+  // The loss is recorded and HP is left at zero for out-of-combat regen.
+  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ currentHp: 0 });
+  expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(1);
+});
+
+test("a mid-hunt defeat banks earned loot and stops the run", async () => {
+  const restart = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(
+    { ...encounter, won: false, durationMs: 10_000, goldEarned: 0, experienceEarned: 0 }
+  );
+  const { t, playerId, taskId } = await setup({
+    battleMode: "until-stopped", targetBattles: undefined,
+    battleEncounter: { ...encounter, won: true, durationMs: 10_000 },
+  });
+  await t.mutation(api.tasks.sync, { playerId });
+  vi.setSystemTime(10_000);
+  await t.mutation(api.tasks.sync, { playerId });
+  // The win settles and the next encounter is rolled, but there is no credit
+  // to run it yet.
+  expect(restart).toHaveBeenCalledTimes(1);
+  expect(await t.run((ctx) => ctx.db.get(taskId)))
+    .toMatchObject({ completedBattles: 1, onlineCreditMs: 0 });
   vi.setSystemTime(20_000);
   await t.mutation(api.tasks.sync, { playerId });
-  expect(await t.run((ctx) => ctx.db.get(taskId)))
-    .toMatchObject({ completedBattles: 1, onlineCreditMs: 5_000, battleEncounter: encounter });
+  expect(await t.run((ctx) => ctx.db.get(taskId))).toBeNull();
+  const queue = await t.query(api.tasks.getQueue, { playerId });
+  expect(queue.active).toBeNull();
+  expect(queue.history[0]).toMatchObject({
+    taskId, status: "failed", completedBattles: 2,
+  });
+  expect(queue.history[0].result).toMatchObject({
+    reason: "Defeated", battles: 2, losses: 1,
+    goldEarned: 50, experienceEarned: 25,
+  });
+  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({
+    gold: 50, totalExperience: 25, currentHp: 0,
+  });
+  expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(2);
 });
 
 test("batch-limit continuation drains pending credit without duplicating fights", async () => {
@@ -325,7 +364,11 @@ test("configuration defaults are idempotently seeded, validated and grace-clampe
   const rows = await t.run((ctx) => ctx.db.query("gameBalance").collect());
   expect(rows.filter((row) => row.key === "taskSettlementIntervalMs")).toHaveLength(1);
   expect(await t.query((ctx) => readTaskSyncSettings(ctx, 15_000)))
-    .toEqual({ settlementIntervalMs: 30_000, presenceIntervalMs: 10_000 });
+    .toEqual({
+      settlementIntervalMs: 30_000,
+      presenceIntervalMs: 10_000,
+      skillSettlementGapMs: 300_000,
+    });
   const interval = rows.find((row) => row.key === "taskPresenceIntervalMs");
   if (!interval) throw new Error("Missing seeded interval");
   await t.run((ctx) => ctx.db.patch(interval._id, { value: 60_000 }));
@@ -368,6 +411,136 @@ test("older clients still settle through heartbeats until they reload", async ()
   vi.setSystemTime(2_000);
   await t.mutation(api.tasks.heartbeat, { playerId });
   expect(await t.run((ctx) => ctx.db.get(taskId))).toMatchObject({ onlineCreditMs: 2_000 });
+});
+
+test("a long encounter settles once at its end instead of on a repeated timer", async () => {
+  const simulate = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(encounter);
+  const { t, playerId } = await setup({
+    battleEncounter: { ...encounter, durationMs: 360_000 },
+  });
+  expect(await t.mutation(api.tasks.sync, { playerId }))
+    .toMatchObject({ nextSettlementAt: 360_000 });
+  // Presence keeps crediting the online clock without another settlement.
+  for (let now = 10_000; now <= 360_000; now += 10_000) {
+    vi.setSystemTime(now);
+    await t.mutation(api.tasks.heartbeat, { playerId, presenceOnly: true });
+  }
+  await t.mutation(api.tasks.sync, { playerId });
+  expect(simulate).not.toHaveBeenCalled();
+  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 50 });
+  expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(1);
+});
+
+test("a skill task with no pending booster settles at completion, not on a timer", async () => {
+  const { t, playerId, taskId } = await setupSkill();
+  expect(await t.mutation(api.tasks.sync, { playerId }))
+    .toMatchObject({ nextSettlementAt: 100_000 });
+  // Still nothing to resolve, so settling again is a no-op for the deadline.
+  await t.mutation(api.tasks.sync, { playerId });
+  expect(await t.mutation(api.tasks.sync, { playerId }))
+    .toMatchObject({ nextSettlementAt: 100_000 });
+  expect(await t.run((ctx) => ctx.db.get(taskId)))
+    .toMatchObject({ progressMs: 0, lastResolvedAt: 0 });
+});
+
+test("a pending booster boundary pulls the skill settlement forward to it", async () => {
+  const { t, playerId, itemId } = await setupSkill();
+  await t.run((ctx) => ctx.db.insert("playerSkillBoosts", {
+    playerId, effectType: "skill-xp-multiplier", effectScope: "all",
+    effectAmount: 2, sourceItemId: itemId,
+    startedAt: 0, expiresAt: 20_000, createdAt: 0, updatedAt: 0,
+  }));
+  vi.setSystemTime(5_000);
+  expect(await t.mutation(api.tasks.sync, { playerId }))
+    .toMatchObject({ nextSettlementAt: 20_000 });
+});
+
+test("the skill re-resolve gap caps how long a level-up can stay unapplied", async () => {
+  const { t, playerId, taskId } = await setupSkill();
+  await t.run(async (ctx) => {
+    const task = await ctx.db.get(taskId);
+    await ctx.db.patch(taskId, {
+      payload: { ...task?.payload, targetActionCount: 100_000 },
+    });
+  });
+  vi.setSystemTime(50_000);
+  // Remaining task time (~100M ms) dwarfs the configured gap, so the deadline
+  // is the gap, not the task end.
+  expect(await t.mutation(api.tasks.sync, { playerId }))
+    .toMatchObject({ nextSettlementAt: 350_000 });
+});
+
+test("heartbeats no longer refill the persistent HP bar; reads project it", async () => {
+  const { t, playerId } = await setupSkill();
+  await t.run((ctx) => ctx.db.patch(playerId, { currentHp: 5, currentHpUpdatedAt: 0 }));
+  vi.setSystemTime(60_000);
+  const metrics = await t.mutation(async (ctx) => {
+    const result = await ctx.runMutation(api.tasks.sync, { playerId });
+    return { result, metrics: await ctx.meta.getTransactionMetrics() };
+  });
+  expect(metrics.result).toMatchObject({ serverTime: 60_000 });
+  // Regen is a pure function of the last combat write, so a real batch of work
+  // still does not persist the bar: the task, presence, skill row and granted
+  // items are the only writes.
+  expect(metrics.metrics.documentsWritten.used).toBe(4);
+  expect(await t.run((ctx) => ctx.db.get(playerId)))
+    .toMatchObject({ currentHp: 5, currentHpUpdatedAt: 0 });
+  // The HUD still sees the healed bar.
+  const hp = await t.query(api.combat.getHpStatus, { playerId });
+  expect(hp.currentHp).toBeGreaterThan(5);
+  expect(hp.currentHp).toBeLessThanOrEqual(hp.maxHp);
+});
+
+test("the scheduler plan carries deadlines without the history or battle stats", async () => {
+  const { t, playerId, taskId } = await setupSkill();
+  // History is what the queue menu reads and the sync loop does not need.
+  await t.run(async (ctx) => {
+    const task = await ctx.db.get(taskId);
+    if (!task) throw new Error("Missing fixture");
+    for (let index = 0; index < 5; index += 1) {
+      await ctx.db.insert("taskHistory", {
+        playerId, taskId, definitionId: "skill_action", displayName: "Logging",
+        taskType: "timed", status: "completed",
+        completionKey: `${taskId}:${index}`,
+        progressMs: 100_000, completedBattles: 0,
+        createdAt: 0, completedAt: index,
+      });
+    }
+  });
+  const plan = await t.query(api.tasks.getActivePlan, { playerId });
+  expect(plan).toMatchObject({
+    active: {
+      _id: taskId, taskType: "timed", definitionId: "skill_action",
+      nextSettlementAt: 100_000,
+    },
+    hasQueued: false,
+    requiresPresence: false,
+    settlementIntervalMs: 30_000,
+    presenceIntervalMs: 10_000,
+    skillSettlementGapMs: 300_000,
+  });
+  expect(plan).not.toHaveProperty("history");
+  expect(plan).not.toHaveProperty("queued");
+  expect(plan).not.toHaveProperty("capacity");
+
+  await t.run(async (ctx) => {
+    const task = await ctx.db.get(taskId);
+    if (!task) throw new Error("Missing fixture");
+    const { _id, _creationTime, ...fields } = task;
+    await ctx.db.insert("playerTasks", { ...fields, status: "queued", queueOrder: 2 });
+  });
+  expect((await t.query(api.tasks.getActivePlan, { playerId })).hasQueued).toBe(true);
+
+  const planMetrics = await t.query(async (ctx) => {
+    await ctx.runQuery(api.tasks.getActivePlan, { playerId });
+    return await ctx.meta.getTransactionMetrics();
+  });
+  const queueMetrics = await t.query(async (ctx) => {
+    await ctx.runQuery(api.tasks.getQueue, { playerId });
+    return await ctx.meta.getTransactionMetrics();
+  });
+  expect(planMetrics.documentsRead.used).toBeLessThan(queueMetrics.documentsRead.used);
+  expect(planMetrics.databaseQueries.used).toBeLessThan(queueMetrics.databaseQueries.used);
 });
 
 test("long offline-capable tasks checkpoint at the offline cap to preserve continuous play", async () => {
@@ -446,9 +619,16 @@ test("craft cancellation settles the finished actions and refunds only unused re
 
 test("equipment changes preserve the current encounter and affect the next fresh-player snapshot", async () => {
   const simulate = vi.spyOn(combat, "simulateRegularBattle").mockImplementation(
-    async (_ctx, _player, _tier, bonuses) => ({
-      ...encounter, durationMs: 10_000, goldEarned: 50 + (bonuses?.str ?? 0),
-    })
+    async (ctx, player, _tier) => {
+      // Mirror the real simulation: the combat profile reads the live
+      // equipment, so a fresh encounter sees what the player has equipped.
+      const equipped = await getEquippedProfile(ctx, player._id);
+      return {
+        ...encounter,
+        durationMs: 10_000,
+        goldEarned: 50 + equipped.bonuses.str,
+      };
+    }
   );
   const { t, playerId, taskId } = await setup({ targetBattles: 2 });
   const gearId = await t.run(async (ctx) => {
@@ -472,7 +652,6 @@ test("equipment changes preserve the current encounter and affect the next fresh
   await t.mutation(api.tasks.sync, { playerId });
   expect(simulate).toHaveBeenCalledTimes(2);
   expect(simulate.mock.calls[1][1].totalExperience).toBe(25);
-  expect(simulate.mock.calls[1][3]).toMatchObject({ str: 12 });
   expect(await t.run((ctx) => ctx.db.get(taskId)))
     .toMatchObject({ battleEncounter: { goldEarned: 62 }, completedBattles: 1 });
 });

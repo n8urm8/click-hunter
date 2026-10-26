@@ -19,9 +19,37 @@ import {
   qualifyingRebirthStats,
   readRebirthStatRequirement,
 } from "./rebirth";
+import {
+  resetAllPlayerAbilities,
+  unequipAllAbilities,
+  hasAbilityAtLevel,
+  learnAbility,
+  equipAbility,
+  getPlayerEquippedAbilities,
+  getAbilityDefinition,
+} from "./abilities";
+import { getRebirthAbilityBonuses } from "./rebirth";
 
 // Default balance constants — must match gameBalance seeds in seed.ts
-const STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1 };
+const STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1, wis: 1 };
+// Casters begin with a spell so a low-damage staff does not leave them
+// strictly worse than a swing weapon. Balance-editable via `starterAbilityIds`.
+export const STARTER_ABILITY_DEFAULTS: Record<string, string> = {
+  staff: "arcane_bolt",
+};
+
+export function readStarterAbilityIds(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return STARTER_ABILITY_DEFAULTS;
+  }
+  const parsed: Record<string, string> = {};
+  for (const [key, abilityId] of Object.entries(value)) {
+    if (typeof abilityId === "string" && abilityId) {
+      parsed[key] = abilityId;
+    }
+  }
+  return Object.keys(parsed).length > 0 ? parsed : STARTER_ABILITY_DEFAULTS;
+}
 const REBIRTH_TIER_PROGRESSION = [5, 10, 15, 21, 28, 36, 45] as const;
 const rateLimiter = new RateLimiter(components.rateLimiter, {});
 
@@ -164,6 +192,26 @@ async function grantStarterKit(
         equippedSlot: slot,
         updatedAt: now,
       });
+    }
+  }
+
+  // Casters learn (and, on a fresh character, equip) their starter spell so
+  // the caster kit functions from the first fight. Rebirth clears equipped
+  // abilities, so re-picking staff re-grants it.
+  const starterAbilities = readStarterAbilityIds(
+    await getBalanceValue(ctx, "starterAbilityIds")
+  );
+  const starterAbilityId = starterAbilities[starterKey];
+  if (starterAbilityId) {
+    // Tolerate deployments where ability content has not been seeded yet:
+    // creating a character must not fail because a content row is missing.
+    const definition = await getAbilityDefinition(ctx, starterAbilityId);
+    if (definition?.enabled) {
+      await learnAbility(ctx, playerId, starterAbilityId);
+      const equipped = await getPlayerEquippedAbilities(ctx, playerId);
+      if (!equipped.some((row) => row.abilityId === starterAbilityId)) {
+        await equipAbility(ctx, playerId, starterAbilityId, 0);
+      }
     }
   }
 }
@@ -317,7 +365,9 @@ export const attemptAttack = mutation({
   handler: async (ctx, { playerId }) => {
     const player = await requirePlayer(ctx, playerId);
 
-    const { combatStats } = await readPlayerCombatProfile(ctx, player, Date.now());
+    const { combatStats } = await readPlayerCombatProfile(ctx, player, {
+      now: Date.now(),
+    });
     const cooldownMs = Math.ceil(1000 / combatStats.attackSpeed);
     const status = await rateLimiter.limit(ctx, "manualAttack", {
       key: playerId,
@@ -511,8 +561,8 @@ async function resetAllPlayerSkills(ctx: MutationCtx, playerId: Id<"players">) {
 }
 
 /**
- * Check if player can rebirth: at least one combat stat or skilling skill
- * at the rebirth requirement.
+ * Check if player can rebirth: at least one combat stat, skilling skill,
+ * or ability at the rebirth requirement.
  */
 export const canRebirth = query({
   args: {
@@ -523,12 +573,14 @@ export const canRebirth = query({
     const requirement = await readRebirthStatRequirement(ctx);
     if (qualifyingRebirthStats(player, requirement).length > 0) return true;
     const skills = await qualifyingRebirthSkills(ctx, playerId, requirement);
-    return skills.length > 0;
+    if (skills.length > 0) return true;
+    const abilities = await hasAbilityAtLevel(ctx, playerId, requirement);
+    return abilities.length > 0;
   },
 });
 
 /**
- * Rebirth - reset all stats and skills to level 1. Each stat or skill at
+ * Rebirth - reset all stats and skills to level 1. Each stat, skill, or ability at
  * the rebirth requirement earns a permanent prestige bonus to itself.
  */
 export const rebirth = mutation({
@@ -539,8 +591,7 @@ export const rebirth = mutation({
     const player = await requirePlayer(ctx, playerId);
     await ctx.runMutation(internal.tasks.prepareRebirth, { playerId });
 
-    // Eligibility is purely level-based: at least one stat or skill at
-    // the requirement.
+    // Eligibility: at least one stat, skill, or ability at the requirement.
     const requirement = await readRebirthStatRequirement(ctx);
     const qualifyingStats = qualifyingRebirthStats(player, requirement);
     const qualifyingSkills = await qualifyingRebirthSkills(
@@ -548,9 +599,10 @@ export const rebirth = mutation({
       playerId,
       requirement
     );
-    if (qualifyingStats.length === 0 && qualifyingSkills.length === 0) {
+    const qualifyingAbilities = await hasAbilityAtLevel(ctx, playerId, requirement);
+    if (qualifyingStats.length === 0 && qualifyingSkills.length === 0 && qualifyingAbilities.length === 0) {
       throw new Error(
-        `Train at least one stat or skill to level ${requirement} to rebirth`
+        `Train at least one stat, skill, or ability to level ${requirement} to rebirth`
       );
     }
 
@@ -570,8 +622,7 @@ export const rebirth = mutation({
     );
     const nextThreshold = rebirthThresholds[thresholdIndex];
 
-    // Permanent prestige power: every qualifying stat and skill banks
-    // another bonus.
+    // Permanent prestige power: every qualifying stat, skill, and ability banks another bonus.
     const bonuses = getRebirthStatBonuses(player);
     for (const stat of qualifyingStats) {
       bonuses[stat] += 1;
@@ -580,12 +631,19 @@ export const rebirth = mutation({
     for (const skillId of qualifyingSkills) {
       skillBonuses[skillId] = (skillBonuses[skillId] ?? 0) + 1;
     }
+    const abilityBonuses = getRebirthAbilityBonuses(player);
+    for (const abilityId of qualifyingAbilities) {
+      abilityBonuses[abilityId] = (abilityBonuses[abilityId] ?? 0) + 1;
+    }
 
     // Full wipe: all stats and skills return to base (earned and paid alike).
     // Passive skill web fully resets each run.
+    // Ability levels reset to 1, equipped abilities cleared.
     await resetAllStatUpgrades(ctx, playerId);
     await clearPlayerPassives(ctx, playerId);
     await resetAllPlayerSkills(ctx, playerId);
+    await resetAllPlayerAbilities(ctx, playerId);
+    await unequipAllAbilities(ctx, playerId);
 
     await ctx.db.patch(playerId, {
       str: startingStats.str,
@@ -593,9 +651,11 @@ export const rebirth = mutation({
       int: startingStats.int,
       luk: startingStats.luk,
       con: startingStats.con,
-      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+      wis: startingStats.wis,
+      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0, wis: 0 },
       rebirthStatBonuses: bonuses,
       rebirthSkillBonuses: skillBonuses,
+      rebirthAbilityBonuses: abilityBonuses,
       pendingStarterPick: true,
       gold: 0,
       totalExperience: 0,
@@ -615,8 +675,10 @@ export const rebirth = mutation({
       newThreshold: nextThreshold,
       qualifyingStats,
       qualifyingSkills,
+      qualifyingAbilities,
       rebirthStatBonuses: bonuses,
       rebirthSkillBonuses: skillBonuses,
+      rebirthAbilityBonuses: abilityBonuses,
     };
   },
 });

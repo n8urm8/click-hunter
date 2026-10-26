@@ -5,7 +5,7 @@ import { useGamePlayer } from "./game";
 
 /**
  * /inventory -> /inventory/crafting (canonical)
- * /inventory/:tab where tab = crafting | equipment | cache
+ * /inventory/:tab where tab = crafting | equipment | abilities | cache
  */
 export default function InventoryPage() {
   const player = useGamePlayer();

@@ -6,11 +6,27 @@ import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import { calculateCombatLevel } from "./characterLevel";
 import { readBalanceMap } from "./balance";
 import { resolvePvpEquipment, snapshotPvpGear } from "./pvpLoadout";
-import { rollHit, snapshotFighter } from "./arena";
+import { rollHit, snapshotFighter } from "./pvpSnapshot";
+import {
+  abilityWeaponFrom,
+  buildAbilityCombatState,
+  type AbilityCombatState,
+} from "./abilityCombat";
+import {
+  resolveDuelVerdict,
+  runRoundExchange,
+  type RoundFighter,
+  type RoundSide,
+} from "./roundCombat";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 
 const DAY_MS = 86_400_000;
+
+// Ranked bouts resolve instantly (no live round clock), but the shared
+// round-based ability casting still needs a nominal round length to convert
+// buff durations from ms into rounds. Mirrors the arena's default cadence.
+const RANKED_ROUND_INTERVAL_MS = 2_000;
 
 // ─── Balance configuration ────────────────────────────────────────────────────
 // Tunable ranked values: seeded in seed.ts, backfilled in migrations.ts,
@@ -198,49 +214,84 @@ type BoutRound = {
 function simulateBout(
   attackerSnapshot: Awaited<ReturnType<typeof snapshotFighter>>,
   defenderSnapshot: Awaited<ReturnType<typeof snapshotFighter>>,
-  maxRounds: number
+  maxRounds: number,
+  attackerAbilityState?: AbilityCombatState,
+  defenderAbilityState?: AbilityCombatState,
+  roundIntervalMs: number = RANKED_ROUND_INTERVAL_MS
 ): { winner: "attacker" | "defender" | "draw"; rounds: number; log: BoutRound[] } {
-  let hpA = attackerSnapshot.maxHp;
-  let hpB = defenderSnapshot.maxHp;
   const log: BoutRound[] = [];
+  // Both corners fight through the shared round exchange, the same one the
+  // arena lobby uses, so a ranked bout resolves like the lobby fight would.
+  const attacker: RoundFighter = {
+    id: "attacker",
+    hp: attackerSnapshot.maxHp,
+    maxHp: attackerSnapshot.maxHp,
+    alive: true,
+    defense: attackerSnapshot.defense,
+    magicalDefense: attackerSnapshot.magicalDefense,
+    ...(attackerAbilityState ? { abilityState: attackerAbilityState } : {}),
+    planSwing: (opponents) => {
+      const raw = rollHit(attackerSnapshot, defenderSnapshot);
+      return [
+        { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
+      ];
+    },
+    reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
+  };
+  const defender: RoundFighter = {
+    id: "defender",
+    hp: defenderSnapshot.maxHp,
+    maxHp: defenderSnapshot.maxHp,
+    alive: true,
+    defense: defenderSnapshot.defense,
+    magicalDefense: defenderSnapshot.magicalDefense,
+    ...(defenderAbilityState ? { abilityState: defenderAbilityState } : {}),
+    planSwing: (opponents) => {
+      const raw = rollHit(defenderSnapshot, attackerSnapshot);
+      return [
+        { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
+      ];
+    },
+    reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
+  };
+  const sides: RoundSide[] = [
+    { fighters: [attacker] },
+    { fighters: [defender] },
+  ];
   for (let round = 1; round <= maxRounds; round += 1) {
-    const hitA = rollHit(attackerSnapshot, defenderSnapshot);
-    const hitB = rollHit(defenderSnapshot, attackerSnapshot);
-    hpA = Math.max(0, hpA - hitB.damage);
-    hpB = Math.max(0, hpB - hitA.damage);
+    const exchange = runRoundExchange(sides, { round, roundIntervalMs });
     log.push({
       round,
-      damageAttackerToDefender: hitA.damage,
-      damageDefenderToAttacker: hitB.damage,
-      critAttacker: hitA.isCrit,
-      critDefender: hitB.isCrit,
-      attackerHp: hpA,
-      defenderHp: hpB,
+      damageAttackerToDefender: exchange.damage.attacker ?? 0,
+      damageDefenderToAttacker: exchange.damage.defender ?? 0,
+      critAttacker: exchange.crit.attacker ?? false,
+      critDefender: exchange.crit.defender ?? false,
+      attackerHp: exchange.hp.attacker,
+      defenderHp: exchange.hp.defender,
     });
-    if (hpA <= 0 && hpB <= 0) {
+    // Ranked draws when both fighters are on the same remaining HP, even if
+    // their pools differ.
+    const verdict = resolveDuelVerdict({
+      hpA: exchange.hp.attacker,
+      maxHpA: attackerSnapshot.maxHp,
+      hpB: exchange.hp.defender,
+      maxHpB: defenderSnapshot.maxHp,
+      round,
+      maxRounds,
+      drawOnEqualHp: true,
+    });
+    if (verdict.type === "draw") {
       return { winner: "draw", rounds: round, log };
     }
-    if (hpA <= 0 || hpB <= 0) {
+    if (verdict.type === "win") {
       return {
-        winner: hpA <= 0 ? "defender" : "attacker",
+        winner: verdict.winner === 0 ? "attacker" : "defender",
         rounds: round,
         log,
       };
     }
   }
-  if (hpA === hpB) {
-    return { winner: "draw", rounds: maxRounds, log };
-  }
-  const fracA = hpA / Math.max(1, attackerSnapshot.maxHp);
-  const fracB = hpB / Math.max(1, defenderSnapshot.maxHp);
-  if (fracA === fracB) {
-    return { winner: "draw", rounds: maxRounds, log };
-  }
-  return {
-    winner: fracA > fracB ? "attacker" : "defender",
-    rounds: maxRounds,
-    log,
-  };
+  return { winner: "draw", rounds: maxRounds, log };
 }
 
 // ─── Mutations: league lifecycle ──────────────────────────────────────────────
@@ -331,10 +382,29 @@ export const fightRankedBattle = mutation({
         defenderEquipment
       ),
     ]);
+    const [attackerAbilityState, defenderAbilityState] = await Promise.all([
+      buildAbilityCombatState(
+        ctx,
+        playerId,
+        abilityWeaponFrom(attackerEquipment.weapon),
+        { unit: "rounds", roundIntervalMs: RANKED_ROUND_INTERVAL_MS },
+        { includeAlly: true }
+      ),
+      buildAbilityCombatState(
+        ctx,
+        defenderId,
+        abilityWeaponFrom(defenderEquipment.weapon),
+        { unit: "rounds", roundIntervalMs: RANKED_ROUND_INTERVAL_MS },
+        { includeAlly: true }
+      ),
+    ]);
     const bout = simulateBout(
       attackerSnapshot,
       defenderSnapshot,
-      config.maxRounds
+      config.maxRounds,
+      attackerAbilityState,
+      defenderAbilityState,
+      RANKED_ROUND_INTERVAL_MS
     );
 
     let attackerAfter = attackerRow.points;

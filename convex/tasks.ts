@@ -25,6 +25,7 @@ import {
   resolveSkillTask,
 } from "./skills";
 import { projectBattleHealth, readTaskSyncSettings } from "./taskTiming";
+import { readNextSkillModifierChangeAt } from "./skillBonuses";
 
 export const DEFAULT_TASK_QUEUE_CAPACITY = 5;
 export const DEFAULT_OFFLINE_TASK_WINDOW_MS = 4 * 60 * 60 * 1000;
@@ -883,18 +884,19 @@ async function processAutoBattle(
   onlineSegments: ProgressSegment[]
 ) {
   const playerId = task.playerId;
-  // Shared HP helpers for the respawn-wait path below (resting = wall regen).
-  const hpPlayerForWait = await getPlayer(ctx, playerId);
-  const hpProfileForWait = await readPlayerCombatProfile(ctx, hpPlayerForWait, now);
-  const hpMaxForWait = Math.max(1, Math.ceil(hpProfileForWait.combatStats.health));
-  const regenBalanceForWait = await readHpRegenBalance(ctx);
+  // One HP/combat-profile read per settlement: it serves the respawn-wait path
+  // below, the fight loop, and the encounter that gets rolled for the next one.
+  const hpPlayer = await getPlayer(ctx, playerId);
+  const hpProfile = await readPlayerCombatProfile(ctx, hpPlayer, { now });
+  const hpMax = Math.max(1, Math.ceil(hpProfile.combatStats.health));
+  const regenBalance = await readHpRegenBalance(ctx);
   if (task.respawnUntil !== undefined && now < task.respawnUntil) {
     // Resting through a respawn wait: wall-clock CON regen applies.
     const rested = resolveCurrentHp(
-      hpPlayerForWait,
-      hpMaxForWait,
-      hpProfileForWait.effectiveStats.con,
-      regenBalanceForWait,
+      hpPlayer,
+      hpMax,
+      hpProfile.effectiveStats.con,
+      regenBalance,
       now,
       false
     );
@@ -933,16 +935,13 @@ async function processAutoBattle(
   await tickEquippedConsumables(ctx, playerId, { kind: "battle" }, now);
 
   // Resolve persistent HP without wall-clock healing while actively
-  // fighting: recovery comes from in-fight CON mitigation (baked into each
-  // sim) so chain-farming can't double-dip wall regen per heartbeat. Coming
+  // fighting: recovery comes from in-fight CON healing (applied in each sim
+  // and its live projection) so chain-farming can't double-dip wall regen per
+  // heartbeat. Coming
   // out of a respawn wait counts as rested (the wait just ended); idle
   // recovery also applies when no battle is running or this tick settles no
   // fights (below).
   const justRespawned = task.respawnUntil !== undefined;
-  const hpPlayer = await getPlayer(ctx, playerId);
-  const hpProfile = await readPlayerCombatProfile(ctx, hpPlayer, now);
-  const hpMax = Math.max(1, Math.ceil(hpProfile.combatStats.health));
-  const regenBalance = await readHpRegenBalance(ctx);
   const hpState = resolveCurrentHp(
     hpPlayer,
     hpMax,
@@ -974,7 +973,9 @@ async function processAutoBattle(
     }
 
     if (!encounter) {
-      // Defeated with no HP left: stall for regen instead of chain-losing.
+      // No HP to start a fight (e.g. the hunt began while defeated): wait for
+      // regen instead of instant-failing. Defeats suffered in a fought battle
+      // end the hunt below; this path only covers starting on empty.
       if (persistentHp <= 0) {
         if (autoBattleRespawnMs > 0 && nextRespawnUntil === undefined) {
           nextRespawnUntil = now + autoBattleRespawnMs;
@@ -982,9 +983,13 @@ async function processAutoBattle(
         }
         break;
       }
+      // Re-read per fight: settlement patches the player document, and the
+      // fresh snapshot is what the next encounter is rolled against.
       const player = await getPlayer(ctx, playerId);
-      const equipped = await getEquippedProfile(ctx, playerId);
-      encounter = await simulateRegularBattle(ctx, player, tier, equipped.bonuses, task.zone, equipped.armor, persistentHp);
+      encounter = await simulateRegularBattle(ctx, player, tier, {
+        zone: task.zone,
+        startingHp: persistentHp,
+      });
       persistentMaxHp = encounter.playerMaxHealth;
     }
     const result = encounter;
@@ -1025,10 +1030,40 @@ async function processAutoBattle(
       ...(task.zone === undefined ? {} : { monsterZone: task.zone }),
       goldEarned: result.goldEarned,
       experienceEarned: result.experienceEarned,
+      ...(result.abilityCasts === undefined
+        ? {}
+        : { abilityCasts: result.abilityCasts }),
     });
     totalGoldEarned += settlement.goldEarned;
     totalExperienceEarned += settlement.experienceEarned;
     mergeLootSummary(lootSummary, settlement.loot);
+
+    if (!result.won) {
+      // Dying kicks you out of the hunt: persist 0 HP, bank everything earned
+      // so far, and close the task as failed so the UI returns to hunt
+      // selection instead of recovering into the next encounter.
+      await writePlayerHp(ctx, playerId, 0, persistentMaxHp, now);
+      const resolvedTask = {
+        ...task,
+        progressMs,
+        completedBattles,
+        onlineCreditMs,
+        totalGoldEarned,
+        totalExperienceEarned,
+        lootSummary,
+      };
+      await completeTask(ctx, {
+        ...resolvedTask,
+      }, "failed", now, {
+        reason: "Defeated",
+        battles: completedBattles,
+        wins,
+        losses,
+        goldEarned: totalGoldEarned,
+        experienceEarned: totalExperienceEarned,
+      });
+      return await activateNextTask(ctx, playerId, now);
+    }
 
     if (
       task.battleMode === "count" &&
@@ -1044,11 +1079,6 @@ async function processAutoBattle(
       progressMs >= task.targetDurationMs
     ) {
       completed = true;
-      break;
-    }
-    if (!result.won && autoBattleRespawnMs > 0) {
-      nextRespawnUntil = now + autoBattleRespawnMs;
-      onlineCreditMs = 0;
       break;
     }
   }
@@ -1133,26 +1163,11 @@ async function settleTaskQueue(ctx: MutationCtx, playerId: PlayerId, now: number
   if (active?.taskType === "battle") {
     return await processAutoBattle(ctx, active, now, before?._id === active._id ? onlineSegments : []);
   }
-  // No auto-battle running: let CON regen refill the persistent bar (unless a
-  // manual boss session is open, which counts as in-combat).
-  const openBoss = await ctx.db
-    .query("bossSessions")
-    .withIndex("by_playerId_and_status", (q) =>
-      q.eq("playerId", playerId).eq("status", "open")
-    )
-    .first();
-  if (!openBoss) {
-    const p = await getPlayer(ctx, playerId);
-    if (p) {
-      const prof = await readPlayerCombatProfile(ctx, p, now);
-      const max = Math.max(1, Math.ceil(prof.combatStats.health));
-      const bal = await readHpRegenBalance(ctx);
-      const st = resolveCurrentHp(p, max, prof.effectiveStats.con, bal, now, false);
-      if (Math.abs(st.currentHp - (p.currentHp ?? max)) > 0.001 || p.currentHp === undefined) {
-        await writePlayerHp(ctx, playerId, st.currentHp, st.maxHp, now);
-      }
-    }
-  }
+  // Persistent HP is deliberately not touched here. Regen is a pure function
+  // of the last combat write, so readers (combat.getHpStatus) project it and
+  // only real fights persist it. Refilling the bar on every tick cost a full
+  // combat-profile read plus a player write for a value that is recomputed on
+  // read anyway.
   return active;
 }
 
@@ -1260,8 +1275,16 @@ function calculateOfflineWorkAheadMs(
 function getNextSettlementAt(
   task: PlayerTask | null,
   settlementIntervalMs: number,
-  offlineWindowMs: number
-): number | null {
+  offlineWindowMs: number,
+  options: {
+    nextModifierChangeAt?: number | null;
+    skillSettlementGapMs?: number;
+  } = {}
+) {
+  const {
+    nextModifierChangeAt = null,
+    skillSettlementGapMs = settlementIntervalMs,
+  } = options;
   if (!task || task.status !== "active") return null;
   if (task.taskType === "battle") {
     if (task.respawnUntil !== undefined && task.respawnUntil > task.updatedAt) {
@@ -1274,15 +1297,32 @@ function getNextSettlementAt(
         ? Math.max(0, (task.targetDurationMs ?? 0) - task.progressMs)
         : task.battleEncounter.durationMs
     ) - task.onlineCreditMs);
-    return task.updatedAt + Math.min(settlementIntervalMs, remainingMs);
+    // The encounter is already simulated and frozen on the task, so nothing
+    // needs to happen until it resolves. Presence heartbeats keep crediting
+    // the online clock while the client projects the fight locally, so the
+    // wait is the encounter itself rather than a repeated slice of it.
+    return task.updatedAt + remainingMs;
   }
   if (getDeferredProgressMs(task) > 0) return task.updatedAt;
   if (task.canProgressOffline && offlineWindowMs === 0) return null;
+  const remainingMs = Math.max(
+    0,
+    (task.durationMs ?? task.progressMs) - task.progressMs
+  );
+  if (task.definitionId === "skill_action") {
+    // A skill task's rate is piecewise-constant: between booster and event
+    // boundaries the outcome is already decided, so settle at completion (or
+    // at the next boundary). The gap caps how long the rate may go
+    // un-re-resolved, because skill levels speed up their own tasks.
+    const waits = [remainingMs, skillSettlementGapMs];
+    if (nextModifierChangeAt !== null && nextModifierChangeAt > task.lastResolvedAt) {
+      waits.push(nextModifierChangeAt - task.lastResolvedAt);
+    }
+    return task.lastResolvedAt + Math.min(...waits);
+  }
   return task.lastResolvedAt + Math.min(
-    Math.max(0, (task.durationMs ?? task.progressMs) - task.progressMs),
-    task.definitionId === "skill_action" || !task.canProgressOffline
-      ? settlementIntervalMs
-      : offlineWindowMs
+    remainingMs,
+    !task.canProgressOffline ? settlementIntervalMs : offlineWindowMs
   );
 }
 
@@ -1340,6 +1380,16 @@ async function getQueueSnapshot(
     })
   );
 
+  // Skill tasks are the only ones whose outcome depends on state that changes
+  // in the future, so their deadlines are scheduled against the next booster
+  // or event boundary rather than a fixed poll interval.
+  const hasSkillTask = [activeTask, ...queuedTasks].some(
+    (task) => task?.taskType === "timed" && task.definitionId === "skill_action"
+  );
+  const nextModifierChangeAt = hasSkillTask
+    ? await readNextSkillModifierChangeAt(ctx, playerId, now)
+    : null;
+
   const projectTask = (task: PlayerTask) => {
     const elapsedMs =
       task.taskType === "timed" &&
@@ -1353,7 +1403,8 @@ async function getQueueSnapshot(
       offlineWindowMs
     );
     const nextSettlementAt = getNextSettlementAt(
-      task, syncSettings.settlementIntervalMs, offlineWindowMs
+      task, syncSettings.settlementIntervalMs, offlineWindowMs,
+      { nextModifierChangeAt, skillSettlementGapMs: syncSettings.skillSettlementGapMs }
     );
     return {
       ...task,
@@ -1421,10 +1472,78 @@ export const sync = mutation({
       getHeartbeatGrace(ctx).then((graceMs) => readTaskSyncSettings(ctx, graceMs)),
       getOfflineTaskWindow(ctx),
     ]);
+    const nextModifierChangeAt = isSkillActionTask(active)
+      ? await readNextSkillModifierChangeAt(ctx, playerId, now)
+      : null;
     return {
       serverTime: now,
-      nextSettlementAt: getNextSettlementAt(active, settings.settlementIntervalMs, offlineWindowMs),
+      nextSettlementAt: getNextSettlementAt(active, settings.settlementIntervalMs, offlineWindowMs, {
+        nextModifierChangeAt,
+        skillSettlementGapMs: settings.skillSettlementGapMs,
+      }),
       requiresPresence: Boolean(active && (active.taskType === "battle" || !active.canProgressOffline)),
+      ...settings,
+    };
+  },
+});
+
+function isSkillActionTask(task: PlayerTask | null): boolean {
+  return Boolean(task && task.taskType === "timed" && task.definitionId === "skill_action");
+}
+
+/**
+ * Scheduler-only view of the queue.
+ *
+ * `sync` and every presence heartbeat rewrite `playerTasks`, so anything the
+ * sync loop subscribes to is re-read on each of those writes. This deliberately
+ * excludes the history, per-task battle stats and queued rows the UI needs:
+ * the loop only has to know when the active task next needs the server.
+ */
+export const getActivePlan = query({
+  args: {
+    playerId: v.id("players"),
+  },
+  handler: async (ctx, { playerId }) => {
+    await getPlayer(ctx, playerId);
+    const now = Date.now();
+    const [activeTask, nextQueued, offlineWindowMs, heartbeatGraceMs] =
+      await Promise.all([
+        getActiveTask(ctx, playerId),
+        ctx.db
+          .query("playerTasks")
+          .withIndex("by_playerId_and_status_and_queueOrder", (q) =>
+            q.eq("playerId", playerId).eq("status", "queued")
+          )
+          .order("asc")
+          .first(),
+        getOfflineTaskWindow(ctx),
+        getHeartbeatGrace(ctx),
+      ]);
+    const settings = await readTaskSyncSettings(ctx, heartbeatGraceMs);
+    const nextModifierChangeAt = isSkillActionTask(activeTask)
+      ? await readNextSkillModifierChangeAt(ctx, playerId, now)
+      : null;
+    return {
+      serverTime: now,
+      active: activeTask
+        ? {
+            _id: activeTask._id,
+            taskType: activeTask.taskType,
+            definitionId: activeTask.definitionId,
+            displayName: activeTask.displayName,
+            canProgressOffline: activeTask.canProgressOffline,
+            tier: activeTask.tier ?? null,
+            currentMonsterName: activeTask.currentMonsterName ?? null,
+            nextSettlementAt: getNextSettlementAt(
+              activeTask, settings.settlementIntervalMs, offlineWindowMs,
+              { nextModifierChangeAt, skillSettlementGapMs: settings.skillSettlementGapMs }
+            ),
+          }
+        : null,
+      hasQueued: Boolean(nextQueued),
+      requiresPresence: Boolean(
+        activeTask && (activeTask.taskType === "battle" || !activeTask.canProgressOffline)
+      ),
       ...settings,
     };
   },

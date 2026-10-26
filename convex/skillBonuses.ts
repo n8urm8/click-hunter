@@ -270,6 +270,42 @@ export async function getSkillModifierTimeline(
   };
 }
 
+/**
+ * Earliest upcoming change to a skill task's rate: when a booster or timed
+ * event stops applying. A task's rate is piecewise-constant between these
+ * timestamps, so a settlement scheduled at the next one is exact and the
+ * queue does not have to poll while the rate is unchanged.
+ *
+ * Expired boosters and events are never deleted, and settlement replays the
+ * window it is given, so a boundary this misses can only delay a settlement
+ * — never change its result.
+ */
+export async function readNextSkillModifierChangeAt(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">,
+  now: number
+): Promise<number | null> {
+  const [boostRows, eventRows] = await Promise.all([
+    ctx.db
+      .query("playerSkillBoosts")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .take(SKILL_BONUS_SCOPE_VALUES.length * SKILL_TASK_EFFECT_TYPES.length),
+    ctx.db
+      .query("gameEvents")
+      .withIndex("by_startTime", (q) => q.lte("startTime", now))
+      .order("desc")
+      .take(MAX_SKILL_EVENT_ROWS),
+  ]);
+  let nextAt: number | null = null;
+  const consider = (endsAt: number) => {
+    if (endsAt <= now) return;
+    if (nextAt === null || endsAt < nextAt) nextAt = endsAt;
+  };
+  for (const boost of boostRows) consider(boost.expiresAt);
+  for (const event of eventRows) consider(event.endTime);
+  return nextAt;
+}
+
 function scopeApplies(scope: SkillBonusScope, category: SkillActionCategory) {
   return scope === "all" || scope === category;
 }

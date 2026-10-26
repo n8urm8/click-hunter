@@ -4,7 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 
-export const REBIRTH_STAT_KEYS = ["str", "dex", "int", "luk", "con"] as const;
+export const REBIRTH_STAT_KEYS = ["str", "dex", "int", "luk", "con", "wis"] as const;
 export type RebirthStatKey = (typeof REBIRTH_STAT_KEYS)[number];
 
 // Validated fallback defaults for missing or malformed configuration.
@@ -23,6 +23,7 @@ const ZERO_BONUSES: RebirthStatBonuses = {
   int: 0,
   luk: 0,
   con: 0,
+  wis: 0,
 };
 
 function readBonusCount(value: unknown): number {
@@ -125,6 +126,7 @@ export function getRebirthStatBonuses(
     int: readBonusCount(stored.int),
     luk: readBonusCount(stored.luk),
     con: readBonusCount(stored.con),
+    wis: readBonusCount(stored.wis),
   };
 }
 
@@ -137,7 +139,7 @@ export function qualifyingRebirthStats(
   player: Doc<"players">,
   requirement: number
 ): RebirthStatKey[] {
-  return REBIRTH_STAT_KEYS.filter((stat) => player[stat] >= requirement);
+  return REBIRTH_STAT_KEYS.filter((stat) => (player[stat] ?? 0) >= requirement);
 }
 
 /**
@@ -168,4 +170,69 @@ export function skillSpeedMultiplier(
     (1 + levelBonusPerLevel * Math.max(0, safeLevel - 1)) *
     (1 + rebirthBonusPercent * Math.max(0, bankedCount))
   );
+}
+
+/**
+ * Validated per-ability rebirth bonus counts. Missing or malformed entries
+ * read as zero.
+ */
+export function getRebirthAbilityBonuses(
+  player: Doc<"players">
+): Record<string, number> {
+  const stored = player.rebirthAbilityBonuses;
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+  const bonuses: Record<string, number> = {};
+  for (const [abilityId, count] of Object.entries(stored)) {
+    if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+      bonuses[abilityId] = count;
+    }
+  }
+  return bonuses;
+}
+
+/**
+ * Read rebirth ability bonus percent from balance.
+ */
+export async function readRebirthAbilityBonusPercent(
+  ctx: DatabaseCtx
+): Promise<number> {
+  const value = await readBalanceValue(ctx, "rebirthAbilityBonusPercent");
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0.03;
+}
+
+/**
+ * Read rebirth ability cooldown reduction per bonus from balance.
+ */
+export async function readRebirthAbilityCooldownReductionPerBonus(
+  ctx: DatabaseCtx
+): Promise<number> {
+  const value = await readBalanceValue(ctx, "rebirthAbilityCooldownReductionPerBonus");
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0.02;
+}
+
+/**
+ * Read rebirth ability wisdom XP bonus per bonus from balance.
+ */
+export async function readRebirthAbilityWisdomXpBonusPerBonus(
+  ctx: DatabaseCtx
+): Promise<number> {
+  const value = await readBalanceValue(ctx, "rebirthAbilityWisdomXpBonusPerBonus");
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0.05;
+}
+
+/**
+ * Ability power multiplier from rebirth bonuses.
+ * Each banked bonus adds rebirthAbilityBonusPercent (default 3%).
+ */
+export function rebirthAbilityMultiplier(
+  bonusCount: number,
+  bonusPercent: number
+): number {
+  return 1 + bonusPercent * Math.max(0, bonusCount);
 }

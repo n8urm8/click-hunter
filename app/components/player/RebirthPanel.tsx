@@ -41,6 +41,7 @@ const STAT_LABELS: Record<RebirthStatKey, string> = {
   int: "INT",
   luk: "LUK",
   con: "CON",
+  wis: "WIS",
 };
 
 function ProgressRow({
@@ -48,20 +49,32 @@ function ProgressRow({
   value,
   requirement,
   bonusBadge,
+  effectiveValue,
 }: {
   label: string;
   value: number;
   requirement: number;
   bonusBadge: string | null;
+  effectiveValue?: number | null;
 }) {
-  const qualified = value >= requirement;
-  const progress = Math.min(100, (value / requirement) * 100);
+  const baseLevel = Number.isFinite(value) ? Math.floor(value) : 1;
+  const qualified = baseLevel >= requirement;
+  const progress = Math.min(100, (baseLevel / requirement) * 100);
+  const showEffective =
+    typeof effectiveValue === "number" &&
+    Number.isFinite(effectiveValue) &&
+    Math.abs(effectiveValue - baseLevel) > 1e-9;
   return (
     <div>
       <div className="flex items-center justify-between text-xs">
         <span className="font-semibold text-foreground/80">{label}</span>
         <span className="text-muted-foreground">
-          {value} / {requirement}
+          {baseLevel} / {requirement}
+          {showEffective && (
+            <span className="ml-1 tabular-nums">
+              ({effectiveValue!.toLocaleString(undefined, { maximumFractionDigits: 1 })} eff.)
+            </span>
+          )}
           {bonusBadge && (
             <span className="ml-2 font-semibold text-mystic-glow">
               {bonusBadge}
@@ -125,8 +138,18 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
   const canRebirth = canRebirthQuery.data === true;
   const statBonuses = getRebirthStatBonuses(player);
   const skillBonuses = getRebirthSkillBonuses(player);
+  // Base levels only: rebirth bonuses scale effectiveness, never the level
+  // itself, so breakpoints and XP gain are unchanged.
+  const baseStatLevel = (stat: RebirthStatKey): number => {
+    const raw = player[stat] ?? 1;
+    return Number.isFinite(raw) ? Math.floor(raw) : 1;
+  };
+  const effectiveStatValue = (stat: RebirthStatKey): number | null => {
+    const eff = (player.effectiveStats as Record<string, number> | undefined)?.[stat];
+    return typeof eff === "number" && Number.isFinite(eff) ? eff : null;
+  };
   const qualifyingStats = REBIRTH_STAT_KEYS.filter(
-    (stat) => (player[stat] ?? 1) >= requirement
+    (stat) => baseStatLevel(stat) >= requirement
   );
   const skillDefinitions = skillPanel.data?.definitions ?? [];
   const playerSkillById = new Map(
@@ -203,7 +226,7 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
           Combat stats
         </p>
         {REBIRTH_STAT_KEYS.map((stat) => {
-          const value = player[stat] ?? 1;
+          const value = baseStatLevel(stat);
           const count = statBonuses[stat] ?? 0;
           return (
             <ProgressRow
@@ -211,6 +234,7 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
               label={STAT_LABELS[stat]}
               value={value}
               requirement={requirement}
+              effectiveValue={effectiveStatValue(stat)}
               bonusBadge={
                 count > 0 ? `${statBonusLabel} ×${count}` : null
               }
@@ -257,10 +281,11 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
         <p className="mb-2">
           Rebirth resets all stats and skills to level 1, clears combat
           experience, and returns you to Tier 1. You will pick a new starter
-          weapon for the next run. Each stat at {requirement} banks a
-          permanent {statBonusLabel} bonus to that stat, and each skill at{" "}
-          {requirement} banks {skillBonusLabel} action speed for that skill —
-          max the same stat or skill again next run to stack it.
+          weapon for the next run. Levels and XP curves never change — each
+          stat at {requirement} banks a permanent {statBonusLabel} to that
+          stat&apos;s effectiveness, and each skill at {requirement} banks{" "}
+          {skillBonusLabel} action speed for that skill — max the same stat or
+          skill again next run to stack it.
         </p>
       </div>
     </Card>

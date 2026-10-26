@@ -311,3 +311,101 @@ test("admin rejects malformed ranked balance values", async () => {
     })
   ).rejects.toThrow("between 1 and 1000000");
 });
+
+async function seedRankedStaff(
+  base: ReturnType<typeof convexTest>,
+  playerId: Id<"players">,
+  withAbility: boolean
+) {
+  await base.run(async (ctx) => {
+    const now = Date.now();
+    const staff = await ctx.db.insert("items", {
+      itemId: "ranked-test-staff",
+      name: "Ranked Staff",
+      category: "equipment",
+      description: "d",
+      stackable: false,
+      maxStackSize: 1,
+      allowedEquipmentSlots: ["mainHand"],
+      rarityLevel: 10,
+      baseDamage: 5,
+      attackSpeed: 1,
+      damageStat: "int",
+      damageType: "magical",
+      weaponType: "staff",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("playerItems", {
+      playerId,
+      itemId: staff,
+      quantity: 1,
+      equippedSlot: "mainHand",
+      acquiredAt: now,
+      updatedAt: now,
+    });
+    if (!withAbility) return;
+    await ctx.db.insert("abilities", {
+      abilityId: "ranked_bolt",
+      name: "Ranked Bolt",
+      description: "d",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      basePower: 20,
+      powerScalingPerLevel: 0,
+      cooldownMs: 1_000,
+      tier: 1,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("playerAbilities", {
+      playerId,
+      abilityId: "ranked_bolt",
+      level: 1,
+      experience: 0,
+      totalExperience: 0,
+      learnedAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("playerEquippedAbilities", {
+      playerId,
+      slot: 0,
+      abilityId: "ranked_bolt",
+      equippedAt: now,
+    });
+  });
+}
+
+async function fightOneRankedBout(withAbility: boolean) {
+  const { base, t, t2, champion, rival } = await setup();
+  await seedRankedStaff(base, champion, withAbility);
+  await join(t, champion);
+  await join(t2, rival);
+  // Equalize after the league level gate so auto-attacks are identical and
+  // the only difference between runs is the ability cast.
+  await base.run(async (ctx) => {
+    const equal = { str: 20, dex: 20, int: 20, luk: 20, con: 200 };
+    await ctx.db.patch(champion, equal);
+    await ctx.db.patch(rival, equal);
+  });
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  return await t.mutation(api.ranked.fightRankedBattle, {
+    playerId: champion,
+    defenderId: rival,
+  });
+}
+
+test("ranked bouts auto-cast equipped abilities into the round log", async () => {
+  const control = await fightOneRankedBout(false);
+  const boosted = await fightOneRankedBout(true);
+
+  expect(control.log.length).toBeGreaterThan(0);
+  expect(boosted.log.length).toBeGreaterThan(0);
+  const extra =
+    boosted.log[0].damageAttackerToDefender -
+    control.log[0].damageAttackerToDefender;
+  expect(extra).toBeGreaterThan(0);
+  expect(boosted.draw).toBe(false);
+});

@@ -971,7 +971,7 @@ function OpenLobbyRow({
   );
 }
 
-type ArenaTab = "staked" | "ranked" | "loadout" | "create" | "results";
+type ArenaTab = "staked" | "ranked" | "loadout" | "results";
 
 export function ArenaPanel({ player }: { player: ArenaPlayer }) {
   const config = usePvpConfig();
@@ -992,6 +992,7 @@ export function ArenaPanel({ player }: { player: ArenaPlayer }) {
   const [settledLobbyId, setSettledLobbyId] =
     useState<Id<"arenaLobbies"> | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
   const combatLevel = calculateCombatLevel(
     player.str,
     player.dex,
@@ -1067,7 +1068,6 @@ export function ArenaPanel({ player }: { player: ArenaPlayer }) {
           <TabsTrigger value="staked">Staked Battles</TabsTrigger>
           <TabsTrigger value="ranked">Ranked</TabsTrigger>
           <TabsTrigger value="loadout">Loadout</TabsTrigger>
-          <TabsTrigger value="create">Create</TabsTrigger>
           <TabsTrigger value="results">Results</TabsTrigger>
         </TabsList>
       </Tabs>
@@ -1127,6 +1127,13 @@ export function ArenaPanel({ player }: { player: ArenaPlayer }) {
                   >
                     Quick match
                   </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowCreate((open) => !open)}
+                    aria-expanded={showCreate}
+                  >
+                    {showCreate ? "Hide create" : "Create lobby"}
+                  </Button>
                   <p className="text-xs text-muted-foreground">
                     Combat level {combatLevel} · joins the closest general
                     lobby at its stake, or opens a{" "}
@@ -1134,6 +1141,16 @@ export function ArenaPanel({ player }: { player: ArenaPlayer }) {
                   </p>
                 </div>
                 <SectionError message={actionError} />
+                {showCreate && (
+                  <div className="mt-3 rounded bg-zinc-900 px-3 py-3">
+                    <CreateLobbyForm
+                      player={player}
+                      minStake={config.data?.minStake ?? 0}
+                      maxStake={config.data?.maxStake ?? 1000000}
+                      disabled={false}
+                    />
+                  </div>
+                )}
               </div>
             )}
             <h4 className="mb-2 text-sm font-semibold">
@@ -1162,37 +1179,6 @@ export function ArenaPanel({ player }: { player: ArenaPlayer }) {
               </div>
             )}
           </div>
-        </div>
-      )}
-
-      {tab === "create" && (
-        <div>
-          {eligible && !busyLobby ? (
-            <CreateLobbyForm
-              player={player}
-              minStake={config.data?.minStake ?? 0}
-              maxStake={config.data?.maxStake ?? 1000000}
-              disabled={false}
-            />
-          ) : (
-            <div className="rounded bg-zinc-900 px-3 py-4 text-center">
-              <p className="text-sm text-muted-foreground">
-                {busyLobby
-                  ? "You already hold a seat — manage it from Staked Battles."
-                  : `Creating a lobby requires character level ${minLevel}.`}
-              </p>
-              {busyLobby && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="mt-2"
-                  onClick={() => setTab("staked")}
-                >
-                  Staked Battles
-                </Button>
-              )}
-            </div>
-          )}
         </div>
       )}
 

@@ -93,6 +93,19 @@ vi.mock("~/hooks/useInventory", () => ({
   }),
 }));
 vi.mock("~/hooks/useTaskClock", () => ({ useTaskClock: () => 0 }));
+vi.mock("~/hooks/usePlayer", () => ({
+  useHpStatus: () => ({
+    data: {
+      currentHp: 80,
+      maxHp: 120,
+      inCombat: false,
+      conRegenPerSecond: 1.5,
+      boostRegenPerSecond: 0.5,
+      totalInCombatRegenPerSecond: 2,
+    },
+    isPending: false,
+  }),
+}));
 vi.mock("./ActiveFight", () => ({ ActiveFight: () => null }));
 vi.mock("~/components/ui/button", () => ({
   Button: ({ children }: { children: ReactNode }) => <button>{children}</button>,
@@ -184,7 +197,8 @@ test("compact stop conditions retain count and time limits without automation co
 
 test("combat stats use equipment-derived values including very slow weapons", () => {
   const markup = renderToStaticMarkup(<CombatStats player={player} />);
-  for (const text of ["Equipped combat stats", "Max health", "120", "17.2", "5.6",
+  for (const text of ["Equipped combat stats", "Health", "80 / 120", "+2.0/s regen",
+    "(potion +0.5/s)", "17.2", "5.6",
     "Attack speed", "0.33/s", "2.5%", "Crit damage", "1.50x"]) {
     expect(markup).toContain(text);
   }

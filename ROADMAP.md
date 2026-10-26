@@ -135,6 +135,7 @@
 - [x] **tasks.ts (`enqueueSkillAction`) + infusion.ts + recipeValidation.ts** — Atomic validate/consume/produce through inventory rules; timed gathering/crafting/augmentation via the task queue; boss-key-gated `resolveInfusionCraft` / `enchantEquipment`. There is intentionally no single `crafting.ts`.
 - [x] **SkillsPanel.tsx + InventoryPanel.tsx + Equipment.tsx** — Recipe browsing, ingredient availability, craft actions, progress, failure/full-inventory states
 - [x] **AdminPanel.tsx / admin.ts** — `create/updateSkillDefinition`, `create/updateSkillTierDefinition`, `create/updateGatheringActivity`, `create/updateRecipe`, augmentation editors
+- [x] **Leathercrafting** — Hide drops, cured leather, belts, bags, and light armor; delivered to existing deployments with the insert-only `migrations:backfillLeathercrafting` (see `docs/adr/0001-leathercrafting-backfill.md`)
 
 ## Phase 10 — Alliances and group battles 🔄 (as guilds; no `alliances.ts`)
 
@@ -144,10 +145,12 @@
 
 - [x] **Schema** — `guilds`, `guildMembers`, `guildApplications`, `guildBonuses`, `guildRaids`, `guildWeeklyObjectives`, `guildLeaderboard`
 - [x] **guilds.ts** — 21 exports: create/disband/leave/invite/apply/accept/decline/kick/promote/demote/deposit/withdraw + `getMyGuild/getGuildById/getMembers/getPendingApplications/getGuildBonuses/getGuildConfig/searchGuilds/getGuildLeaderboard`
-- [x] **Group battles (as raids)** — `guildRaids.ts:startRaid/joinRaid/beginRaid/strikeRaid/getGuildRaids` with persisted snapshots + `guildObjectives.ts:progressWeeklyObjectives`
+- [x] **Group battles (as raids)** — `guildRaids.ts:startRaid/createRaidParty/joinRaid/beginRaid/tickRaid/getGuildRaids` with persisted snapshots, automatic rounds (no manual battling) + `guildObjectives.ts:progressWeeklyObjectives`
 - [x] **GuildPanel.tsx + guild routes** — hall/roster/bank/raids/objectives/browse/create views (`/guild/:view`)
 - [x] **AdminPanel.tsx (guilds section)** — Guild admin editors via `admin.getConfig({ section: "guilds" })`
 - [ ] Still missing vs spec: file named `alliances.ts` / `GroupBattlePanel.tsx`, guild shared-channel chat (see group-chat item in Phase 5), admin battle-window/participation-rule controls beyond current guilds section.
+- [ ] **TODO — raid dragon summoning cost (guild bank).** Balance key `guildRaidSummonGoldCost` exists (default `0` = free) and `startRaid` already deducts it from guild gold when the tier's first lobby is summoned (`convex/guildRaids.ts:711-724`). Still to decide: flat vs per-tier escalating price, whether the week's first summon is free, boss-key alternative, and officer-only spend/permission rules. Do not hardcode a price — set it through the admin/seeded balance entry. Related gap: `createRaidParty` currently only checks tier unlock/slain state, so a plain member can open the first lobby for a tier without an officer summon; decide whether to require an existing summon row (per the "officers summon, members party" rule) before wiring the cost.
+- [ ] **TODO — raid boss reward tuning.** Current payout: every qualifying damager gets full solo-boss gold + XP once per player per tier per week (dedup via `guildRaidXpGrants`), and the killing blow rolls the tier boss loot table into the guild stash. Multipliers `guildRaidRewardGoldMultiplier` / `guildRaidRewardXpMultiplier` are both `1` (`convex/guilds.ts:54-58`). Still to decide: flat split vs damage-share, per-tier reward scaling, weekly lockouts, and stash withdrawal/entitlement rules for members who did not fight. Keep all tunables in `gameBalance` and expose them via the admin editor.
 
 ## Phase 11 — PvP arena ✅ (lobby-based; in working tree, uncommitted)
 

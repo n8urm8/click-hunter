@@ -299,6 +299,7 @@ Modified to process abilities alongside auto-attacks:
 Same system applies to manual boss fights. Abilities available as action buttons in UI, but also auto-fire if configured.
 
 ### 4.4 Ability Effect Resolution
+### 4.4 Ability Effect Resolution
 ```typescript
 // In combat.ts or new abilities.ts:
 async function resolveAbilityEffect(
@@ -332,6 +333,40 @@ async function resolveAbilityEffect(
 }
 ```
 
+### 4.5 Activation Requirements (TODO — implement in Phase 3)
+
+Cooldown-ready must not mean auto-cast. Every equipped ability needs trigger
+conditions evaluated in the combat loop before casting. Seed stub:
+`meetsActivationRequirements` in `convex/abilities.ts` (currently always
+true).
+
+- **Heals (Healing Touch, Greater Heal, Holy Light lifesteal n/a):** only
+  cast while player HP is below `activationHpBelowPercent` (per-ability
+  config, e.g. 70 for Healing Touch, 50 for Greater Heal). Clamp the heal to
+  missing HP so logs never report overheal. Never cast at full HP — wasted
+  cooldown and wasted wisdom-XP pacing.
+- **Execute (Executioner's Strike):** only cast while enemy HP is below
+  `activationEnemyHpBelowPercent` (e.g. 30, matching the bonus window).
+- **Offense buffs (Battle Cry, Berserker Rage):** cast at fight start or
+  when the previous instance expired; never refresh an active instance.
+  Optional: hold Berserker Rage until enemy HP is above some floor so the
+  -defense downside doesn't overlap the kill window.
+- **Defense buffs (Iron Will, Warding Light):** cast when HP drops below
+  threshold OR when the active instance expired mid-fight; never pre-cast
+  at full HP unless the fight is a known burst opener (boss telegraphs —
+  future work).
+- **Priority:** when several abilities are ready on the same tick, cast in
+  slot order (player-arranged priority), one cast per tick max. Document in
+  the equip UI ("lower slot = higher priority").
+- **Manual vs auto:** boss fights expose equipped abilities as buttons that
+  bypass thresholds (player's call, still pays cooldown); auto-battle
+  always enforces thresholds server-side. Ranked/arena reuse the
+  auto-battle rule set.
+- **Schema additions needed:** `activationHpBelowPercent`,
+  `activationEnemyHpBelowPercent` (both optional; absent = always
+  triggerable), seeded per ability in `populateAbilities`, admin-editable
+  via the abilities section.
+
 ---
 
 ## 5. Balance Configuration (gameBalance keys)
@@ -359,38 +394,43 @@ async function resolveAbilityEffect(
 ### New Files
 ```
 convex/
-  abilities.ts          // Core ability logic (definitions, learning, equipping, combat resolution)
-  wisdom.ts             // Wisdom XP, level calculation, slot limits, power bonus
+  abilities.ts          // Core ability logic (definitions, learning, equipping, specs)
+  abilityCombat.ts      // Shared auto-cast core: cooldowns, buffs, damage/heal math
   abilityBooks.ts       // Book consumption, XP granting, validation
+  abilityUi.ts          // Player panel query + equip/unequip/use-book mutations
+  roundCombat.ts        // Shared round exchange for arena, ranked, and guild raid
+  fightHistory.ts       // Settlement key derivation + fight-history writes
+  hitRoll.ts            // Shared attack rolls (variance band, flat range)
+  pvpSnapshot.ts        // Frozen PvP fighter model + its swing rule
+  wisdom.ts             // Wisdom XP, level calculation, slot limits, power bonus
 
 app/
-  components/abilities/
-    AbilityPanel.tsx          // Main abilities UI (learned, equip, level up)
-    AbilityBookItem.tsx       // Inventory display for books
-    AbilitySlot.tsx           // Equipped ability slot component
+  components/inventory/
+    AbilitiesPanel.tsx        // Abilities tab inside the inventory shell
   hooks/
-    useAbilities.ts           // React hooks for abilities data
-    useWisdom.ts              // Wisdom level, slots, bonus
+    useAbilities.ts           // React hooks for the abilities panel
 ```
 
 ### Modified Files
 ```
 convex/
-  schema.ts               // Add 3 new tables, extend players
+  schema.ts               // Add ability tables, extend players, freeze encounter ability state
   itemTypes.ts            // Add "abilityBook" category
-  combat.ts               // Integrate ability casting in simulateRegularBattle
-  loot.ts                 // Award wisdom XP on combat victory
+  combat.ts               // Auto-battle ability path via abilityCombat
+  bossFights.ts           // Interleaved real-time ability timeline
+  arena.ts / ranked.ts    // Round-based auto-cast during PvP, via roundCombat
+  guildRaids.ts           // Round-based auto-cast, ally heals, tough-skin damage
+  loot.ts                 // Award wisdom XP on combat victory, settle via fightHistory
+  migrations.ts           // Clear legacy arena lobby settlement keys
   balance.ts              // New balance keys
   seed.ts                 // Seed ability definitions + book items
   adminConfig.ts          // Add "abilities" admin section
   admin.ts                // Admin CRUD for abilities
-  characterLevel.ts       // Add wisdom to combat level calculation?
   playerHp.ts             // Heal abilities interact with HP system
 
 app/
-  routes/game.tsx         // Prefetch abilities data
-  lib/gameRoutes.ts       // Add /abilities route
-  routes/abilities.tsx    // New page (or integrate into combat/skills UI)
+  components/inventory/InventoryPanel.tsx  // Abilities tab in the inventory shell
+  lib/gameRoutes.ts                        // /inventory/abilities route param
 ```
 
 ---
@@ -511,35 +551,74 @@ function calculateStaffElementalMultiplier(
 async function seedAbilityBooks(ctx: MutationCtx) {
   const abilityBooks = [
     // Tier 1 books (boss tiers 1-8)
+    // Weapon abilities
     { itemId: "ability_book_backstab_1", name: "Tome of Backstab I", abilityId: "backstab", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_fireball_1", name: "Tome of Fireball I", abilityId: "fireball", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_healing_touch_1", name: "Tome of Healing Touch I", abilityId: "healing_touch", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_whirlwind_1", name: "Tome of Whirlwind I", abilityId: "whirlwind", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_piercing_shot_1", name: "Tome of Piercing Shot I", abilityId: "piercing_shot", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_ice_shard_1", name: "Tome of Ice Shard I", abilityId: "ice_shard", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_battle_cry_1", name: "Tome of Battle Cry I", abilityId: "battle_cry", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_smite_1", name: "Tome of Smite I", abilityId: "smite", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_lightning_bolt_1", name: "Tome of Lightning Bolt I", abilityId: "lightning_bolt", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_iron_will_1", name: "Tome of Iron Will I", abilityId: "iron_will", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_stone_spikes_1", name: "Tome of Stone Spikes I", abilityId: "stone_spikes", bookTier: 1, xp: 100 },
     { itemId: "ability_book_shadow_dance_1", name: "Tome of Shadow Dance I", abilityId: "shadow_dance", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_greater_heal_1", name: "Tome of Greater Heal I", abilityId: "greater_heal", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_holy_light_1", name: "Tome of Holy Light I", abilityId: "holy_light", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_whirlwind_1", name: "Tome of Whirlwind I", abilityId: "whirlwind", bookTier: 1, xp: 100 },
     { itemId: "ability_book_executioner_strike_1", name: "Tome of Executioner's Strike I", abilityId: "executioner_strike", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_rain_of_arrows_1", name: "Tome of Rain of Arrows I", abilityId: "rain_of_arrows", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_shadow_bolt_1", name: "Tome of Shadow Bolt I", abilityId: "shadow_bolt", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_berserker_rage_1", name: "Tome of Berserker Rage I", abilityId: "berserker_rage", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_smite_1", name: "Tome of Smite I", abilityId: "smite", bookTier: 1, xp: 100 },
     { itemId: "ability_book_crushing_judgment_1", name: "Tome of Crushing Judgment I", abilityId: "crushing_judgment", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_warding_light_1", name: "Tome of Warding Light I", abilityId: "warding_light", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_piercing_shot_1", name: "Tome of Piercing Shot I", abilityId: "piercing_shot", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_rain_of_arrows_1", name: "Tome of Rain of Arrows I", abilityId: "rain_of_arrows", bookTier: 1, xp: 100 },
+    // Staff abilities - Fire (2)
+    { itemId: "ability_book_fireball_1", name: "Tome of Fireball I", abilityId: "fireball", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_scorching_ray_1", name: "Tome of Scorching Ray I", abilityId: "scorching_ray", bookTier: 1, xp: 100 },
+    // Staff abilities - Water/Ice (2)
+    { itemId: "ability_book_ice_shard_1", name: "Tome of Ice Shard I", abilityId: "ice_shard", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_glacial_spike_1", name: "Tome of Glacial Spike I", abilityId: "glacial_spike", bookTier: 1, xp: 100 },
+    // Staff abilities - Wind/Lightning (2)
+    { itemId: "ability_book_lightning_bolt_1", name: "Tome of Lightning Bolt I", abilityId: "lightning_bolt", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_storm_call_1", name: "Tome of Storm Call I", abilityId: "storm_call", bookTier: 1, xp: 100 },
+    // Staff abilities - Earth (2)
+    { itemId: "ability_book_stone_spikes_1", name: "Tome of Stone Spikes I", abilityId: "stone_spikes", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_seismic_slam_1", name: "Tome of Seismic Slam I", abilityId: "seismic_slam", bookTier: 1, xp: 100 },
+    // Staff abilities - Light (2)
+    { itemId: "ability_book_holy_light_1", name: "Tome of Holy Light I", abilityId: "holy_light", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_radiant_judgment_1", name: "Tome of Radiant Judgment I", abilityId: "radiant_judgment", bookTier: 1, xp: 100 },
+    // Staff abilities - Dark (2)
+    { itemId: "ability_book_shadow_bolt_1", name: "Tome of Shadow Bolt I", abilityId: "shadow_bolt", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_void_tendrils_1", name: "Tome of Void Tendrils I", abilityId: "void_tendrils", bookTier: 1, xp: 100 },
+    // Staff abilities - Arcane (1)
     { itemId: "ability_book_arcane_explosion_1", name: "Tome of Arcane Explosion I", abilityId: "arcane_explosion", bookTier: 1, xp: 100 },
-    { itemId: "ability_book_meteor_swarm_1", name: "Tome of Meteor Swarm I", abilityId: "meteor_swarm", bookTier: 1, xp: 100 },
+    // Universal abilities
+    { itemId: "ability_book_healing_touch_1", name: "Tome of Healing Touch I", abilityId: "healing_touch", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_greater_heal_1", name: "Tome of Greater Heal I", abilityId: "greater_heal", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_battle_cry_1", name: "Tome of Battle Cry I", abilityId: "battle_cry", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_berserker_rage_1", name: "Tome of Berserker Rage I", abilityId: "berserker_rage", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_iron_will_1", name: "Tome of Iron Will I", abilityId: "iron_will", bookTier: 1, xp: 100 },
+    { itemId: "ability_book_warding_light_1", name: "Tome of Warding Light I", abilityId: "warding_light", bookTier: 1, xp: 100 },
     
     // Tier 2 books (boss tiers 9-16) - 2x XP
     { itemId: "ability_book_backstab_2", name: "Tome of Backstab II", abilityId: "backstab", bookTier: 2, xp: 200 },
-    // ... repeat for all abilities
+    { itemId: "ability_book_shadow_dance_2", name: "Tome of Shadow Dance II", abilityId: "shadow_dance", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_whirlwind_2", name: "Tome of Whirlwind II", abilityId: "whirlwind", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_executioner_strike_2", name: "Tome of Executioner's Strike II", abilityId: "executioner_strike", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_smite_2", name: "Tome of Smite II", abilityId: "smite", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_crushing_judgment_2", name: "Tome of Crushing Judgment II", abilityId: "crushing_judgment", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_piercing_shot_2", name: "Tome of Piercing Shot II", abilityId: "piercing_shot", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_rain_of_arrows_2", name: "Tome of Rain of Arrows II", abilityId: "rain_of_arrows", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_fireball_2", name: "Tome of Fireball II", abilityId: "fireball", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_scorching_ray_2", name: "Tome of Scorching Ray II", abilityId: "scorching_ray", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_ice_shard_2", name: "Tome of Ice Shard II", abilityId: "ice_shard", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_glacial_spike_2", name: "Tome of Glacial Spike II", abilityId: "glacial_spike", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_lightning_bolt_2", name: "Tome of Lightning Bolt II", abilityId: "lightning_bolt", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_storm_call_2", name: "Tome of Storm Call II", abilityId: "storm_call", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_stone_spikes_2", name: "Tome of Stone Spikes II", abilityId: "stone_spikes", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_seismic_slam_2", name: "Tome of Seismic Slam II", abilityId: "seismic_slam", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_holy_light_2", name: "Tome of Holy Light II", abilityId: "holy_light", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_radiant_judgment_2", name: "Tome of Radiant Judgment II", abilityId: "radiant_judgment", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_shadow_bolt_2", name: "Tome of Shadow Bolt II", abilityId: "shadow_bolt", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_void_tendrils_2", name: "Tome of Void Tendrils II", abilityId: "void_tendrils", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_arcane_explosion_2", name: "Tome of Arcane Explosion II", abilityId: "arcane_explosion", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_healing_touch_2", name: "Tome of Healing Touch II", abilityId: "healing_touch", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_greater_heal_2", name: "Tome of Greater Heal II", abilityId: "greater_heal", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_battle_cry_2", name: "Tome of Battle Cry II", abilityId: "battle_cry", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_berserker_rage_2", name: "Tome of Berserker Rage II", abilityId: "berserker_rage", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_iron_will_2", name: "Tome of Iron Will II", abilityId: "iron_will", bookTier: 2, xp: 200 },
+    { itemId: "ability_book_warding_light_2", name: "Tome of Warding Light II", abilityId: "warding_light", bookTier: 2, xp: 200 },
     
     // Tier 3 books (boss tiers 17-24) - 3x XP
-    // etc.
+    // ... repeat for all abilities with bookTier: 3, xp: 300
   ];
   
   for (const book of abilityBooks) {
@@ -571,10 +650,10 @@ async function seedAbilityBooks(ctx: MutationCtx) {
 // Boss tier 2 loot table: + Whirlwind, Piercing Shot, Ice Shard, Battle Cry (weight 8 each)
 // Boss tier 3 loot table: + Smite, Lightning Bolt, Iron Will (weight 8 each)
 // Boss tier 4 loot table: + Stone Spikes (weight 8)
-// Boss tier 5 loot table: + Shadow Dance, Greater Heal, Holy Light (weight 6 each)
-// Boss tier 6 loot table: + Executioner's Strike, Rain of Arrows, Shadow Bolt, Berserker Rage (weight 6 each)
-// Boss tier 7 loot table: + Crushing Judgment, Warding Light, Arcane Explosion (weight 5 each)
-// Boss tier 8 loot table: + Meteor Swarm (weight 4, guaranteed 1 per kill)
+// Boss tier 5 loot table: + Shadow Dance, Greater Heal, Holy Light, Scorching Ray (weight 6 each)
+// Boss tier 6 loot table: + Executioner's Strike, Rain of Arrows, Shadow Bolt, Berserker Rage, Glacial Spike (weight 6 each)
+// Boss tier 7 loot table: + Crushing Judgment, Warding Light, Arcane Explosion, Storm Call (weight 5 each)
+// Boss tier 8 loot table: + Seismic Slam, Radiant Judgment, Void Tendrils (weight 4, guaranteed 1 per kill)
 
 // Higher tier bosses also include lower-tier books (so tier 8 boss can drop any book)
 // Weight favors current-tier books but doesn't exclude earlier ones
@@ -681,6 +760,27 @@ export const seedAbilitiesAndBooks = migration({
 - Combat log ability events
 - Ability animations/effects in UI
 - Balance tuning via admin
+
+### Implementation Status
+
+- The shared core (`abilityCombat.ts`) is used by auto-battle, boss, arena,
+  ranked, and guild raid, so damage/heal/buff math and cooldowns cannot drift.
+- Real-time encounters (auto-battle, boss) cast on millisecond cooldowns;
+  round-based encounters (arena, ranked, raid) cast once per round.
+- The round-based encounters share one round exchange (`roundCombat.ts`):
+  every fighter casts, then every fighter swings, then the round is judged.
+  Arena, ranked, and the guild raid supply only their own numbers.
+- Heals defer while they would overheal. Ally heals land on the caster in 1v1
+  and on the most-injured living member in raids.
+- The equip/learn/book UI is the **Abilities** tab in the inventory
+  (`/inventory/abilities`), backed by `abilityUi.ts`.
+- PvP casts earn no wisdom XP; raid wisdom XP is paid only to participants who
+  clear the existing raid-XP damage gate.
+- Settled fights are recorded through one seam (`fightHistory.ts`): the
+  settlement key is derived, not hand-built, and is always player-prefixed.
+- The slot cap is a balance value (`wisdomMaxSlots`), so raising it in the
+  admin editor unlocks the higher slots everywhere — panel, equip path, and
+  the starter-ability migration.
 
 ---
 

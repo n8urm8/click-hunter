@@ -7,12 +7,23 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import { calculateCharacterLevel, calculateCombatLevel } from "./characterLevel";
 import { readPlayerCombatProfile } from "./combat";
+import {
+  abilityWeaponFrom,
+  buildAbilityCombatState,
+} from "./abilityCombat";
+import {
+  resolveDuelVerdict,
+  runRoundExchange,
+  type RoundFighter,
+  type RoundSide,
+} from "./roundCombat";
 import { readBalanceMap } from "./balance";
 import {
   resolvePvpEquipment,
   snapshotPvpGear,
   type PvpEquipmentBundle,
 } from "./pvpLoadout";
+import { rollHit, snapshotFighter } from "./pvpSnapshot";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
@@ -476,76 +487,6 @@ async function expireIfStale(
   return true;
 }
 
-export type FighterSnapshot = {
-  maxHp: number;
-  attack: number;
-  defense: number;
-  magicalDefense: number;
-  critChance: number;
-  critDamageMultiplier: number;
-  damageType: string;
-  weaponElement?: string;
-  ward: number;
-  level: number;
-  handicap: number;
-};
-
-export async function snapshotFighter(
-  ctx: MutationCtx,
-  player: Doc<"players">,
-  now: number,
-  opponentWeaponElement: string | undefined,
-  pvpEquipment: PvpEquipmentBundle
-): Promise<FighterSnapshot> {
-  const profile = await readPlayerCombatProfile(
-    ctx,
-    player,
-    now,
-    undefined,
-    undefined,
-    pvpEquipment
-  );
-  const wardMap = profile.ward as Record<string, number>;
-  const weaponElement = profile.weapon?.element ?? undefined;
-  return {
-    maxHp: Math.max(1, Math.ceil(profile.combatStats.health)),
-    attack: Math.max(1, profile.combatStats.attack),
-    defense: Math.max(0, profile.combatStats.defense),
-    magicalDefense: Math.max(0, profile.combatStats.magicalDefense),
-    critChance: Math.min(100, Math.max(0, profile.combatStats.critChance)),
-    critDamageMultiplier: Math.max(1, profile.combatStats.critDamageMultiplier),
-    damageType: profile.combatStats.damageType,
-    ...(weaponElement ? { weaponElement } : {}),
-    ward:
-      opponentWeaponElement !== undefined
-        ? Math.max(0, wardMap[opponentWeaponElement] ?? 0)
-        : 0,
-    level: await calculateCharacterLevel(ctx, player),
-    // Reserved hook for future stat/equipment balancing. Always 1 until a
-    // balancing pass lands; applied as a damage-dealt multiplier per round.
-    handicap: 1,
-  };
-}
-
-export function rollHit(
-  attacker: FighterSnapshot,
-  defender: FighterSnapshot
-): { damage: number; isCrit: boolean } {
-  const isCrit = Math.random() * 100 < attacker.critChance;
-  const variance = 0.9 + Math.random() * 0.2;
-  const mitigation =
-    (attacker.damageType === "magical"
-      ? defender.magicalDefense
-      : defender.defense) + defender.ward;
-  const damage = Math.max(
-    1,
-    Math.ceil(
-      attacker.attack * (isCrit ? attacker.critDamageMultiplier : 1) * variance * attacker.handicap - mitigation
-    )
-  );
-  return { damage, isCrit };
-}
-
 type FightOutcome =
   | { type: "win"; winnerId: Id<"players">; reason: "knockout" | "rounds" | "forfeit" }
   | { type: "draw" };
@@ -636,6 +577,24 @@ async function startFightCore(
       equipment2
     ),
   ]);
+  // Freeze each corner's equipped abilities with cooldowns in rounds, so
+  // auto-cast resolves on the same round clock as the fight itself.
+  const [abilityState1, abilityState2] = await Promise.all([
+    buildAbilityCombatState(
+      ctx,
+      fighter1._id,
+      abilityWeaponFrom(equipment1.weapon),
+      { unit: "rounds", roundIntervalMs: config.roundIntervalMs },
+      { includeAlly: true }
+    ),
+    buildAbilityCombatState(
+      ctx,
+      fighter2._id,
+      abilityWeaponFrom(equipment2.weapon),
+      { unit: "rounds", roundIntervalMs: config.roundIntervalMs },
+      { includeAlly: true }
+    ),
+  ]);
   await ctx.db.patch(lobby._id, {
     status: "active",
     fighter1Hp: snapshot1.maxHp,
@@ -646,6 +605,12 @@ async function startFightCore(
     fighter2Snapshot: snapshot2,
     fighter1Gear: gear1,
     fighter2Gear: gear2,
+    ...(abilityState1.runtimes.length > 0
+      ? { fighter1AbilityState: abilityState1 }
+      : {}),
+    ...(abilityState2.runtimes.length > 0
+      ? { fighter2AbilityState: abilityState2 }
+      : {}),
     round: 0,
     lastRoundAt: now,
     roundIntervalMs: config.roundIntervalMs,
@@ -699,7 +664,6 @@ async function createLobbyCore(
     fighter1Level: level,
     fighter1CombatLevel: calculateCombatLevel(player),
     fighter1Ready: false,
-    settlementKey: `${player._id}:pvp:${crypto.randomUUID()}`,
     expiresAt: now + config.lobbyExpiryMs,
     createdAt: now,
     updatedAt: now,
@@ -1353,45 +1317,88 @@ export const tickFight = mutation({
     const recent = [...(lobby.recentRounds ?? [])];
     let outcome: FightOutcome | null = null;
     let applied = 0;
+    const max1 = lobby.fighter1MaxHp;
+    const max2 = lobby.fighter2MaxHp;
+    // Mutating these in place persists cooldowns/buffs to the lobby row below.
+    const state1 = lobby.fighter1AbilityState;
+    const state2 = lobby.fighter2AbilityState;
+    // Both corners fight through the shared round exchange: the arena
+    // supplies the swing roll, the exchange owns the round order and the
+    // damage pipeline.
+    const fighter1: RoundFighter = {
+      id: "fighter1",
+      hp: hp1,
+      maxHp: max1,
+      alive: hp1 > 0,
+      defense: snapshot1.defense,
+      magicalDefense: snapshot1.magicalDefense,
+      ...(state1 ? { abilityState: state1 } : {}),
+      planSwing: (opponents) => {
+        const raw = rollHit(snapshot1, snapshot2);
+        return [
+          { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
+        ];
+      },
+      // Arena damage always lands as a whole number of at least one.
+      reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
+    };
+    const fighter2: RoundFighter = {
+      id: "fighter2",
+      hp: hp2,
+      maxHp: max2,
+      alive: hp2 > 0,
+      defense: snapshot2.defense,
+      magicalDefense: snapshot2.magicalDefense,
+      ...(state2 ? { abilityState: state2 } : {}),
+      planSwing: (opponents) => {
+        const raw = rollHit(snapshot2, snapshot1);
+        return [
+          { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
+        ];
+      },
+      reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
+    };
+    const sides: RoundSide[] = [
+      { fighters: [fighter1] },
+      { fighters: [fighter2] },
+    ];
     for (let i = 0; i < dueRounds; i += 1) {
       round += 1;
       applied += 1;
-      const hit1 = rollHit(snapshot1, snapshot2);
-      const hit2 = rollHit(snapshot2, snapshot1);
-      hp1 = Math.max(0, hp1 - hit2.damage);
-      hp2 = Math.max(0, hp2 - hit1.damage);
+      const exchange = runRoundExchange(sides, {
+        round,
+        roundIntervalMs: interval,
+      });
+      hp1 = exchange.hp.fighter1;
+      hp2 = exchange.hp.fighter2;
       recent.push({
         round,
-        damage1to2: hit1.damage,
-        damage2to1: hit2.damage,
-        crit1: hit1.isCrit,
-        crit2: hit2.isCrit,
+        damage1to2: exchange.damage.fighter1 ?? 0,
+        damage2to1: exchange.damage.fighter2 ?? 0,
+        crit1: exchange.crit.fighter1 ?? false,
+        crit2: exchange.crit.fighter2 ?? false,
         fighter1Hp: hp1,
         fighter2Hp: hp2,
       });
-      if (hp1 <= 0 && hp2 <= 0) {
+      const verdict = resolveDuelVerdict({
+        hpA: hp1,
+        maxHpA: max1,
+        hpB: hp2,
+        maxHpB: max2,
+        round,
+        maxRounds,
+      });
+      if (verdict.type === "draw") {
         outcome = { type: "draw" };
         break;
       }
-      if (hp1 <= 0 || hp2 <= 0) {
+      if (verdict.type === "win") {
         outcome = {
           type: "win",
-          winnerId: hp1 <= 0 ? lobby.fighter2Id! : lobby.fighter1Id,
-          reason: "knockout",
+          winnerId:
+            verdict.winner === 0 ? lobby.fighter1Id! : lobby.fighter2Id!,
+          reason: verdict.reason,
         };
-        break;
-      }
-      if (round >= maxRounds) {
-        const frac1 = hp1 / Math.max(1, lobby.fighter1MaxHp);
-        const frac2 = hp2 / Math.max(1, lobby.fighter2MaxHp);
-        outcome =
-          frac1 === frac2
-            ? { type: "draw" }
-            : {
-                type: "win",
-                winnerId: frac1 > frac2 ? lobby.fighter1Id : lobby.fighter2Id!,
-                reason: "rounds",
-              };
         break;
       }
     }
@@ -1401,6 +1408,8 @@ export const tickFight = mutation({
       round,
       lastRoundAt: (lobby.lastRoundAt ?? now) + applied * interval,
       recentRounds: recent.slice(-MAX_RECENT_ROUNDS),
+      ...(state1 ? { fighter1AbilityState: state1 } : {}),
+      ...(state2 ? { fighter2AbilityState: state2 } : {}),
       updatedAt: now,
     });
     if (outcome) {

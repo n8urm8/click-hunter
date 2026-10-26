@@ -132,6 +132,10 @@ export function useStartRaid() {
   return useMutation(api.guildRaids.startRaid);
 }
 
+export function useCreateRaidParty() {
+  return useMutation(api.guildRaids.createRaidParty);
+}
+
 export function useJoinRaid() {
   return useMutation(api.guildRaids.joinRaid);
 }
@@ -140,8 +144,36 @@ export function useBeginRaid() {
   return useMutation(api.guildRaids.beginRaid);
 }
 
-export function useStrikeRaid() {
-  return useMutation(api.guildRaids.strikeRaid);
+export function useTickRaid() {
+  return useMutation(api.guildRaids.tickRaid);
+}
+
+export function useRaidStatus(playerId: Id<"players"> | null | undefined) {
+  return useQuery({
+    ...convexQuery(api.guildRaids.getRaidStatus, playerId ? { playerId } : "skip"),
+    ...convexQueryCacheOptions,
+  });
+}
+
+export function useRaidLeaderboard(playerId: Id<"players"> | null | undefined) {
+  return useQuery({
+    ...convexQuery(
+      api.guildRaids.getRaidLeaderboard,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
+}
+
+export function useGuildStash(playerId: Id<"players"> | null | undefined) {
+  return useQuery({
+    ...convexQuery(api.guildStash.getGuildStash, playerId ? { playerId } : "skip"),
+    ...convexQueryCacheOptions,
+  });
+}
+
+export function useWithdrawFromGuildStash() {
+  return useMutation(api.guildStash.withdrawFromGuildStash);
 }
 
 export function useClaimObjectiveReward() {

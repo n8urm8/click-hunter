@@ -669,3 +669,156 @@ test("admin rejects malformed arena balance values", async () => {
     })
   ).rejects.toThrow("between 0 and 100");
 });
+
+async function seedArenaStaff(
+  t: Awaited<ReturnType<typeof setup>>["t"],
+  playerId: Id<"players">,
+  withAbility: boolean
+) {
+  await t.run(async (ctx) => {
+    const now = Date.now();
+    const staff = await ctx.db.insert("items", {
+      itemId: "arena-test-staff",
+      name: "Arena Staff",
+      category: "equipment",
+      description: "d",
+      stackable: false,
+      maxStackSize: 1,
+      allowedEquipmentSlots: ["mainHand"],
+      rarityLevel: 10,
+      baseDamage: 5,
+      attackSpeed: 1,
+      damageStat: "int",
+      damageType: "magical",
+      weaponType: "staff",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("playerItems", {
+      playerId,
+      itemId: staff,
+      quantity: 1,
+      equippedSlot: "mainHand",
+      acquiredAt: now,
+      updatedAt: now,
+    });
+    if (!withAbility) return;
+    await ctx.db.insert("abilities", {
+      abilityId: "arena_bolt",
+      name: "Arena Bolt",
+      description: "d",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      basePower: 20,
+      powerScalingPerLevel: 0,
+      cooldownMs: 1_000,
+      tier: 1,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("playerAbilities", {
+      playerId,
+      abilityId: "arena_bolt",
+      level: 1,
+      experience: 0,
+      totalExperience: 0,
+      learnedAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("playerEquippedAbilities", {
+      playerId,
+      slot: 0,
+      abilityId: "arena_bolt",
+      equippedAt: now,
+    });
+  });
+}
+
+async function fightOneArenaRound(withAbility: boolean) {
+  const { t, t2, fighter1, fighter2 } = await setup();
+  await seedArenaStaff(t, fighter1, withAbility);
+  const lobby = await t.mutation(api.arena.createLobby, {
+    playerId: fighter1,
+    visibility: "general",
+    stake: 0,
+  });
+  await t2.mutation(api.arena.joinLobbyAsFighter, {
+    playerId: fighter2,
+    lobbyId: lobby._id,
+  });
+  // Equalize both corners after the level gate so auto-attack damage is
+  // identical between the control and ability runs; only the cast differs.
+  await t.run(async (ctx) => {
+    const equal = { str: 20, dex: 20, int: 20, luk: 20, con: 200 };
+    await ctx.db.patch(fighter1, equal);
+    await ctx.db.patch(fighter2, equal);
+  });
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  await readyUpAndStart(t, t2, lobby._id, fighter1, fighter2);
+
+  vi.setSystemTime(Date.now() + 2_000);
+  const ticked = await t.mutation(api.arena.tickFight, {
+    playerId: fighter1,
+    lobbyId: lobby._id,
+  });
+  const stored = await t.run((ctx) => ctx.db.get(lobby._id));
+  const state = await t.query(api.arena.getLobby, {
+    playerId: fighter1,
+    lobbyId: lobby._id,
+  });
+  return { stored, firstRound: state?.recentRounds?.[0], ticked };
+}
+
+test("arena rounds auto-cast equipped abilities into the round damage", async () => {
+  const control = await fightOneArenaRound(false);
+  const boosted = await fightOneArenaRound(true);
+
+  expect(control.stored?.fighter1AbilityState).toBeUndefined();
+  expect(boosted.stored?.fighter1AbilityState?.runtimes).toHaveLength(1);
+  expect(boosted.stored?.fighter1AbilityState?.runtimes[0]).toMatchObject({
+    casts: 1,
+    nextAt: 2,
+  });
+
+  expect(control.firstRound).toBeTruthy();
+  expect(boosted.firstRound).toBeTruthy();
+  // Same RNG and identical snapshots: the only extra damage is the cast.
+  const extra =
+    boosted.firstRound!.damage1to2 - control.firstRound!.damage1to2;
+  expect(extra).toBeGreaterThan(0);
+});
+
+test("lobbies no longer carry a settlement key", async () => {
+  const { base, t, fighter1 } = await setup();
+  const lobby = await t.mutation(api.arena.createLobby, {
+    playerId: fighter1,
+    visibility: "general",
+    stake: 0,
+  });
+  const stored = await base.run((ctx) => ctx.db.get(lobby._id));
+  expect(stored?.settlementKey).toBeUndefined();
+});
+
+test("the arena settlement key migration clears legacy lobbies", async () => {
+  const { base, t, fighter1 } = await setup();
+  const lobby = await t.mutation(api.arena.createLobby, {
+    playerId: fighter1,
+    visibility: "general",
+    stake: 0,
+  });
+  // Simulate a lobby row written before the key stopped being written.
+  await base.run(async (ctx) => {
+    await ctx.db.patch(lobby._id, { settlementKey: "legacy:pvp:key" });
+  });
+
+  const first = await t.mutation(internal.migrations.dropArenaLobbySettlementKeys, {});
+  expect(first.cleared).toBe(1);
+  const stored = await base.run((ctx) => ctx.db.get(lobby._id));
+  expect(stored?.settlementKey).toBeUndefined();
+
+  // Idempotent: a second run finds nothing left to clear.
+  const second = await t.mutation(internal.migrations.dropArenaLobbySettlementKeys, {});
+  expect(second.cleared).toBe(0);
+});

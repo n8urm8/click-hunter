@@ -1,6 +1,11 @@
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ensureBossForTier } from "./bossData";
+import {
+  findFightHistory,
+  isPlayerSettlementKey,
+  recordFightHistory,
+} from "./fightHistory";
 import type { CombatZone } from "./zones";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
 import { grantInfusionDrops } from "./infusion";
@@ -17,8 +22,9 @@ type TrainableStat = "str" | "dex" | "int" | "con";
 /**
  * Split a fight's XP across the wielded weapon's stats (70/30 weapon/con,
  * 35/35/30 unarmed) into per-stat XP pools leveled with the skill XP curve.
+ * Exported for raid settlements, which pay boss-tier XP without player loot.
  */
-async function awardCombatStatXp(
+export async function awardCombatStatXp(
   ctx: MutationCtx,
   playerId: PlayerId,
   experienceEarned: number
@@ -209,6 +215,41 @@ function pickLootEntries(
   return picked;
 }
 
+export type RolledLoot = { itemId: Id<"items">; quantity: number };
+
+/**
+ * Roll a boss loot table without granting anything. Raid kills grant the
+ * rolled rows to the guild stash instead of player inventories.
+ */
+export async function rollBossLoot(
+  ctx: MutationCtx,
+  bossId: string,
+  tier: number
+): Promise<RolledLoot[]> {
+  const tableData = await getLootTable(ctx, "boss", bossId, tier);
+  if (!tableData) return [];
+  const entries = pickLootEntries(
+    tableData.entries,
+    Math.min(100, Math.max(0, tableData.table.rollCount))
+  );
+  const rolled: RolledLoot[] = [];
+  for (const entry of entries) {
+    if (
+      !Number.isSafeInteger(entry.minQuantity) ||
+      !Number.isSafeInteger(entry.maxQuantity) ||
+      entry.minQuantity < 1 ||
+      entry.maxQuantity < entry.minQuantity ||
+      !Number.isFinite(entry.dropChance) ||
+      entry.dropChance < 0 ||
+      entry.dropChance > 1
+    ) {
+      throw new Error("Loot table contains invalid entry values");
+    }
+    rolled.push({ itemId: entry.itemId, quantity: randomQuantity(entry) });
+  }
+  return rolled;
+}
+
 async function resolveLoot(
   ctx: MutationCtx,
   args: CombatSettlementArgs
@@ -317,19 +358,14 @@ export async function settleCombatFight(
   // Keys are namespaced per player (`${playerId}:...`). Without this, any
   // caller can pre-claim another player's predictable key and force their
   // later settlement to return as a duplicate with no rewards.
-  if (!args.settlementKey.startsWith(`${args.playerId}:`)) {
+  if (!isPlayerSettlementKey(args.playerId, args.settlementKey)) {
     throw new Error("Fight settlement key must belong to the player");
   }
   if (!Number.isSafeInteger(args.tier) || args.tier < 1) {
     throw new Error("Fight tier must be a positive integer");
   }
 
-  const existingFight = await ctx.db
-    .query("fightHistory")
-    .withIndex("by_settlementKey", (q) =>
-      q.eq("settlementKey", args.settlementKey)
-    )
-    .first();
+  const existingFight = await findFightHistory(ctx, args.settlementKey);
   if (existingFight) {
     const awards = await ctx.db
       .query("lootAwards")
@@ -463,7 +499,7 @@ export async function settleCombatFight(
         loot.push({ ...extra });
       }
     }
-    await ctx.db.insert("fightHistory", {
+    await recordFightHistory(ctx, {
       playerId: args.playerId,
       settlementKey: args.settlementKey,
       monsterTier: args.tier,
@@ -475,7 +511,6 @@ export async function settleCombatFight(
         : { monsterZone: args.monsterZone }),
       goldEarned,
       experienceEarned,
-      timestamp: Date.now(),
     });
     return {
       recorded: true,
@@ -566,7 +601,7 @@ export async function settleCombatFight(
       loot.push({ ...extra });
     }
   }
-  await ctx.db.insert("fightHistory", {
+  await recordFightHistory(ctx, {
     playerId: args.playerId,
     settlementKey: args.settlementKey,
     monsterTier: args.tier,
@@ -575,7 +610,6 @@ export async function settleCombatFight(
     isBoss: args.sourceType === "boss",
     goldEarned,
     experienceEarned,
-    timestamp: Date.now(),
   });
 
   return {

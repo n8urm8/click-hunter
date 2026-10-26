@@ -1,4 +1,8 @@
-export const ITEM_CATEGORY_VALUES = ["crafting", "equipment"] as const;
+export const ITEM_CATEGORY_VALUES = [
+  "crafting",
+  "equipment",
+  "abilityBook",
+] as const;
 export type ItemCategory = (typeof ITEM_CATEGORY_VALUES)[number];
 
 export const DEFAULT_ITEM_RARITY_LEVEL = 10;
@@ -37,6 +41,17 @@ export type DamageStat = (typeof DAMAGE_STAT_VALUES)[number];
 
 export const DAMAGE_TYPE_VALUES = ["physical", "magical"] as const;
 export type DamageType = (typeof DAMAGE_TYPE_VALUES)[number];
+
+// Main-hand weapon class. Abilities declare the weapon class they require, so
+// every equippable weapon must be tagged with one to gate casting.
+export const WEAPON_TYPE_VALUES = [
+  "sword",
+  "dagger",
+  "mace",
+  "bow",
+  "staff",
+] as const;
+export type WeaponType = (typeof WEAPON_TYPE_VALUES)[number];
 
 export const ELEMENT_VALUES = [
   "light",

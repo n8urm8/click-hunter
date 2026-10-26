@@ -21,12 +21,6 @@ export const HP_REGEN_BALANCE_DEFAULTS = [
     description:
       "Maximum CON-based HP regen as a fraction of max HP per second (0.02 = 2%/s cap)",
   },
-  {
-    key: "combatOutOfCombatRegenMultiplier",
-    value: 3,
-    description:
-      "Multiplier on CON regen while not in an active fight (out-of-combat recovery speed)",
-  },
 ] as const;
 
 type DatabaseCtx = QueryCtx | MutationCtx;
@@ -56,16 +50,7 @@ export async function readHpRegenBalance(ctx: DatabaseCtx) {
     values.get("combatConRegenCapPercent"),
     HP_REGEN_BALANCE_DEFAULTS[2].value
   );
-  const outOfCombatRaw = readFraction(
-    values.get("combatOutOfCombatRegenMultiplier"),
-    HP_REGEN_BALANCE_DEFAULTS[3].value
-  );
-  return {
-    base,
-    perPoint,
-    cap,
-    outOfCombatMultiplier: Math.max(1, outOfCombatRaw),
-  };
+  return { base, perPoint, cap };
 }
 
 export function conRegenFraction(
@@ -86,14 +71,16 @@ export function conRegenPerSecond(
 }
 
 /**
- * Resolve persistent HP, applying out-of-combat regen for elapsed wall time.
+ * Resolve persistent HP, applying wall-clock regen for elapsed time while out
+ * of combat. The rate is the same HP regen used inside fights (no out-of-
+ * combat multiplier), so the HUD bar and hunt bars all tick at one rate.
  * Returns current HP clamped to [0, maxHp]. Does not write; caller persists.
  */
 export function resolveCurrentHp(
   player: Doc<"players">,
   maxHp: number,
   conTotal: number,
-  regenBalance: { base: number; perPoint: number; cap: number; outOfCombatMultiplier: number },
+  regenBalance: { base: number; perPoint: number; cap: number },
   now: number,
   inCombat: boolean
 ): { currentHp: number; maxHp: number } {
@@ -111,9 +98,7 @@ export function resolveCurrentHp(
   if (!inCombat && current < safeMax) {
     const elapsedMs = Math.max(0, now - storedAt);
     if (elapsedMs > 0) {
-      const rate =
-        conRegenPerSecond(safeMax, conTotal, regenBalance) *
-        regenBalance.outOfCombatMultiplier;
+      const rate = conRegenPerSecond(safeMax, conTotal, regenBalance);
       current = Math.min(safeMax, current + (rate * elapsedMs) / 1000);
     }
   }

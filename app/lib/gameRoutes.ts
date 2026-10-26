@@ -35,10 +35,15 @@ export function bazaarPath(view: BazaarView): string {
   return `${GAME_PATHS.bazaar}/${view}`;
 }
 
-export type InventoryTab = "crafting" | "equipment" | "cache";
+export type InventoryTab = "crafting" | "equipment" | "abilities" | "cache";
 
 export function isInventoryTab(value: string | null): value is InventoryTab {
-  return value === "crafting" || value === "equipment" || value === "cache";
+  return (
+    value === "crafting" ||
+    value === "equipment" ||
+    value === "abilities" ||
+    value === "cache"
+  );
 }
 
 export function inventoryPath(tab: InventoryTab): string {

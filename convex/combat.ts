@@ -9,6 +9,7 @@ import {
   getEquippedWeapon,
   readCombatBalance,
   type EquipmentStatBonuses,
+  type ResolvedEquipment,
 } from "./items";
 import { getPassiveBonuses } from "./passiveTree";
 import {
@@ -20,6 +21,16 @@ import { getActiveEventMultipliers, settleCombatFight } from "./loot";
 import { getGuildBonusesForPlayer } from "./guilds";
 import { conRegenPerSecond, readHpRegenBalance, resolveCurrentHp } from "./playerHp";
 import type { PvpEquipmentBundle } from "./pvpLoadout";
+import {
+  abilityCastsLog,
+  abilityWeaponFrom,
+  awardAbilityWisdomXp,
+  buildAbilityCombatState,
+  castDueAbilities,
+  damageWithBuffs,
+  mitigateWithBuffs,
+  type AbilityCombatState,
+} from "./abilityCombat";
 import { query } from "./_generated/server";
 import { requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
@@ -167,43 +178,67 @@ export interface AutoBattleResult {
   playerStartingHp?: number;
   playerEndingHp?: number;
   conRegenPerSecond?: number;
+  // Total in-fight healing per second (CON regen + heal-over-time boosts),
+  // stored on the encounter so the live projection heals on its own schedule
+  // instead of netting damage per hit.
+  regenPerSecond?: number;
   monsterDamagePerSecond: number;
   playerDamagePerSecond: number;
   playerAttackSpeed?: number;
   attackTiming?: Infer<typeof battleAttackTimingValidator>;
+  // Ability casts performed during the encounter, for idempotent wisdom XP
+  // award at settlement.
+  abilityCasts?: Array<{ abilityId: string; level: number; casts: number }>;
   goldEarned?: number;
   experienceEarned?: number;
   durationMs: number;
 }
 
+/**
+ * Where a combat profile takes its equipment from.
+ *
+ * `live` reads what the player has equipped right now. `resolved` takes
+ * equipment the caller already resolved — a PvP loadout, for instance — so
+ * the profile does not read it again. A resolved source must be complete:
+ * bonuses, armor, ward, and weapon. Anything missing would silently drop a
+ * stat from the fight.
+ */
+export type CombatProfileSource =
+  | { kind: "live" }
+  | { kind: "resolved"; equipment: ResolvedEquipment };
+
 export async function readPlayerCombatProfile(
   ctx: QueryCtx | MutationCtx,
   player: Player,
-  now?: number,
-  equipmentBonuses?: EquipmentStatBonuses,
-  armorTotals?: { defense: number; speedPenalty: number },
-  pvpEquipment?: PvpEquipmentBundle
+  options: {
+    /**
+     * Wall-clock instant for time-based boosts. Omit it for a clock-free
+     * profile (character sheets show permanent stats only).
+     */
+    now?: number;
+    /** Where the equipment comes from. Defaults to what is equipped now. */
+    source?: CombatProfileSource;
+  } = {}
 ) {
-  const skipLiveEquipment =
-    pvpEquipment !== undefined ||
-    (equipmentBonuses !== undefined && armorTotals !== undefined);
+  const { now, source } = options;
+  const resolved = source?.kind === "resolved" ? source.equipment : null;
   const [equipped, liveWeapon, passives, balance, guildBonuses] = await Promise.all([
-    skipLiveEquipment
+    resolved
       ? null
       : getEquippedProfile(ctx, player._id),
-    pvpEquipment !== undefined
+    resolved
       ? null
       : getEquippedWeapon(ctx, player._id),
     getPassiveBonuses(ctx, player._id),
     readCombatBalance(ctx),
     getGuildBonusesForPlayer(ctx, player._id),
   ]);
-  const weapon = pvpEquipment?.weapon ?? liveWeapon;
-  const bonuses = equipmentBonuses ?? pvpEquipment?.bonuses ?? equipped?.bonuses ?? {
+  const weapon = resolved?.weapon ?? liveWeapon;
+  const bonuses = resolved?.bonuses ?? equipped?.bonuses ?? {
     str: 0, dex: 0, int: 0, luk: 0, con: 0,
   };
-  const armor = armorTotals ?? pvpEquipment?.armor ?? equipped?.armor ?? { defense: 0, speedPenalty: 0 };
-  const ward = pvpEquipment?.ward ?? equipped?.ward ?? {
+  const armor = resolved?.armor ?? equipped?.armor ?? { defense: 0, speedPenalty: 0 };
+  const ward = resolved?.ward ?? equipped?.ward ?? {
     light: 0, dark: 0, water: 0, fire: 0, wind: 0, earth: 0,
   };
   // Character queries show permanent/equipped stats without a wall-clock dependency.
@@ -213,6 +248,8 @@ export async function readPlayerCombatProfile(
   // Permanent prestige: each stat banked at the rebirth requirement adds
   // another bonusPercent to that stat's effective value, so the bonus flows
   // into everything the stat does (damage, speed, HP, defense, crit).
+  // Base levels (player.str, player.dex, ...) stay untouched so level
+  // breakpoints and XP curves never shift — only effectiveness scales.
   // Skips the balance read entirely for players with no banked bonuses.
   const rebirthCounts = getRebirthStatBonuses(player);
   const bankedTotal =
@@ -220,7 +257,8 @@ export async function readPlayerCombatProfile(
     rebirthCounts.dex +
     rebirthCounts.int +
     rebirthCounts.luk +
-    rebirthCounts.con;
+    rebirthCounts.con +
+    rebirthCounts.wis;
   const rebirthBonusPercent =
     bankedTotal > 0 ? await readRebirthStatBonusPercent(ctx) : 0;
   const guildStatMultiplier = 1 + (guildBonuses.statBonusPercent ?? 0) / 100;
@@ -230,6 +268,7 @@ export async function readPlayerCombatProfile(
     int: (player.int + bonuses.int + passives.stats.int + (boosts?.statBonus.int ?? 0)) * rebirthStatMultiplier(rebirthCounts.int, rebirthBonusPercent) * guildStatMultiplier,
     luk: (player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0)) * rebirthStatMultiplier(rebirthCounts.luk, rebirthBonusPercent) * guildStatMultiplier,
     con: (player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0)) * rebirthStatMultiplier(rebirthCounts.con, rebirthBonusPercent) * guildStatMultiplier,
+    wis: (player.wis ?? 1) * rebirthStatMultiplier(rebirthCounts.wis, rebirthBonusPercent) * guildStatMultiplier,
   };
   const scalingStat = weapon?.damageStat === "dex"
     ? effectiveStats.dex
@@ -251,9 +290,9 @@ export async function readPlayerCombatProfile(
     attackSpeedMultiplier: balance.attackSpeedMultiplier,
     damageType: weapon?.damageType ?? "physical",
   };
-  // CON-based HP regen (% of max HP/sec, balance-tuned). Applies in-fight as
-  // damage mitigation alongside heal-over-time boosts, and out-of-combat as a
-  // wall-clock tick in playerHp.ts.
+  // CON-based HP regen (% of max HP/sec, balance-tuned). Ticks as real healing
+  // in fights (auto-battle and boss) and at the same rate out of combat via
+  // playerHp.ts.
   let conRegen = 0;
   if (now !== undefined) {
     const regenBalance = await readHpRegenBalance(ctx);
@@ -267,17 +306,155 @@ export async function readPlayerCombatProfile(
 }
 
 /**
+ * Event-driven resolution for encounters where the player has usable
+ * abilities. Auto-attacks, monster swings, ability casts, and continuous
+ * regeneration share one timeline so cooldowns land at the right moments and
+ * heals can be gated on missing HP. Abilities cast as soon as they are off
+ * cooldown; heals only cast when they will not overheal.
+ */
+async function simulateAbilityBattle(input: {
+  state: AbilityCombatState;
+  monster: { element?: string; defense: number; magicalDefense: number };
+  monsterHealth: number;
+  playerStartingHp: number;
+  playerMaxHp: number;
+  playerIntervalMs: number;
+  playerDamagePerHit: number;
+  monsterIntervalMs: number;
+  monsterDamagePerHit: number;
+  regenPerSecond: number;
+}): Promise<{
+  won: boolean;
+  durationMs: number;
+  playerEndingHp: number;
+  playerDamagePerSecond: number;
+  abilityCasts: Array<{ abilityId: string; level: number; casts: number }>;
+}> {
+  const {
+    state,
+    monster,
+    monsterHealth,
+    playerStartingHp,
+    playerMaxHp,
+    playerIntervalMs,
+    playerDamagePerHit,
+    monsterIntervalMs,
+    monsterDamagePerHit,
+    regenPerSecond,
+  } = input;
+
+  const runtimes = state.runtimes;
+  const buffs = state.buffs;
+  const weapon = {
+    weaponType: state.weaponType,
+    element: state.weaponElement,
+  };
+
+  let playerHp = playerStartingHp;
+  let remainingMonsterHp = monsterHealth;
+  let now = 0;
+  let nextPlayerAttack = playerIntervalMs;
+  let nextMonsterAttack = monsterIntervalMs;
+  let autoDamage = 0;
+  let abilityDamage = 0;
+  // Drop expired buffs once the list grows, so long fights that repeatedly
+  // re-cast a buff cannot accumulate unbounded dead entries.
+  const pruneBuffs = () => {
+    if (buffs.length < 8) return;
+    for (let index = buffs.length - 1; index >= 0; index -= 1) {
+      if (buffs[index].until <= now) buffs.splice(index, 1);
+    }
+  };
+  const retryMs = Math.max(250, playerIntervalMs);
+  const maxEvents = 50_000;
+
+  for (let event = 0; event < maxEvents; event += 1) {
+    if (playerHp <= 0 || remainingMonsterHp <= 0) break;
+
+    const nextEventAt = Math.min(
+      nextPlayerAttack,
+      nextMonsterAttack,
+      ...runtimes.map((runtime) => runtime.nextAt)
+    );
+    if (!Number.isFinite(nextEventAt)) break;
+
+    if (nextEventAt > now) {
+      if (regenPerSecond > 0) {
+        playerHp = Math.min(
+          playerMaxHp,
+          playerHp + (regenPerSecond * (nextEventAt - now)) / 1_000
+        );
+      }
+      now = nextEventAt;
+    }
+    pruneBuffs();
+
+    // Abilities resolve before swings: a lethal cast wins the tie against a
+    // monster swing scheduled at the same millisecond. The shared core keeps
+    // this identical to boss/arena/raid casting.
+    const castOutcome = castDueAbilities({
+      state,
+      at: now,
+      retryAt: now + retryMs,
+      playerHp,
+      playerMaxHp,
+      enemyHp: remainingMonsterHp,
+      enemyStats: {
+        defense: monster.defense,
+        magicalDefense: monster.magicalDefense,
+      },
+      weapon,
+    });
+    playerHp = castOutcome.playerHp;
+    remainingMonsterHp = castOutcome.enemyHp;
+    abilityDamage += castOutcome.damageDealt;
+
+    if (remainingMonsterHp <= 0) break;
+
+    if (nextPlayerAttack <= now) {
+      const damage = damageWithBuffs(playerDamagePerHit, buffs, now);
+      remainingMonsterHp -= damage;
+      autoDamage += damage;
+      nextPlayerAttack = now + playerIntervalMs;
+      if (remainingMonsterHp <= 0) break;
+    }
+
+    if (nextMonsterAttack <= now) {
+      const damage = mitigateWithBuffs(monsterDamagePerHit, buffs, now);
+      playerHp -= damage;
+      nextMonsterAttack = now + monsterIntervalMs;
+    }
+  }
+
+  const won = remainingMonsterHp <= 0 && playerHp > 0;
+  const durationMs = Math.max(1, Math.ceil(now));
+  return {
+    won,
+    durationMs,
+    playerEndingHp: won
+      ? Math.min(playerMaxHp, Math.max(1, Math.ceil(playerHp)))
+      : 0,
+    playerDamagePerSecond:
+      (autoDamage + abilityDamage) / (durationMs / 1_000),
+    abilityCasts: abilityCastsLog(state),
+  };
+}
+
+/**
  * Resolve one regular fight without accepting client-calculated combat or rewards.
  */
 export async function simulateRegularBattle(
   ctx: MutationCtx,
   player: Player,
   tier: number,
-  equipmentBonuses?: EquipmentStatBonuses,
-  zone?: CombatZone,
-  armorTotals?: { defense: number; speedPenalty: number },
-  playerStartingHp?: number
+  options: {
+    /** Zone to hunt in. Omit to hunt the full monster pool. */
+    zone?: CombatZone;
+    /** HP the fight starts from. Omit to start at full. */
+    startingHp?: number;
+  } = {}
 ): Promise<AutoBattleResult> {
+  const { zone, startingHp: playerStartingHp } = options;
   // Bounded catalog read: monster pool is small content (~9 rows); take()
   // keeps a hard cap so future content growth can't turn encounter rolls
   // into an unbounded scan.
@@ -318,7 +495,7 @@ export async function simulateRegularBattle(
     getActiveEventMultipliers(ctx, now),
     getGuildBonusesForPlayer(ctx, player._id),
   ]);
-  const profile = await readPlayerCombatProfile(ctx, player, now, equipmentBonuses, armorTotals);
+  const profile = await readPlayerCombatProfile(ctx, player, { now });
   const { balance, passives, combatStats } = profile;
   const isMagical = combatStats.damageType === "magical";
   const monsterMagDef = Math.max(
@@ -363,16 +540,28 @@ export async function simulateRegularBattle(
     playerAttack * (1 + critChance * (balance.critDamageMultiplier - 1));
   const playerIntervalMs = Math.ceil(1000 / combatStats.attackSpeed);
   const monsterIntervalMs = monster.baseMsPerAttack;
-  // CON regen + heal-over-time boosts both blunt incoming hits. CON scales
-  // with max HP so it stays relevant by level without out-healing real threats.
+  // CON regen + heal-over-time boosts tick as real healing alongside monster
+  // hits (same model as boss fights): HP falls in discrete hits and recovers
+  // continuously, so a build that out-regens the threat climbs back toward
+  // full instead of pinning at its starting HP. Healing runs on its own
+  // schedule rather than netting into each hit, which keeps win/loss timing
+  // identical to the equivalent mitigation math while letting future healing
+  // sources tick independently of damage.
   const totalRegenPerSecond =
     profile.conRegenPerSecond + (profile.boosts?.regenPerSecond ?? 0);
+  const monsterGrossDamagePerHit = wardedDamagePerHit;
+  const regenPerMonsterInterval =
+    (totalRegenPerSecond * monsterIntervalMs) / 1_000;
+  // Death timing only: the first hit instant whose discrete damage exceeds
+  // starting HP plus healing accrued to that point. Equivalent to netting
+  // per hit, kept separate so the stored encounter carries gross damage.
   const monsterNetDamagePerHit = Math.max(
     0,
-    wardedDamagePerHit - totalRegenPerSecond * monsterIntervalMs / 1_000
+    monsterGrossDamagePerHit - regenPerMonsterInterval
   );
-  const playerDamagePerSecond = playerDamagePerHit * (1000 / playerIntervalMs);
-  const monsterDamagePerSecond = monsterNetDamagePerHit * (1000 / monsterIntervalMs);
+  const closedFormPlayerDamagePerSecond =
+    playerDamagePerHit * (1000 / playerIntervalMs);
+  const monsterDamagePerSecond = monsterGrossDamagePerHit * (1000 / monsterIntervalMs);
   const timeToDefeatMonster =
     Math.ceil(monsterHealth / playerDamagePerHit) * playerIntervalMs;
   const timeToDefeatPlayer =
@@ -381,22 +570,74 @@ export async function simulateRegularBattle(
       : monsterNetDamagePerHit <= 0
         ? Number.MAX_SAFE_INTEGER
         : 1;
-  const won = startingHp > 0 && timeToDefeatMonster <= timeToDefeatPlayer;
-  const durationMs = Math.max(
+  const closedFormWon =
+    startingHp > 0 && timeToDefeatMonster <= timeToDefeatPlayer;
+  const closedFormDurationMs = Math.max(
     1,
     Math.ceil(
       Math.min(
-        won ? timeToDefeatMonster : timeToDefeatPlayer,
+        closedFormWon ? timeToDefeatMonster : timeToDefeatPlayer,
         Number.MAX_SAFE_INTEGER - 1
       )
     )
   );
 
-  const monsterHitsTaken = Math.floor(durationMs / monsterIntervalMs);
-  const damageTaken = monsterHitsTaken * monsterNetDamagePerHit;
-  const playerEndingHp = won
-    ? Math.max(1, Math.ceil(startingHp - damageTaken))
+  const monsterHitsTaken = Math.floor(closedFormDurationMs / monsterIntervalMs);
+  const grossDamageTaken = monsterHitsTaken * monsterGrossDamagePerHit;
+  const healed = (totalRegenPerSecond * closedFormDurationMs) / 1_000;
+  const closedFormPlayerEndingHp = closedFormWon
+    ? Math.min(
+      playerMaxHp,
+      Math.max(1, Math.ceil(startingHp - grossDamageTaken + healed))
+    )
     : 0;
+
+  // Equipped abilities add their own cooldown timeline. The cheap take(1)
+  // keeps the closed-form path (and its exact timing) for the common case of
+  // a player with no abilities equipped.
+  let won = closedFormWon;
+  let durationMs = closedFormDurationMs;
+  let playerEndingHp = closedFormPlayerEndingHp;
+  let playerDamagePerSecond = closedFormPlayerDamagePerSecond;
+  let abilityCasts: Array<{ abilityId: string; level: number; casts: number }> = [];
+  const hasEquippedAbilities =
+    (
+      await ctx.db
+        .query("playerEquippedAbilities")
+        .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
+        .take(1)
+    ).length > 0;
+  if (hasEquippedAbilities) {
+    const abilityState = await buildAbilityCombatState(
+      ctx,
+      player._id,
+      abilityWeaponFrom(profile.weapon),
+      { unit: "ms" }
+    );
+    if (abilityState.runtimes.length > 0) {
+      const outcome = await simulateAbilityBattle({
+        state: abilityState,
+        monster: {
+          element: monster.element,
+          defense: 0,
+          magicalDefense: monsterMagDef,
+        },
+        monsterHealth,
+        playerStartingHp: startingHp,
+        playerMaxHp,
+        playerIntervalMs,
+        playerDamagePerHit,
+        monsterIntervalMs,
+        monsterDamagePerHit: monsterGrossDamagePerHit,
+        regenPerSecond: totalRegenPerSecond,
+      });
+      won = outcome.won;
+      durationMs = outcome.durationMs;
+      playerEndingHp = outcome.playerEndingHp;
+      playerDamagePerSecond = outcome.playerDamagePerSecond;
+      abilityCasts = outcome.abilityCasts;
+    }
+  }
 
   return {
     won,
@@ -408,13 +649,15 @@ export async function simulateRegularBattle(
     playerStartingHp: Math.ceil(startingHp),
     playerEndingHp,
     conRegenPerSecond: profile.conRegenPerSecond,
+    regenPerSecond: totalRegenPerSecond,
     monsterDamagePerSecond,
     playerDamagePerSecond,
     playerAttackSpeed: combatStats.attackSpeed,
     attackTiming: {
       playerIntervalMs, monsterIntervalMs, playerDamagePerHit,
-      monsterDamagePerHit: monsterNetDamagePerHit,
+      monsterDamagePerHit: monsterGrossDamagePerHit,
     },
+    ...(abilityCasts.length > 0 ? { abilityCasts } : {}),
     goldEarned: won
       ? Math.max(
           0,
@@ -458,6 +701,7 @@ export async function settleRegularFight(
     monsterZone?: CombatZone;
     goldEarned?: number;
     experienceEarned?: number;
+    abilityCasts?: Array<{ abilityId: string; level: number; casts: number }>;
   }
 ) {
   const settlement = await settleCombatFight(ctx, {
@@ -480,6 +724,11 @@ export async function settleRegularFight(
         }
       : undefined,
   });
+  // Wisdom XP is awarded once per settled fight. Fights are deduped by
+  // settlementKey, so re-delivery cannot double-award.
+  if (!settlement.duplicate && args.abilityCasts && args.abilityCasts.length > 0) {
+    await awardAbilityWisdomXp(ctx, args.playerId, args.abilityCasts);
+  }
   const player = await ctx.db.get(args.playerId);
   return {
     ...settlement,
@@ -489,14 +738,16 @@ export async function settleRegularFight(
 
 /**
  * Persistent HP bar for the HUD: current HP with out-of-combat regen applied
- * as a read-only projection (settlement writes catch up on next tick).
+ * as a read-only projection from the last combat write. Regen is a pure
+ * function of `currentHpUpdatedAt`, so nothing has to persist it on a cadence;
+ * fights and boss strikes are the only writers.
  */
 export const getHpStatus = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
     const player = await requirePlayerRead(ctx, playerId);
     const now = Date.now();
-    const profile = await readPlayerCombatProfile(ctx, player, now);
+    const profile = await readPlayerCombatProfile(ctx, player, { now });
     const maxHp = Math.max(1, Math.ceil(profile.combatStats.health));
     const regenBalance = await readHpRegenBalance(ctx);
     const inCombat =

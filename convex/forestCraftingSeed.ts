@@ -4,7 +4,10 @@ import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { COMBAT_BALANCE_DEFAULTS } from "./items";
 import { HP_REGEN_BALANCE_DEFAULTS } from "./playerHp";
-import { LEATHER_BALANCE_DEFAULTS } from "./leatherwork";
+import {
+  LEATHER_BALANCE_DEFAULTS,
+  readLeatherBalance,
+} from "./leatherwork";
 import { ELEMENT_VALUES } from "./itemTypes";
 import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
 
@@ -43,6 +46,7 @@ type SeedItem = {
   attackSpeed?: number;
   damageStat?: "str" | "dex" | "int";
   damageType?: "physical" | "magical";
+  weaponType?: "sword" | "dagger" | "mace" | "bow" | "staff";
   baseDefense?: number;
   speedPenalty?: number;
   buffVariant?: "base" | "advanced";
@@ -102,12 +106,22 @@ type WeaponSpec = {
   magical?: boolean;
 };
 
+/**
+ * Staff raw damage is deliberately below every other weapon class, because
+ * casters get a starter spell and scale through abilities. Exported so the
+ * seed and the staff-rebalance migration cannot drift apart.
+ */
+export const STAFF_BASE_DAMAGE_PER_TIER = 9;
+export const STARTER_STAFF_BASE_DAMAGE = 3.75;
+
 const WEAPON_SPECS: Record<string, WeaponSpec> = {
   sword: { damage: 10, speed: 1.0, scaling: "str" },
   dagger: { damage: 6, speed: 1.6, scaling: "dex" },
   mace: { damage: 16, speed: 0.65, scaling: "str" },
   bow: { damage: 8, speed: 1.3, scaling: "dex" },
-  staff: { damage: 12, speed: 0.8, scaling: "int", magical: true },
+  // Staves are intentionally the weakest raw weapon: the caster kit starts
+  // with an arcane bolt and scales through abilities rather than swings.
+  staff: { damage: STAFF_BASE_DAMAGE_PER_TIER, speed: 0.8, scaling: "int", magical: true },
 };
 
 type ArmorSpec = { defense: number; penalty: number };
@@ -157,6 +171,7 @@ function weaponItem(
     attackSpeed: spec.speed,
     damageStat: spec.scaling,
     damageType: spec.magical ? "magical" : "physical",
+    weaponType: kind as SeedItem["weaponType"],
   };
 }
 
@@ -536,7 +551,7 @@ function bagItem(itemId: string, name: string, craftingTier: Tier): SeedItem {
     itemId,
     name,
     category: "equipment",
-    description: `${name}: stitched carry space, +${craftingTier * 10} inventory slots while equipped. No combat bonus.`,
+    description: `${name}: stitched carry space that expands inventory capacity while equipped. No combat bonus.`,
     stackable: false,
     maxStackSize: 1,
     allowedEquipmentSlots: ["bag"],
@@ -546,6 +561,33 @@ function bagItem(itemId: string, name: string, craftingTier: Tier): SeedItem {
     craftingTier,
     augmentSlots: 0,
   };
+}
+
+/**
+ * Bag capacity is configurable balance (`bagInventorySlotsPerTier`), so the
+ * item description is written from the effective value at seed time instead
+ * of baking the default into the item row.
+ */
+function leatherBagDescription(
+  name: string,
+  craftingTier: number,
+  slotsPerTier: number
+) {
+  return `${name}: stitched carry space, +${craftingTier * slotsPerTier} inventory slots while equipped. No combat bonus.`;
+}
+
+function leatherSeedValues(item: SeedItem, bagSlotsPerTier: number): SeedItem {
+  if (item.itemFamily === "leather-bag" && item.craftingTier !== undefined) {
+    return {
+      ...item,
+      description: leatherBagDescription(
+        item.name,
+        item.craftingTier,
+        bagSlotsPerTier
+      ),
+    };
+  }
+  return item;
 }
 
 function leatherArmorItem(
@@ -611,6 +653,119 @@ const LEATHERWORKING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => [
   ),
 ]);
 
+type LeatherRecipeSeed = {
+  recipeId: string;
+  outputItemId: string;
+  tier: Tier;
+  name: string;
+  description: string;
+  outputFamily: string;
+  ingredients: Array<{ itemId: string; quantity: number }>;
+};
+
+/**
+ * Leatherwork recipes are stageless legacy recipes (like talismans and boss
+ * keys) because hides come from combat loot, not a paired gathering skill, so
+ * the refinement/product chain rules cannot apply. Crafting-tier gates still
+ * apply via skillTierDefinitions. Every line upgrades stepwise (tier N
+ * consumes the tier N-1 piece), so tiers extend as data-only rows.
+ */
+function buildLeatherRecipes(bagSlotsPerTier: number): LeatherRecipeSeed[] {
+  const recipes: LeatherRecipeSeed[] = [];
+  for (const tier of TIERS) {
+    for (const source of LEATHER_SOURCES) {
+      const leatherId = `${source.prefix}-leather-t${tier}`;
+      recipes.push({
+        recipeId: leatherId,
+        outputItemId: leatherId,
+        tier,
+        name: `Cure ${source.name} Leather T${tier}`,
+        description:
+          tier === 1
+            ? `Cure ${source.hideItemId} hides into workable tier 1 leather.`
+            : `Upgrade ${source.name} leather to tier ${tier} with fresh hides.`,
+        outputFamily: `leather-${source.monster}`,
+        ingredients: [
+          { itemId: source.hideItemId, quantity: 3 },
+          ...(tier === 1
+            ? []
+            : [
+                {
+                  itemId: `${source.prefix}-leather-t${tier - 1}`,
+                  quantity: 1,
+                },
+              ]),
+        ],
+      });
+      const beltId = `${source.prefix}-belt-t${tier}`;
+      recipes.push({
+        recipeId: beltId,
+        outputItemId: beltId,
+        tier,
+        name: `Stitch ${source.name} Belt T${tier}`,
+        description: `Stitch a tier ${tier} ${source.monster}-hide belt. Higher tiers hold more consumables.`,
+        outputFamily: `leather-belt-${source.monster}`,
+        ingredients: [
+          { itemId: leatherId, quantity: 2 },
+          ...(tier === 1
+            ? []
+            : [
+                {
+                  itemId: `${source.prefix}-belt-t${tier - 1}`,
+                  quantity: 1,
+                },
+              ]),
+        ],
+      });
+      for (const piece of LEATHER_ARMOR_PIECES) {
+        const armorId = `${source.prefix}-${piece.suffix}-t${tier}`;
+        recipes.push({
+          recipeId: armorId,
+          outputItemId: armorId,
+          tier,
+          name: `Stitch ${source.name} ${piece.name} T${tier}`,
+          description: `Stitch tier ${tier} ${source.monster}-hide ${piece.name.toLowerCase()} from cured leather.`,
+          outputFamily: `leather-armor-${source.monster}-${piece.slot}`,
+          ingredients: [
+            { itemId: leatherId, quantity: 2 },
+            ...(tier === 1
+              ? []
+              : [
+                  {
+                    itemId: `${source.prefix}-${piece.suffix}-t${tier - 1}`,
+                    quantity: 1,
+                  },
+                ]),
+          ],
+        });
+      }
+    }
+    const bagId = `traveler-bag-t${tier}`;
+    recipes.push({
+      recipeId: bagId,
+      outputItemId: bagId,
+      tier,
+      name: `Stitch Traveler's Bag T${tier}`,
+      description: `Stitch a tier ${tier} carry bag from all three cured leathers. +${tier * bagSlotsPerTier} inventory slots while equipped.`,
+      outputFamily: "leather-bag",
+      ingredients: [
+        ...LEATHER_SOURCES.map((source) => ({
+          itemId: `${source.prefix}-leather-t${tier}`,
+          quantity: 2,
+        })),
+        ...(tier === 1
+          ? []
+          : [{ itemId: `traveler-bag-t${tier - 1}`, quantity: 1 }]),
+      ],
+    });
+  }
+  return recipes;
+}
+
+const LEATHER_HIDE_ITEM_IDS = new Set<string>(
+  LEATHER_SOURCES.map((source) => source.hideItemId)
+);
+
 const OUTPUT_ITEMS: SeedItem[] = [
   ...REFINED_ITEMS,
   ...CONSUMABLE_ITEMS.map(
@@ -644,6 +799,7 @@ const STARTER_ITEMS: SeedItem[] = [
     attackSpeed: 1.0,
     damageStat: "str",
     damageType: "physical",
+    weaponType: "sword",
   },
   {
     itemId: "worn-dagger",
@@ -662,6 +818,7 @@ const STARTER_ITEMS: SeedItem[] = [
     attackSpeed: 1.6,
     damageStat: "dex",
     damageType: "physical",
+    weaponType: "dagger",
   },
   {
     itemId: "worn-mace",
@@ -680,6 +837,7 @@ const STARTER_ITEMS: SeedItem[] = [
     attackSpeed: 0.65,
     damageStat: "str",
     damageType: "physical",
+    weaponType: "mace",
   },
   {
     itemId: "worn-bow",
@@ -698,6 +856,7 @@ const STARTER_ITEMS: SeedItem[] = [
     attackSpeed: 1.3,
     damageStat: "dex",
     damageType: "physical",
+    weaponType: "bow",
   },
   {
     itemId: "worn-staff",
@@ -712,10 +871,11 @@ const STARTER_ITEMS: SeedItem[] = [
     effectStat: "int",
     effectAmount: 1,
     augmentSlots: 0,
-    baseDamage: 5,
+    baseDamage: STARTER_STAFF_BASE_DAMAGE,
     attackSpeed: 0.8,
     damageStat: "int",
     damageType: "magical",
+    weaponType: "staff",
   },
   {
     itemId: "worn-mail",
@@ -1086,13 +1246,17 @@ function itemIdFor(itemById: Map<string, Id<"items">>, itemId: string) {
 export async function seedForestCraftingContent(ctx: MutationCtx) {
   const now = Date.now();
   const itemById = new Map<string, Id<"items">>();
+  const leatherBalance = await readLeatherBalance(ctx);
 
   for (const item of ALL_ITEMS) {
     const existing = await ctx.db
       .query("items")
       .withIndex("by_itemId", (q) => q.eq("itemId", item.itemId))
       .first();
-    const values = { ...item, updatedAt: now };
+    const values = {
+      ...leatherSeedValues(item, leatherBalance.bagSlotsPerTier),
+      updatedAt: now,
+    };
     if (existing) {
       await ctx.db.patch(existing._id, values);
       itemById.set(item.itemId, existing._id);
@@ -1727,90 +1891,7 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     });
   }
 
-  // Leatherwork recipes: stageless legacy recipes (like talismans and boss
-  // keys) because hides come from combat loot, not a paired gathering skill,
-  // so the refinement/product chain rules cannot apply. Crafting-tier gates
-  // still apply via skillTierDefinitions. Every line upgrades stepwise
-  // (tier N consumes the tier N-1 piece), so tiers extend as data-only rows.
-  const leatherRecipes: Array<{
-    recipeId: string;
-    outputItemId: string;
-    tier: Tier;
-    name: string;
-    description: string;
-    outputFamily: string;
-    ingredients: Array<{ itemId: string; quantity: number }>;
-  }> = [];
-  for (const tier of TIERS) {
-    for (const source of LEATHER_SOURCES) {
-      const leatherId = `${source.prefix}-leather-t${tier}`;
-      leatherRecipes.push({
-        recipeId: leatherId,
-        outputItemId: leatherId,
-        tier,
-        name: `Cure ${source.name} Leather T${tier}`,
-        description:
-          tier === 1
-            ? `Cure ${source.hideItemId} hides into workable tier 1 leather.`
-            : `Upgrade ${source.name} leather to tier ${tier} with fresh hides.`,
-        outputFamily: `leather-${source.monster}`,
-        ingredients: [
-          { itemId: source.hideItemId, quantity: 3 },
-          ...(tier === 1
-            ? []
-            : [{ itemId: `${source.prefix}-leather-t${tier - 1}`, quantity: 1 }]),
-        ],
-      });
-      const beltId = `${source.prefix}-belt-t${tier}`;
-      leatherRecipes.push({
-        recipeId: beltId,
-        outputItemId: beltId,
-        tier,
-        name: `Stitch ${source.name} Belt T${tier}`,
-        description: `Stitch a tier ${tier} ${source.monster}-hide belt. Higher tiers hold more consumables.`,
-        outputFamily: `leather-belt-${source.monster}`,
-        ingredients: [
-          { itemId: leatherId, quantity: 2 },
-          ...(tier === 1
-            ? []
-            : [{ itemId: `${source.prefix}-belt-t${tier - 1}`, quantity: 1 }]),
-        ],
-      });
-      for (const piece of LEATHER_ARMOR_PIECES) {
-        const armorId = `${source.prefix}-${piece.suffix}-t${tier}`;
-        leatherRecipes.push({
-          recipeId: armorId,
-          outputItemId: armorId,
-          tier,
-          name: `Stitch ${source.name} ${piece.name} T${tier}`,
-          description: `Stitch tier ${tier} ${source.monster}-hide ${piece.name.toLowerCase()} from cured leather.`,
-          outputFamily: `leather-armor-${source.monster}-${piece.slot}`,
-          ingredients: [
-            { itemId: leatherId, quantity: 2 },
-            ...(tier === 1
-              ? []
-              : [{ itemId: `${source.prefix}-${piece.suffix}-t${tier - 1}`, quantity: 1 }]),
-          ],
-        });
-      }
-    }
-    const bagId = `traveler-bag-t${tier}`;
-    leatherRecipes.push({
-      recipeId: bagId,
-      outputItemId: bagId,
-      tier,
-      name: `Stitch Traveler's Bag T${tier}`,
-      description: `Stitch a tier ${tier} carry bag from all three cured leathers. +${tier * 10} inventory slots while equipped.`,
-      outputFamily: "leather-bag",
-      ingredients: [
-        ...LEATHER_SOURCES.map((source) => ({
-          itemId: `${source.prefix}-leather-t${tier}`,
-          quantity: 2,
-        })),
-        ...(tier === 1 ? [] : [{ itemId: `traveler-bag-t${tier - 1}`, quantity: 1 }]),
-      ],
-    });
-  }
+  const leatherRecipes = buildLeatherRecipes(leatherBalance.bagSlotsPerTier);
   for (const recipe of leatherRecipes) {
     const row = {
       recipeId: recipe.recipeId,
@@ -2141,4 +2222,226 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       });
     }
   }
+}
+
+export type LeathercraftingBackfillSummary = {
+  balanceKeysInserted: number;
+  itemsInserted: number;
+  skillsInserted: number;
+  tiersInserted: number;
+  recipesInserted: number;
+  recipeIngredientsInserted: number;
+  recipeOutputsInserted: number;
+  lootTablesInserted: number;
+  lootEntriesInserted: number;
+  lootSourcesInserted: number;
+};
+
+/**
+ * Insert-only backfill for deployments seeded before leathercrafting existed.
+ *
+ * Unlike `seedForestCraftingContent`, this never patches or deletes existing
+ * rows: admin edits, other forest crafting content, and player-owned items are
+ * left untouched. Re-running is a no-op once the leather rows are present.
+ *
+ * The full rerunnable content sync remains `seedForestCraftingContent` /
+ * `seed:upsertForestCrafting`.
+ */
+export async function seedLeathercraftingContent(
+  ctx: MutationCtx
+): Promise<LeathercraftingBackfillSummary> {
+  const now = Date.now();
+  const summary: LeathercraftingBackfillSummary = {
+    balanceKeysInserted: 0,
+    itemsInserted: 0,
+    skillsInserted: 0,
+    tiersInserted: 0,
+    recipesInserted: 0,
+    recipeIngredientsInserted: 0,
+    recipeOutputsInserted: 0,
+    lootTablesInserted: 0,
+    lootEntriesInserted: 0,
+    lootSourcesInserted: 0,
+  };
+  const leatherBalance = await readLeatherBalance(ctx);
+
+  for (const entry of LEATHER_BALANCE_DEFAULTS) {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", entry.key))
+      .first();
+    if (existing) continue;
+    await ctx.db.insert("gameBalance", {
+      ...entry,
+      lastUpdated: now,
+    });
+    summary.balanceKeysInserted += 1;
+  }
+
+  const itemById = new Map<string, Id<"items">>();
+  const leatherItems = [
+    ...MONSTER_DROP_ITEMS.filter((item) =>
+      LEATHER_HIDE_ITEM_IDS.has(item.itemId)
+    ),
+    ...LEATHERWORKING_ITEMS,
+  ];
+  for (const item of leatherItems) {
+    const existing = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", item.itemId))
+      .first();
+    if (existing) {
+      itemById.set(item.itemId, existing._id);
+      continue;
+    }
+    const id = await ctx.db.insert("items", {
+      ...leatherSeedValues(item, leatherBalance.bagSlotsPerTier),
+      createdAt: now,
+      updatedAt: now,
+    });
+    itemById.set(item.itemId, id);
+    summary.itemsInserted += 1;
+  }
+
+  const leatherSkill = SKILLS.find(
+    (skill) => skill.skillId === "leathercrafting"
+  );
+  if (!leatherSkill) {
+    throw new Error("Leathercrafting skill seed definition is missing");
+  }
+  const existingSkill = await ctx.db
+    .query("skillDefinitions")
+    .withIndex("by_skillId", (q) => q.eq("skillId", "leathercrafting"))
+    .first();
+  if (!existingSkill) {
+    await ctx.db.insert("skillDefinitions", {
+      ...leatherSkill,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    summary.skillsInserted += 1;
+  }
+
+  for (const tier of TIERS) {
+    const existing = await ctx.db
+      .query("skillTierDefinitions")
+      .withIndex("by_skillId_and_tier", (q) =>
+        q.eq("skillId", "leathercrafting").eq("tier", tier)
+      )
+      .first();
+    if (existing) continue;
+    await ctx.db.insert("skillTierDefinitions", {
+      skillId: "leathercrafting",
+      tier,
+      name: `${TIER_NAMES[tier - 1]} Leathercrafting`,
+      description: `Tier ${tier} leathercrafting activities.`,
+      requiredLevel: TIER_LEVELS[tier - 1],
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    summary.tiersInserted += 1;
+  }
+
+  const leatherRecipes = buildLeatherRecipes(
+    leatherBalance.bagSlotsPerTier
+  );
+  for (const recipe of leatherRecipes) {
+    const existing = await ctx.db
+      .query("recipes")
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+      .first();
+    if (existing) continue;
+    await ctx.db.insert("recipes", {
+      recipeId: recipe.recipeId,
+      skillId: "leathercrafting",
+      tier: recipe.tier,
+      name: recipe.name,
+      description: recipe.description,
+      durationMs: recipe.tier * 45_000,
+      experienceReward: recipe.tier * 50,
+      outputFamily: recipe.outputFamily,
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    summary.recipesInserted += 1;
+
+    for (const ingredient of recipe.ingredients) {
+      await ctx.db.insert("recipeIngredients", {
+        recipeId: recipe.recipeId,
+        itemId: itemIdFor(itemById, ingredient.itemId),
+        quantity: ingredient.quantity,
+      });
+      summary.recipeIngredientsInserted += 1;
+    }
+    await ctx.db.insert("recipeOutputs", {
+      recipeId: recipe.recipeId,
+      itemId: itemIdFor(itemById, recipe.outputItemId),
+      quantity: 1,
+    });
+    summary.recipeOutputsInserted += 1;
+  }
+
+  for (const source of LEATHER_SOURCES) {
+    const tableId = `loot-monster-${source.monster}`;
+    const existingTable = await ctx.db
+      .query("lootTables")
+      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
+      .first();
+    if (!existingTable) {
+      await ctx.db.insert("lootTables", {
+        lootTableId: tableId,
+        name: `${source.monster} aspect drops`,
+        sourceType: "monster",
+        rollCount: 1,
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      summary.lootTablesInserted += 1;
+    }
+
+    const entries = await ctx.db
+      .query("lootTableEntries")
+      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
+      .collect();
+    const hideItemId = itemIdFor(itemById, source.hideItemId);
+    if (!entries.some((entry) => entry.itemId === hideItemId)) {
+      await ctx.db.insert("lootTableEntries", {
+        lootTableId: tableId,
+        itemId: hideItemId,
+        weight: 1,
+        dropChance: 0.35,
+        minQuantity: 1,
+        maxQuantity: 1,
+        guaranteed: false,
+        purpose: "augmentation",
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      summary.lootEntriesInserted += 1;
+    }
+
+    const sources = await ctx.db
+      .query("lootSources")
+      .withIndex("by_sourceType_and_sourceId", (q) =>
+        q.eq("sourceType", "monster").eq("sourceId", source.monster)
+      )
+      .collect();
+    if (!sources.some((row) => row.tier === undefined)) {
+      await ctx.db.insert("lootSources", {
+        sourceType: "monster",
+        sourceId: source.monster,
+        lootTableId: tableId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      summary.lootSourcesInserted += 1;
+    }
+  }
+
+  return summary;
 }

@@ -8,6 +8,10 @@
  * @module
  */
 
+import type * as abilities from "../abilities.js";
+import type * as abilityBooks from "../abilityBooks.js";
+import type * as abilityCombat from "../abilityCombat.js";
+import type * as abilityUi from "../abilityUi.js";
 import type * as achievements from "../achievements.js";
 import type * as admin from "../admin.js";
 import type * as adminAuth from "../adminAuth.js";
@@ -25,10 +29,13 @@ import type * as combat from "../combat.js";
 import type * as consumableSlots from "../consumableSlots.js";
 import type * as crons from "../crons.js";
 import type * as events from "../events.js";
+import type * as fightHistory from "../fightHistory.js";
 import type * as forestCraftingSeed from "../forestCraftingSeed.js";
 import type * as guildObjectives from "../guildObjectives.js";
 import type * as guildRaids from "../guildRaids.js";
+import type * as guildStash from "../guildStash.js";
 import type * as guilds from "../guilds.js";
+import type * as hitRoll from "../hitRoll.js";
 import type * as http from "../http.js";
 import type * as infusion from "../infusion.js";
 import type * as init from "../init.js";
@@ -43,9 +50,11 @@ import type * as playerAuth from "../playerAuth.js";
 import type * as playerHp from "../playerHp.js";
 import type * as players from "../players.js";
 import type * as pvpLoadout from "../pvpLoadout.js";
+import type * as pvpSnapshot from "../pvpSnapshot.js";
 import type * as ranked from "../ranked.js";
 import type * as rebirth from "../rebirth.js";
 import type * as recipeValidation from "../recipeValidation.js";
+import type * as roundCombat from "../roundCombat.js";
 import type * as seed from "../seed.js";
 import type * as simLive from "../simLive.js";
 import type * as simShared from "../simShared.js";
@@ -56,6 +65,7 @@ import type * as taskSettlement from "../taskSettlement.js";
 import type * as taskTiming from "../taskTiming.js";
 import type * as tasks from "../tasks.js";
 import type * as upgrades from "../upgrades.js";
+import type * as wisdom from "../wisdom.js";
 import type * as zones from "../zones.js";
 
 import type {
@@ -65,6 +75,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  abilities: typeof abilities;
+  abilityBooks: typeof abilityBooks;
+  abilityCombat: typeof abilityCombat;
+  abilityUi: typeof abilityUi;
   achievements: typeof achievements;
   admin: typeof admin;
   adminAuth: typeof adminAuth;
@@ -82,10 +96,13 @@ declare const fullApi: ApiFromModules<{
   consumableSlots: typeof consumableSlots;
   crons: typeof crons;
   events: typeof events;
+  fightHistory: typeof fightHistory;
   forestCraftingSeed: typeof forestCraftingSeed;
   guildObjectives: typeof guildObjectives;
   guildRaids: typeof guildRaids;
+  guildStash: typeof guildStash;
   guilds: typeof guilds;
+  hitRoll: typeof hitRoll;
   http: typeof http;
   infusion: typeof infusion;
   init: typeof init;
@@ -100,9 +117,11 @@ declare const fullApi: ApiFromModules<{
   playerHp: typeof playerHp;
   players: typeof players;
   pvpLoadout: typeof pvpLoadout;
+  pvpSnapshot: typeof pvpSnapshot;
   ranked: typeof ranked;
   rebirth: typeof rebirth;
   recipeValidation: typeof recipeValidation;
+  roundCombat: typeof roundCombat;
   seed: typeof seed;
   simLive: typeof simLive;
   simShared: typeof simShared;
@@ -113,6 +132,7 @@ declare const fullApi: ApiFromModules<{
   taskTiming: typeof taskTiming;
   tasks: typeof tasks;
   upgrades: typeof upgrades;
+  wisdom: typeof wisdom;
   zones: typeof zones;
 }>;
 

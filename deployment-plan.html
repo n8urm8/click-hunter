@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Click Hunter — Deployment Plan (Cloudflare vs DigitalOcean)</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fff; --fg: #1a1a1a; --muted: #666;
+    --card: #f7f7f8; --border: #e2e2e6;
+    --green: #2ea043; --amber: #b99700; --blue: #0969da; --purple: #8250df;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e; --card: #161b22; --border: #30363d; }
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0; padding: 32px; line-height: 1.55; background: var(--bg); color: var(--fg);
+    max-width: 1080px; margin-inline: auto; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin-top: 0; }
+  h2 { font-size: 20px; margin-top: 36px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 16px; margin: 20px 0 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+    background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
+  pre { background: #0d1117; color: #e6edf3; padding: 14px 16px; border-radius: 8px;
+    overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: rgba(127,127,127,.15); }
+  .grid { display: grid; gap: 12px; }
+  .grid.cols3 { grid-template-columns: repeat(3, 1fr); }
+  .grid.cols4 { grid-template-columns: repeat(4, 1fr); }
+  .grid.cols2 { grid-template-columns: repeat(2, 1fr); }
+  @media (max-width: 1100px) { .grid.cols4 { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 800px) { body { padding: 16px; } .grid.cols3, .grid.cols2, .grid.cols4 { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .card h3 { margin-top: 0; }
+  .badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); }
+  .badge.rec { border-color: var(--green); color: var(--green); font-weight: 600; }
+  .badge.warn { border-color: var(--amber); color: var(--amber); }
+  .badge.info { border-color: var(--blue); color: var(--blue); }
+  .callout { border: 1px solid var(--border); border-left: 4px solid var(--amber);
+    padding: 12px 14px; border-radius: 8px; font-size: 14px; background: var(--card); margin: 12px 0; }
+  .callout.green { border-left-color: var(--green); }
+  .callout.blue { border-left-color: var(--blue); }
+  .diagram { display: flex; align-items: stretch; gap: 0; margin: 16px 0; flex-wrap: wrap; }
+  .node { border: 2px solid var(--border); border-radius: 10px; padding: 10px 14px; text-align: center;
+    font-size: 13px; flex: 1 1 140px; background: var(--card); }
+  .node b { display: block; font-size: 14px; }
+  .node small { color: var(--muted); }
+  .node.edge { border-color: var(--blue); }
+  .node.compute { border-color: var(--purple); }
+  .node.data { border-color: var(--green); }
+  .arrow { align-self: center; padding: 0 8px; font-size: 20px; color: var(--muted); }
+  .bar { height: 10px; border-radius: 999px; background: rgba(127,127,127,.2); overflow: hidden; margin-top: 8px; }
+  .bar > div { height: 100%; border-radius: 999px; }
+  .cost { font-size: 26px; font-weight: 700; margin: 4px 0; }
+  .steps { counter-reset: step; list-style: none; padding: 0; }
+  .steps li { counter-increment: step; position: relative; padding: 10px 10px 10px 48px;
+    border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; background: var(--card); font-size: 14px; }
+  .steps li::before { content: counter(step); position: absolute; left: 12px; top: 10px;
+    width: 24px; height: 24px; border-radius: 50%; background: var(--blue); color: #fff;
+    font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .check { list-style: none; padding: 0; font-size: 14px; }
+  .check li { padding: 6px 0 6px 28px; position: relative; border-bottom: 1px dashed var(--border); }
+  .check li::before { content: "✓"; position: absolute; left: 6px; color: var(--green); font-weight: 700; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 32px; border-top: 1px solid var(--border); padding-top: 12px; }
+  @media print { body { padding: 0; } .card, .steps li { break-inside: avoid; } }
+</style>
+</head>
+<body>
+
+<h1>Click Hunter — Deployment Plan</h1>
+<p class="sub">Cloudflare vs DigitalOcean · Convex self-hosted backend + Vite SPA · Prices checked Oct 2026</p>
+
+<div class="callout green">
+  <strong>Key insight:</strong> Cloudflare alone cannot host this app. Pages / Workers / R2 handle the static
+  frontend, DNS, CDN and WAF — but the <code>convex-backend</code> Docker image (ports
+  <code>3210</code> API+WebSocket, <code>3211</code> site/Auth) needs a VM. Realistic options are
+  <strong>Convex Cloud (managed)</strong> or <strong>DigitalOcean (self-hosted)</strong>, ideally with Cloudflare in front of DO.
+</div>
+
+<h2>1. What you are deploying</h2>
+<table>
+  <tr><th>Piece</th><th>Source</th><th>Needs</th></tr>
+  <tr><td><strong>web</strong> — Vite SPA → <code>dist/</code>, nginx</td><td><code>Dockerfile</code>, <code>docker/nginx.conf</code></td><td>Any static host. No persistence.</td></tr>
+  <tr><td><strong>backend</strong> — <code>ghcr.io/get-convex/convex-backend</code></td><td><code>docker-compose.yml:15-39</code></td><td>Always-on container, persistent disk, WebSocket <code>Upgrade</code> forwarding on :3210, HTTP on :3211.</td></tr>
+  <tr><td><strong>dashboard</strong> — :6791</td><td><code>docker-compose.yml:41-53</code></td><td>Dev only. Do not expose publicly.</td></tr>
+  <tr><td><strong>data</strong> — <code>convex-data</code> volume (SQLite default)</td><td><code>docs/self-hosting.md:91-95</code></td><td>Volume snapshots + offsite backup, or <code>POSTGRES_URL</code> + S3 storage.</td></tr>
+  <tr><td><strong>auth</strong> — RS256 keypair, JWKS on site origin</td><td><code>convex/auth.config.ts</code>, <code>docker/generate-auth-keys.mjs</code></td><td><code>CONVEX_SITE_URL</code> must equal the public site origin at <code>pnpm backend:push</code> time.</td></tr>
+</table>
+
+<h2>2. The three topologies</h2>
+<div class="grid cols3">
+  <div class="card">
+    <h3>A · Managed <span class="badge rec">fastest launch</span></h3>
+    <p>Frontend → Cloudflare Pages. Backend → Convex Cloud. Zero VMs.</p>
+    <div class="diagram">
+      <div class="node edge"><b>Pages</b><small>static dist/</small></div><div class="arrow">→</div>
+      <div class="node compute"><b>Convex Cloud</b><small>backend + data</small></div>
+    </div>
+    <p><small>Deploy: <code>pnpm dev:cloud</code> → <code>convex deploy</code> → <code>vite build</code> → Pages.</small></p>
+  </div>
+  <div class="card">
+    <h3>B · Self-hosted on DO <span class="badge info">full control</span></h3>
+    <p>One Droplet runs <code>backend + web</code> via compose; Cloudflare proxies DNS/CDN.</p>
+    <div class="diagram">
+      <div class="node edge"><b>Cloudflare</b><small>DNS·CDN·WAF</small></div><div class="arrow">→</div>
+      <div class="node compute"><b>DO Droplet</b><small>Caddy → :3210/:3211/:80</small></div><div class="arrow">→</div>
+      <div class="node data"><b>Volume / PG</b><small>convex-data</small></div>
+    </div>
+    <p><small>Deploy: droplet → <code>compose up -d</code> → admin key + JWKS → <code>pnpm backend:push</code> → build web.</small></p>
+  </div>
+  <div class="card">
+    <h3>C · Hybrid</h3>
+    <p>Frontend on Pages (free, global), backend on small DO Droplet. Drops the <code>web</code> service.</p>
+    <div class="diagram">
+      <div class="node edge"><b>Pages</b><small>app.example.com</small></div><div class="arrow">+</div>
+      <div class="node compute"><b>DO Droplet</b><small>backend only</small></div>
+    </div>
+    <p><small>Set <code>PUBLIC_CONVEX_URL=https://convex.example.com</code> before compose up; bake into Vite build args.</small></p>
+  </div>
+</div>
+
+<h2>3. Database: managed service vs self-managed</h2>
+<div class="grid cols2">
+  <div class="card">
+    <h3>Managed Postgres <span class="badge rec">recommended when growing</span></h3>
+    <ul style="font-size:14px; margin:8px 0; padding-left:18px;">
+      <li>Automatic daily backups + 7-day point-in-time recovery, failover standby, patching, metrics.</li>
+      <li>No 3am disk-full / corrupt-SQLite pages. Scales past ~10s GB and concurrent writes.</li>
+      <li>DO Managed PG 1 GB / 1 vCPU / 10 GB: <strong>$15.15/mo</strong> single node. Set <code>POSTGRES_URL</code> in compose override + S3 storage.</li>
+      <li>Downside: cost floor; still need logical <code>convex export</code> for portable backups.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Self-managed (SQLite volume today)</h3>
+    <ul style="font-size:14px; margin:8px 0; padding-left:18px;">
+      <li>Fine for prototype: one file in <code>convex-data</code>, zero extra cost.</li>
+      <li>You own: snapshots, offsite copy, WAL/replica (if Postgres), restore drills.</li>
+      <li>Risk: single-disk failure = data loss without tested offsite copy.</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Backup recipes</h3>
+<pre># SQLite volume — nightly cron on the host, plus DO volume snapshots
+docker run --rm -v click-hunter_convex-data:/data \
+  -v "$PWD/backups:/backup" alpine \
+  tar czf /backup/convex-data-$(date +%F).tgz /data
+rclone copy ./backups/ r2:click-hunter-backups/   # offsite, encrypted
+
+# Logical backup — weekly (portable across SQLite ↔ Postgres ↔ Cloud)
+npx convex export --path ./backups/convex-$(date +%F).zip
+
+# If on Postgres: nightly pg_dump + WAL archiving (wal-g → Spaces/R2),
+# one async replica in another region, documented promote steps.</pre>
+<p style="font-size:14px;">Retention: 7 daily + 4 weekly. Restore-drill quarterly on a staging droplet (<code>down -v</code> + import). Pin <code>CONVEX_BACKEND_VERSION</code> to your <code>convex</code> npm version on every upgrade.</p>
+
+<h2>4. Security &amp; safety checklist</h2>
+<div class="grid cols2">
+  <div class="card">
+    <h3>Network &amp; host</h3>
+    <ul class="check">
+      <li>DO Cloud Firewall: allow 80/443 (and 22 from your IP only). Everything else denied.</li>
+      <li>Dashboard <code>:6791</code> on <code>127.0.0.1</code> or Tailscale only — never public.</li>
+      <li>Reverse proxy (Caddy/nginx) terminates TLS, forwards <code>Upgrade</code> headers to :3210.</li>
+      <li>Cloudflare proxy ON (Full Strict), HSTS, WAF rules for auth/arena/bazaar abuse paths.</li>
+      <li>SSH keys only, non-root deploy user, unattended upgrades, fail2ban.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Secrets &amp; app</h3>
+    <ul class="check">
+      <li><code>CONVEX_SELF_HOSTED_ADMIN_KEY</code>, <code>JWT_PRIVATE_KEY</code>/<code>JWKS</code> in host env / password manager — never git (<code>docker/.env.selfhosted</code> is gitignored).</li>
+      <li>Rotate admin key via <code>generate_admin_key.sh</code>; rotate JWT with dual-JWKS overlap.</li>
+      <li>Keep server-side settlement (boss/arena) authoritative; rely on existing rate-limiter for chat/market.</li>
+      <li>Uptime check on <code>/version</code>, log shipping, backup-encryption + offsite versioning.</li>
+      <li>CI: pin images, Dependabot, <code>backend:push</code> + smoke test before promoting.</li>
+    </ul>
+  </div>
+</div>
+
+<h2>5. Cost estimate (all-in, per month)</h2>
+<div class="callout">
+  <strong>D · App Platform verdict:</strong> App Platform <strong>cannot persist SQLite</strong> — docs state
+  local filesystem is ephemeral (4 GiB max, wiped on every deploy) and <strong>volumes are not supported</strong>.
+  So the default <code>convex-data</code> volume setup from <code>docker-compose.yml</code> loses data on App Platform.
+  It only works in external-DB mode (<code>POSTGRES_URL</code> + S3 storage for files/exports/snapshots), plus you must
+  solve the two-port problem (backend needs <code>:3210</code> API+WS <em>and</em> <code>:3211</code> site/Auth, but a
+  component exposes one HTTP port). That makes it <strong>more expensive than a Droplet, not cheaper</strong>.
+</div>
+<div class="grid cols4">
+  <div class="card">
+    <span class="badge rec">A · Managed</span>
+    <div class="cost">$0–25</div>
+    <p style="font-size:14px;">Pages + R2 free tier + DNS: $0. Convex Starter: $0 base (1M calls, 0.5 GB DB, 1 GB egress incl.; overage ~$2.20/M calls, $0.22/GB storage, $0.12/GB egress). Pro adds $25/dev/mo when you scale.</p>
+    <div class="bar"><div style="width:15%; background:var(--green);"></div></div>
+    <p><small>Best for MVP / variable traffic.</small></p>
+  </div>
+  <div class="card">
+    <span class="badge info">B-small · DO self-host</span>
+    <div class="cost">~$23–30</div>
+    <table style="font-size:13px;">
+      <tr><td>Droplet 2 vCPU/2 GB/60 GB</td><td>$18</td></tr>
+      <tr><td>Spaces starter (or R2 free)</td><td>$5</td></tr>
+      <tr><td>Snapshots</td><td>~$2–5</td></tr>
+      <tr><td>Cloudflare Free</td><td>$0</td></tr>
+    </table>
+    <div class="bar"><div style="width:35%; background:var(--blue);"></div></div>
+    <p><small>Add $12 DO Load Balancer only when you outgrow on-box Caddy. 1 vCPU/2 GB droplet ($12) works for prototype → ~$17/mo.</small></p>
+  </div>
+  <div class="card">
+    <span class="badge warn">B-prod · DO + Managed PG</span>
+    <div class="cost">~$61–120</div>
+    <table style="font-size:13px;">
+      <tr><td>Droplet 4 GB/2 vCPU</td><td>$24</td></tr>
+      <tr><td>Managed PG single / HA pair</td><td>$15 / ~$60</td></tr>
+      <tr><td>Spaces + snapshots + LB</td><td>~$22</td></tr>
+    </table>
+    <div class="bar"><div style="width:80%; background:var(--amber);"></div></div>
+    <p><small>Single-node ≈ $61–67/mo · HA ≈ $106–120/mo. Optional Cloudflare Pro WAF +$20.</small></p>
+  </div>
+  <div class="card">
+    <span class="badge warn">D · App Platform + ext DB</span>
+    <div class="cost">~$32–50</div>
+    <table style="font-size:13px;">
+      <tr><td>Backend service 1 GB ($12) / 2 GB ($25)</td><td>$12–25</td></tr>
+      <tr><td>Static site (frontend)</td><td>$0</td></tr>
+      <tr><td>Managed PG 1 GB (required, no volumes)</td><td>$15.15</td></tr>
+      <tr><td>Spaces S3 storage (required for files)</td><td>$5</td></tr>
+    </table>
+    <div class="bar"><div style="width:55%; background:var(--purple);"></div></div>
+    <p><small>Min ≈ $32/mo (1 GB svc) · sensible ≈ $45/mo (2 GB svc). No snapshots needed, but you pay ~$9–22/mo more than Droplet SQLite for the same size, and still must wire :3210+:3211 + <code>POSTGRES_URL</code>. Dev DB ($7) is not prod-safe.</small></p>
+  </div>
+</div>
+
+<table>
+  <tr><th></th><th>B-small Droplet (SQLite)</th><th>D App Platform (Postgres+S3)</th></tr>
+  <tr><td><strong>Persistence</strong></td><td>Volume survives restarts. Snapshots $0.06/GB-mo.</td><td>Ephemeral disk only. Must use external PG + S3 from day one.</td></tr>
+  <tr><td><strong>Ports</strong></td><td>Native: map :3210 + :3211 + :80 freely.</td><td>One HTTP port per component. Needs proxy/split workaround for API vs site origins.</td></tr>
+  <tr><td><strong>Ops you skip</strong></td><td>None — you patch OS, TLS, deploys.</td><td>Auto builds, TLS, healthchecks, rollbacks, OS patching. No SSH hardening.</td></tr>
+  <tr><td><strong>Ops you keep</strong></td><td>Backups, <code>POSTGRES_URL</code> later, restore drills.</td><td>Same backups (PG PITR + <code>convex export</code>), plus App spec, env secrets, two-origin CORS config.</td></tr>
+  <tr><td><strong>When to pick it</strong></td><td>Default self-host choice. Convex upstream documents Docker/Fly-with-volume, same pattern.</td><td>Only if you hate SSH and already run everything else on App Platform — accept the PG+S3 requirement and port workaround.</td></tr>
+</table>
+
+<div class="callout blue">
+  <strong>Rule of thumb:</strong> stay on <strong>A</strong> until your Convex bill persistently exceeds ~$60/mo or
+  compliance forces self-hosting. Then move to <strong>B-small</strong> (SQLite) and add Managed Postgres only when
+  data &gt; ~10 GB or write contention appears. Keep Cloudflare in front in every option.
+</div>
+
+<h2>6. Deployment sequence</h2>
+<ol class="steps">
+  <li><strong>Provision:</strong> VPC + Droplet (Ubuntu LTS) + Firewall + reserved IP + Spaces bucket + optional Managed PG.</li>
+  <li><strong>DNS/TLS:</strong> Cloudflare records — <code>app</code> → droplet, <code>convex</code> → :3210, <code>convex-site</code> → :3211. Full Strict, proxied.</li>
+  <li><strong>Harden + install:</strong> SSH keys, updates, Docker, clone repo, <code>cp docker/.env.selfhosted.example docker/.env.selfhosted</code>.</li>
+  <li><strong>Secrets:</strong> <code>compose up -d backend</code> → <code>generate_admin_key.sh</code> → <code>generate-auth-keys.mjs</code> → <code>convex env set JWT_PRIVATE_KEY / JWKS</code>.</li>
+  <li><strong>Push backend:</strong> <code>pnpm backend:push</code> with public <code>CONVEX_SITE_URL</code>. Verify crons (arena expiry hourly, ranked Monday).</li>
+  <li><strong>Ship frontend:</strong> compose <code>web</code> rebuild with public build args, or Pages deploy of <code>dist/</code>.</li>
+  <li><strong>Data:</strong> Admin reseed for fresh, or <code>convex export</code> (cloud) → <code>convex import</code> (self-hosted).</li>
+  <li><strong>Operate:</strong> snapshot + backup crons, <code>/version</code> uptime, log retention, CI deploy hook, quarterly restore drill.</li>
+</ol>
+
+<footer>
+  Generated Oct 14, 2026 from <code>docker-compose.yml</code>, <code>Dockerfile</code>, <code>docs/self-hosting.md</code>,
+  <code>convex/schema.ts</code>. Pricing: DO Droplets / Managed PG / App Platform containers, Cloudflare Pages+R2, Convex pricing pages (check before purchase).
+  Domain (~$12/yr) and optional Cloudflare Pro ($20/mo) excluded. App Platform storage limits per DO docs: ephemeral local disk, no volumes.
+</footer>
+
+</body>
+</html>

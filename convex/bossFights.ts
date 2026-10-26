@@ -4,8 +4,17 @@ import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { readPlayerCombatProfile } from "./combat";
+import { rollAttackHit, rollPowerHit } from "./hitRoll";
+import {
+  abilityCastsLog,
+  abilityWeaponFrom,
+  awardAbilityWisdomXp,
+  buildAbilityCombatState,
+  castDueAbilities,
+  nextAbilityAt,
+} from "./abilityCombat";
 import { resolveCurrentHp, readHpRegenBalance, writePlayerHp } from "./playerHp";
 import { tickEquippedConsumables } from "./consumableSlots";
 import { settleCombatFight } from "./loot";
@@ -23,6 +32,49 @@ const rateLimiter = new RateLimiter(components.rateLimiter, {});
 const MAX_MONSTER_HITS_PER_CALL = 600;
 
 type BossSession = Doc<"bossSessions">;
+
+/**
+ * Settle a boss win/loss once. `settleCombatFight` dedupes by settlementKey;
+ * wisdom XP is gated on the settlement not being a duplicate so a re-delivered
+ * settle cannot double-award.
+ */
+async function settleBossFight(
+  ctx: MutationCtx,
+  playerId: Id<"players">,
+  session: BossSession,
+  outcome: {
+    won: boolean;
+    playerHp: number;
+    abilityCasts: Array<{ abilityId: string; level: number; casts: number }>;
+  },
+  now: number
+) {
+  const settlement = await settleCombatFight(ctx, {
+    playerId,
+    settlementKey: session.settlementKey,
+    sourceType: "boss",
+    sourceId: session.bossId,
+    tier: session.tier,
+    won: outcome.won,
+  });
+  if (!settlement.duplicate && outcome.abilityCasts.length > 0) {
+    await awardAbilityWisdomXp(ctx, playerId, outcome.abilityCasts);
+  }
+  await ctx.db.patch(session._id, {
+    monsterHp: outcome.won ? 0 : session.monsterHp,
+    playerHp: outcome.won ? outcome.playerHp : 0,
+    status: outcome.won ? "won" : "lost",
+    lastStrikeAt: now,
+  });
+  await writePlayerHp(
+    ctx,
+    playerId,
+    outcome.won ? outcome.playerHp : 0,
+    session.playerMaxHp,
+    now
+  );
+  return settlement;
+}
 
 async function getScaledBoss(ctx: MutationCtx, tier: number) {
   const boss = await ctx.db
@@ -52,33 +104,54 @@ function monsterDerivedStats(boss: { str: number; dex: number; con: number; int:
   };
 }
 
-function rollPlayerHit(attack: number, critChance: number, critMultiplier: number) {
-  const isCrit = Math.random() * 100 < critChance;
-  const variance = 1 + (Math.random() - 0.5) * 0.2;
-  return {
-    damage: Math.max(1, Math.ceil(attack * (isCrit ? critMultiplier : 1) * variance)),
-    isCrit,
-  };
-}
-
 function rollMonsterHit(monsterAttack: number, ward = 0) {
-  const base = Math.max(1, Math.ceil(monsterAttack));
-  return Math.max(0, base + Math.floor(Math.random() * (base / 2)) - ward);
+  return rollPowerHit({ power: monsterAttack, mitigation: ward, minimum: 0 });
 }
 
-async function applyPendingMonsterDamage(
-  session: BossSession,
-  monsterAttackSpeed: number,
-  monsterAttack: number,
-  now: number,
-  regenPerSecond = 0
-) {
+export interface BossTimelineResult {
+  playerHp: number;
+  monsterHp: number;
+  abilityCasts: Array<{ abilityId: string; level: number; casts: number }>;
+}
+
+/**
+ * Advance the boss fight's real-time timeline from `session.lastStrikeAt` to
+ * `now`, interleaving monster swings with auto-cast abilities so a lethal
+ * ability cast wins the tie against a same-millisecond swing (mirroring the
+ * auto-battle resolver). The fast path (no abilities equipped) is unchanged
+ * from the original monster-only loop, so its timing stays bit-for-bit.
+ */
+function advanceBossTimeline(args: {
+  session: BossSession;
+  monsterAttackSpeed: number;
+  monsterAttack: number;
+  now: number;
+  regenPerSecond: number;
+  retryMs: number;
+}): BossTimelineResult {
+  const {
+    session,
+    monsterAttackSpeed,
+    monsterAttack,
+    now,
+    regenPerSecond,
+    retryMs,
+  } = args;
   const intervalMs = Math.max(500, 1000 / monsterAttackSpeed);
-  const elapsedMs = Math.max(0, now - session.lastStrikeAt);
-  const hits = Math.min(
+  const from = session.lastStrikeAt;
+  const elapsedMs = Math.max(0, now - from);
+  const cappedHits = Math.min(
     MAX_MONSTER_HITS_PER_CALL,
     Math.floor(elapsedMs / intervalMs)
   );
+  // If the hit cap kicks in (a long AFK gap), stop the ability timeline at the
+  // last applied swing too, so idle time can't free-cast the boss to death.
+  const timelineEnd =
+    cappedHits >= MAX_MONSTER_HITS_PER_CALL
+      ? from + cappedHits * intervalMs
+      : now;
+  const maxHp = Math.max(1, session.playerMaxHp);
+
   // Attuned armor augments ward matching-element boss hits.
   const ward =
     typeof session.monsterWard === "number" &&
@@ -86,18 +159,92 @@ async function applyPendingMonsterDamage(
     session.monsterWard > 0
       ? session.monsterWard
       : 0;
+
+  const state = session.abilityState;
+  if (!state || state.runtimes.length === 0) {
+    let playerHp = session.playerHp;
+    for (let i = 0; i < cappedHits; i += 1) {
+      playerHp -= rollMonsterHit(monsterAttack, ward);
+      if (playerHp <= 0) break;
+    }
+    // CON + heal-over-time regen ticks alongside monster hits so weak bosses
+    // can't grind you down when your build out-regens them.
+    if (playerHp > 0 && regenPerSecond > 0 && elapsedMs > 0) {
+      playerHp = Math.min(maxHp, playerHp + (regenPerSecond * elapsedMs) / 1000);
+    }
+    return {
+      playerHp: Math.max(0, Math.ceil(playerHp)),
+      monsterHp: session.monsterHp,
+      abilityCasts: [],
+    };
+  }
+
   let playerHp = session.playerHp;
-  for (let i = 0; i < hits; i += 1) {
-    playerHp -= rollMonsterHit(monsterAttack, ward);
-    if (playerHp <= 0) break;
+  let monsterHp = session.monsterHp;
+  let cursor = from;
+  let hitsDone = 0;
+  let nextHitAt = from + intervalMs;
+  const regenTo = (at: number) => {
+    if (regenPerSecond > 0 && at > cursor) {
+      playerHp = Math.min(
+        maxHp,
+        playerHp + (regenPerSecond * (at - cursor)) / 1000
+      );
+    }
+    if (at > cursor) cursor = at;
+  };
+
+  const castBudget = state.runtimes.reduce((sum, runtime) => {
+    if (!Number.isFinite(runtime.cooldown) || runtime.cooldown <= 0) return sum + 1;
+    return sum + Math.ceil(elapsedMs / runtime.cooldown) + 1;
+  }, 0);
+  const guardLimit = cappedHits + castBudget + 64;
+
+  for (let guard = 0; guard < guardLimit; guard += 1) {
+    if (playerHp <= 0 || monsterHp <= 0) break;
+    const abilityAt = nextAbilityAt(state);
+    const abilityDue = abilityAt !== null && abilityAt <= timelineEnd;
+    const hitDue = hitsDone < cappedHits && nextHitAt <= timelineEnd;
+    if (!abilityDue && !hitDue) break;
+
+    if (abilityDue && (!hitDue || abilityAt! <= nextHitAt)) {
+      const at = Math.max(abilityAt!, cursor);
+      regenTo(at);
+      const outcome = castDueAbilities({
+        state,
+        at,
+        retryAt: at + retryMs,
+        playerHp,
+        playerMaxHp: maxHp,
+        enemyHp: monsterHp,
+        enemyStats: { defense: 0, magicalDefense: 0 },
+        weapon: {
+          weaponType: state.weaponType,
+          element: state.weaponElement,
+        },
+      });
+      playerHp = outcome.playerHp;
+      monsterHp = outcome.enemyHp;
+    } else {
+      regenTo(nextHitAt);
+      playerHp -= rollMonsterHit(monsterAttack, ward);
+      hitsDone += 1;
+      nextHitAt += intervalMs;
+    }
   }
-  // CON + heal-over-time regen ticks alongside monster hits so weak bosses
-  // can't grind you down when your build out-regens them.
-  if (playerHp > 0 && regenPerSecond > 0 && elapsedMs > 0) {
-    const maxHp = Math.max(1, session.playerMaxHp);
-    playerHp = Math.min(maxHp, playerHp + (regenPerSecond * elapsedMs) / 1000);
+
+  if (playerHp > 0 && regenPerSecond > 0 && timelineEnd > cursor) {
+    playerHp = Math.min(
+      maxHp,
+      playerHp + (regenPerSecond * (timelineEnd - cursor)) / 1000
+    );
   }
-  return { playerHp: Math.max(0, Math.ceil(playerHp)), hits };
+
+  return {
+    playerHp: Math.max(0, Math.ceil(playerHp)),
+    monsterHp: Math.max(0, Math.floor(monsterHp)),
+    abilityCasts: abilityCastsLog(state),
+  };
 }
 
 function toClientState(session: BossSession) {
@@ -182,7 +329,7 @@ export const startBossFight = mutation({
     const monster = monsterDerivedStats(boss);
     const now = Date.now();
     await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
-    const profile = await readPlayerCombatProfile(ctx, player, now);
+    const profile = await readPlayerCombatProfile(ctx, player, { now });
     const { combatStats, ward } = profile;
     const bossElement = bossElementForTier(tier);
     const maxHp = Math.max(1, Math.ceil(combatStats.health));
@@ -199,6 +346,13 @@ export const startBossFight = mutation({
       throw new Error("You are defeated — wait to recover before challenging a boss.");
     }
     await writePlayerHp(ctx, playerId, hpState.currentHp, hpState.maxHp, now);
+    const abilityState = await buildAbilityCombatState(
+      ctx,
+      playerId,
+      abilityWeaponFrom(profile.weapon),
+      { unit: "ms" },
+      { includeAlly: true }
+    );
     const sessionId = await ctx.db.insert("bossSessions", {
       playerId,
       bossId: boss.bossId,
@@ -216,6 +370,7 @@ export const startBossFight = mutation({
       strikes: 0,
       startedAt: now,
       lastStrikeAt: now,
+      ...(abilityState.runtimes.length > 0 ? { abilityState } : {}),
     });
     const session = await ctx.db.get(sessionId);
     if (!session) throw new Error("Boss session could not be created");
@@ -274,7 +429,7 @@ export const strikeBoss = mutation({
 
     const now = Date.now();
     await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
-    const profile = await readPlayerCombatProfile(ctx, player, now);
+    const profile = await readPlayerCombatProfile(ctx, player, { now });
     const totalRegen =
       profile.conRegenPerSecond + (profile.boosts?.regenPerSecond ?? 0);
     const cooldownMs = Math.ceil(1000 / profile.combatStats.attackSpeed);
@@ -293,29 +448,54 @@ export const strikeBoss = mutation({
       };
     }
 
-    // Monster hits first from accumulated time, then the player's strike.
-    const pending = await applyPendingMonsterDamage(
+    // Advance the real-time timeline: monster swings interleaved with
+    // auto-cast abilities. Abilities resolve before a same-ms swing.
+    const timeline = advanceBossTimeline({
       session,
-      session.monsterAttackSpeed,
-      session.monsterAttack,
+      monsterAttackSpeed: session.monsterAttackSpeed,
+      monsterAttack: session.monsterAttack,
       now,
-      totalRegen
-    );
-    if (pending.playerHp <= 0) {
-      await settleCombatFight(ctx, {
+      regenPerSecond: totalRegen,
+      retryMs: Math.max(250, Math.ceil(1000 / session.monsterAttackSpeed)),
+    });
+
+    // An auto-cast ability can finish the boss before the strike lands.
+    if (timeline.monsterHp <= 0 && timeline.playerHp > 0) {
+      const settlement = await settleBossFight(
+        ctx,
         playerId,
-        settlementKey: session.settlementKey,
-        sourceType: "boss",
-        sourceId: session.bossId,
-        tier: session.tier,
-        won: false,
-      });
-      await ctx.db.patch(session._id, {
-        playerHp: 0,
-        status: "lost",
-        lastStrikeAt: now,
-      });
-      await writePlayerHp(ctx, playerId, 0, session.playerMaxHp, now);
+        session,
+        {
+          won: true,
+          playerHp: timeline.playerHp,
+          abilityCasts: timeline.abilityCasts,
+        },
+        now
+      );
+      await ctx.db.patch(session._id, { strikes: session.strikes + 1 });
+      const closed = await ctx.db.get(session._id);
+      return {
+        ...toClientState(closed!),
+        status: "won" as const,
+        allowed: true,
+        isCrit: false,
+        damage: 0,
+        rewards: {
+          gold: settlement.goldEarned,
+          experience: settlement.experienceEarned,
+          loot: settlement.loot,
+        },
+      };
+    }
+
+    if (timeline.playerHp <= 0) {
+      await settleBossFight(
+        ctx,
+        playerId,
+        session,
+        { won: false, playerHp: 0, abilityCasts: timeline.abilityCasts },
+        now
+      );
       const closed = await ctx.db.get(session._id);
       return {
         ...toClientState(closed!),
@@ -326,29 +506,25 @@ export const strikeBoss = mutation({
       };
     }
 
-    const hit = rollPlayerHit(
-      profile.combatStats.attack,
-      profile.combatStats.critChance,
-      profile.combatStats.critDamageMultiplier
-    );
-    const monsterHp = Math.max(0, session.monsterHp - hit.damage);
+    const hit = rollAttackHit({
+      attack: profile.combatStats.attack,
+      critChance: profile.combatStats.critChance,
+      critMultiplier: profile.combatStats.critDamageMultiplier,
+    });
+    const monsterHp = Math.max(0, timeline.monsterHp - hit.damage);
     if (monsterHp <= 0) {
-      const settlement = await settleCombatFight(ctx, {
+      const settlement = await settleBossFight(
+        ctx,
         playerId,
-        settlementKey: session.settlementKey,
-        sourceType: "boss",
-        sourceId: session.bossId,
-        tier: session.tier,
-        won: true,
-      });
-      await ctx.db.patch(session._id, {
-        monsterHp: 0,
-        playerHp: pending.playerHp,
-        status: "won",
-        strikes: session.strikes + 1,
-        lastStrikeAt: now,
-      });
-      await writePlayerHp(ctx, playerId, pending.playerHp, session.playerMaxHp, now);
+        session,
+        {
+          won: true,
+          playerHp: timeline.playerHp,
+          abilityCasts: timeline.abilityCasts,
+        },
+        now
+      );
+      await ctx.db.patch(session._id, { strikes: session.strikes + 1 });
       const closed = await ctx.db.get(session._id);
       return {
         ...toClientState(closed!),
@@ -366,11 +542,12 @@ export const strikeBoss = mutation({
 
     await ctx.db.patch(session._id, {
       monsterHp,
-      playerHp: pending.playerHp,
+      playerHp: timeline.playerHp,
       strikes: session.strikes + 1,
       lastStrikeAt: now,
+      ...(session.abilityState ? { abilityState: session.abilityState } : {}),
     });
-    await writePlayerHp(ctx, playerId, pending.playerHp, session.playerMaxHp, now);
+    await writePlayerHp(ctx, playerId, timeline.playerHp, session.playerMaxHp, now);
     const updated = await ctx.db.get(session._id);
     return {
       ...toClientState(updated!),
@@ -419,38 +596,54 @@ export const checkBossFight = mutation({
     const now = Date.now();
     const player = await requirePlayer(ctx, playerId);
     await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
-    const regenProfile = await readPlayerCombatProfile(ctx, player, now);
+    const regenProfile = await readPlayerCombatProfile(ctx, player, { now });
     const regenTotal =
       regenProfile.conRegenPerSecond + (regenProfile.boosts?.regenPerSecond ?? 0);
-    const pending = await applyPendingMonsterDamage(
+    const timeline = advanceBossTimeline({
       session,
-      session.monsterAttackSpeed,
-      session.monsterAttack,
+      monsterAttackSpeed: session.monsterAttackSpeed,
+      monsterAttack: session.monsterAttack,
       now,
-      regenTotal
-    );
-    if (pending.playerHp >= session.playerHp) {
+      regenPerSecond: regenTotal,
+      retryMs: Math.max(250, Math.ceil(1000 / session.monsterAttackSpeed)),
+    });
+
+    // Auto-cast abilities can win the fight between strikes; report it.
+    if (timeline.monsterHp <= 0 && timeline.playerHp > 0) {
+      await settleBossFight(
+        ctx,
+        playerId,
+        session,
+        {
+          won: true,
+          playerHp: timeline.playerHp,
+          abilityCasts: timeline.abilityCasts,
+        },
+        now
+      );
+      const closed = await ctx.db.get(session._id);
+      return {
+        ...toClientState(closed!),
+        status: "won" as const,
+        changed: true as const,
+      };
+    }
+
+    if (timeline.playerHp >= session.playerHp && timeline.monsterHp >= session.monsterHp) {
       return {
         ...toClientState(session),
         status: "open" as const,
         changed: false as const,
       };
     }
-    if (pending.playerHp <= 0) {
-      await settleCombatFight(ctx, {
+    if (timeline.playerHp <= 0) {
+      await settleBossFight(
+        ctx,
         playerId,
-        settlementKey: session.settlementKey,
-        sourceType: "boss",
-        sourceId: session.bossId,
-        tier: session.tier,
-        won: false,
-      });
-      await ctx.db.patch(session._id, {
-        playerHp: 0,
-        status: "lost",
-        lastStrikeAt: now,
-      });
-      await writePlayerHp(ctx, playerId, 0, session.playerMaxHp, now);
+        session,
+        { won: false, playerHp: 0, abilityCasts: timeline.abilityCasts },
+        now
+      );
       const closed = await ctx.db.get(session._id);
       return {
         ...toClientState(closed!),
@@ -459,10 +652,12 @@ export const checkBossFight = mutation({
       };
     }
     await ctx.db.patch(session._id, {
-      playerHp: pending.playerHp,
+      playerHp: timeline.playerHp,
+      monsterHp: timeline.monsterHp,
       lastStrikeAt: now,
+      ...(session.abilityState ? { abilityState: session.abilityState } : {}),
     });
-    await writePlayerHp(ctx, playerId, pending.playerHp, session.playerMaxHp, now);
+    await writePlayerHp(ctx, playerId, timeline.playerHp, session.playerMaxHp, now);
     const updated = await ctx.db.get(session._id);
     return {
       ...toClientState(updated!),

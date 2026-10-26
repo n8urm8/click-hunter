@@ -224,7 +224,6 @@ Status: query fixes below are backend-compatible (no frontend API change
 required). Light/heavy query splits are additive when added.
 
 ## Implemented (verified: `pnpm typecheck` + 97 vitest tests pass)
-
 - `convex/balance.ts` (new): `readBalanceMap` — 1 `collect()` + lookup when
   3+ keys needed, else indexed point reads. Used by `readCombatBalance`
   (14 queries -> 1), `simulateRegularBattle` (5 -> 1), `readTaskSyncSettings`
@@ -251,3 +250,59 @@ Measured on an empty fixture (`convex-test` transaction metrics):
 `tasks.sync` 42 -> 23 queries (-45%), bytesRead 4607 -> 3488 (-24%);
 `tasks.getQueue` 11 -> 10; `passiveTree.getTree` 10 -> 8. Real-player
 savings scale with inventory/augment counts and balance rows.
+
+### Sync loop rework (settlement is now boundary-driven)
+
+- `convex/tasks.ts`: `settleTaskQueue` no longer persists HP every tick.
+  Regen was already a pure function of `currentHpUpdatedAt`, so the bar is
+  projected on read (`combat.getHpStatus`) and only fights/boss strikes write
+  it. That removed `readPlayerCombatProfile` + `readHpRegenBalance` + a player
+  write from every non-battle settlement.
+- `convex/tasks.ts`: `processAutoBattle` reads the player and combat profile
+  once per settlement instead of twice (was: respawn-wait path + main path).
+- `convex/tasks.ts`: `getNextSettlementAt` for battles waits out the frozen
+  encounter (`updatedAt + remaining`) instead of re-settling a
+  `settlementIntervalMs` slice of it. Presence heartbeats keep crediting the
+  online clock; the client already projects the fight locally
+  (`FightArea.tsx` `useTaskClock`).
+- `convex/taskTiming.ts` + `convex/skillBonuses.ts`: new
+  `skillTaskMaxSettlementGapMs` balance entry (default 5 min) and
+  `readNextSkillModifierChangeAt`. Skill tasks now settle at completion, or at
+  the next booster/event boundary, whichever comes first — capped by the gap
+  because skill levels speed up their own tasks. Expired booster/event rows
+  are never deleted, so a boundary that is missed only delays a settlement,
+  never changes its result.
+- `convex/tasks.ts` + `app/hooks/useTasks.ts`: new `tasks.getActivePlan` /
+  `useTaskPlan` — a scheduler-only snapshot (active task + deadline + presence
+  flags) that omits history, per-task battle stats and queued rows.
+  `TaskQueueManager` subscribes to it instead of `tasks.getQueue`, so a sync or
+  presence heartbeat no longer re-reads the full queue snapshot.
+
+### Guild raid auto-combat (Saturday boss)
+
+Automatic combat is poll-driven (no cron): viewers tick active lobbies. The
+first cut ticked per viewer with the full balance/boss/scan cost on every
+poll, then fanned each combat write out to a 1000-row leaderboard scan. Fixed:
+
+- `convex/guildRaids.ts` `tickRaid`: cheap guard before any tuning/boss read.
+  A poll that isn't due yet returns after ~3 point reads (player + raid +
+  membership) and never touches the rate limiter or `gameBalance`.
+- `raidTuning` + `dragonAttack` are snapshotted onto the `guildRaids` row at
+  `beginRaid`, so a fighting tick reads tuning and the dragon's attack from the
+  row instead of `readBalanceMap(...)` (a full `gameBalance` `collect()`) and
+  `ensureBossForTier` on every tick.
+- `guildRaidClaims` (one row per `(guild, week, tier)`): the stop signal and
+  tier-unlock marker are now point reads instead of scanning every lobby row
+  for the tier (`tierRows(...).take(200)`); concurrent finishers race safely
+  via OCC on the claim index range.
+- `guildRaidStandings` (one aggregate row per `(guild, week)`): the
+  leaderboard reads this instead of `guildRaids by_weekStart .take(1000)`, and
+  it only changes when a lobby settles — so per-tick combat writes no longer
+  invalidate the leaderboard subscription.
+- `app/components/guild/GuildPanel.tsx`: one member (lowest party player id)
+  drives the ticks; others take over if it stalls, and the server guard makes
+  any stray tick cheap.
+
+Regression tests assert the cost directly (`convex/guildRaids.test.ts`, via
+`convex-test` transaction metrics): a not-due poll reads ≤8 docs and writes
+nothing; a due tick reads ≤30 (a `gameBalance` scan alone is 100+).

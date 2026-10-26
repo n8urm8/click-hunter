@@ -14,6 +14,21 @@ export function useTaskQueue(
   });
 }
 
+/**
+ * Light queue view for the sync loop. `tasks.getQueue` includes the history and
+ * per-task battle stats the UI needs, but `sync` and every presence heartbeat
+ * rewrite `playerTasks`, so subscribing the loop to that snapshot would re-read
+ * all of it on every tick.
+ */
+export function useTaskPlan(
+  playerId: Id<"players"> | null
+) {
+  return useQuery({
+    ...convexQuery(api.tasks.getActivePlan, playerId ? { playerId } : "skip"),
+    ...convexQueryCacheOptions,
+  });
+}
+
 export function useSyncTaskQueue() {
   return useMutation(api.tasks.sync);
 }

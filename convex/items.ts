@@ -13,9 +13,11 @@ import {
   DEFAULT_ITEM_RARITY_LEVEL,
   ELEMENT_VALUES,
   EQUIPMENT_SLOT_VALUES,
+  ITEM_CATEGORY_VALUES,
   ITEM_EFFECT_STAT_VALUES,
   SKILL_BONUS_SCOPE_VALUES,
   SKILL_TASK_EFFECT_TYPES,
+  WEAPON_TYPE_VALUES,
   type BuffVariant,
   type CombatEffectType,
   type DamageStat,
@@ -26,6 +28,7 @@ import {
   type ItemEffectStat,
   type SkillBonusScope,
   type SkillTaskEffectType,
+  type WeaponType,
 } from "./itemTypes";
 import { MAX_SKILL_MODIFIER_MULTIPLIER } from "./skillBonuses";
 import { getBagCapacityBonus } from "./leatherwork";
@@ -34,9 +37,10 @@ function isCombatEffectType(value: unknown): value is CombatEffectType {
   return COMBAT_EFFECT_TYPES.some((effectType) => effectType === value);
 }
 
+// Derived from the shared value lists so this validator cannot drift from
+// the schema's item categories (ability books included).
 const itemCategoryValidator = v.union(
-  v.literal("crafting"),
-  v.literal("equipment")
+  ...ITEM_CATEGORY_VALUES.map((value) => v.literal(value))
 );
 const equipmentSlotValidator = v.union(
   v.literal("head"),
@@ -84,6 +88,19 @@ export type EquipmentStatBonuses = {
   con: number;
 };
 
+/**
+ * A player's equipment, fully resolved: stat bonuses, armor totals, the
+ * elemental ward, and the wielded weapon. A combat profile built from a
+ * resolved source uses all four — a partial bundle would silently drop a stat
+ * from the fight.
+ */
+export type ResolvedEquipment = {
+  bonuses: EquipmentStatBonuses;
+  armor: { defense: number; speedPenalty: number };
+  ward: Record<ElementKind, number>;
+  weapon: EquippedWeaponStats;
+};
+
 const EMPTY_EQUIPMENT_STAT_BONUSES: EquipmentStatBonuses = {
   str: 0,
   dex: 0,
@@ -122,6 +139,7 @@ export interface ItemDefinitionInput {
   attackSpeed?: number;
   damageStat?: DamageStat;
   damageType?: DamageType;
+  weaponType?: WeaponType;
   element?: ElementKind;
   baseDefense?: number;
   speedPenalty?: number;
@@ -301,6 +319,12 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
       throw new Error("Weapon damage type must be physical or magical");
     }
     if (
+      input.weaponType !== undefined &&
+      !WEAPON_TYPE_VALUES.includes(input.weaponType)
+    ) {
+      throw new Error("Weapon type must be sword, dagger, mace, bow, or staff");
+    }
+    if (
       input.element !== undefined &&
       !ELEMENT_VALUES.includes(input.element)
     ) {
@@ -316,6 +340,7 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
     input.attackSpeed !== undefined ||
     input.damageStat !== undefined ||
     input.damageType !== undefined ||
+    input.weaponType !== undefined ||
     input.element !== undefined
   ) {
     throw new Error("Only main-hand weapons can define weapon combat fields");
@@ -404,6 +429,7 @@ export function normalizeItemDefinition(input: ItemDefinitionInput) {
         ? { damageType: "physical" as const }
         : {}
       : { damageType: input.damageType }),
+    ...(input.weaponType === undefined ? {} : { weaponType: input.weaponType }),
     ...(input.element === undefined ? {} : { element: input.element }),
     ...(input.baseDefense === undefined
       ? {}
@@ -423,9 +449,15 @@ export const PLAYER_ATTACK_SPEED_BALANCE_DEFAULT = {
   description: "Multiplier on all player attack speeds after DEX, armor and the minimum speed (0.5 = half speed)",
 } as const;
 
+/**
+ * Attacks per second gained per point of dex above 10. Named so the seeded
+ * default and the rebalance migration in migrations.ts stay in sync.
+ */
+export const DEX_SPEED_COEFF_DEFAULT = 0.02;
+
 export const COMBAT_BALANCE_DEFAULTS = [
   { key: "combatStatAttackCoeff", value: 1.2, description: "Attack gained per point of a weapon's scaling stat" },
-  { key: "combatDexSpeedCoeff", value: 0.1, description: "Attacks per second gained per dex above 10" },
+  { key: "combatDexSpeedCoeff", value: DEX_SPEED_COEFF_DEFAULT, description: "Attacks per second gained per dex above 10" },
   { key: "combatMinAttackSpeed", value: 0.5, description: "Minimum attacks per second" },
   { key: "combatPhysDefConCoeff", value: 0.8, description: "Physical defense gained per con" },
   { key: "combatMagDefIntCoeff", value: 0.8, description: "Magical defense gained per int" },
@@ -663,11 +695,43 @@ export const useCombatBoost = mutation({
   },
 });
 
+/**
+ * Weapon class for an item definition. Prefers the explicit admin-set field and
+ * falls back to the item family/item ID token (e.g. `forging-sword`,
+ * `worn-staff`) so weapon gating also works for definitions created before the
+ * field existed. The stat fallback only handles unambiguous staff builds.
+ */
+export function inferWeaponType(item: {
+  itemFamily?: string;
+  itemId: string;
+  damageStat?: string;
+  damageType?: string;
+  weaponType?: string;
+}): WeaponType | null {
+  if (
+    item.weaponType !== undefined &&
+    (WEAPON_TYPE_VALUES as readonly string[]).includes(item.weaponType)
+  ) {
+    return item.weaponType as WeaponType;
+  }
+  const tokens = `${item.itemFamily ?? ""}-${item.itemId}`
+    .toLowerCase()
+    .split(/[^a-z]+/);
+  for (const type of WEAPON_TYPE_VALUES) {
+    if (tokens.includes(type)) return type;
+  }
+  if (item.damageType === "magical" || item.damageStat === "int") {
+    return "staff";
+  }
+  return null;
+}
+
 export type EquippedWeaponStats = {
   baseDamage: number;
   attackSpeed: number;
   damageStat: DamageStat;
   damageType: DamageType;
+  weaponType: WeaponType | null;
   element: ElementKind | null;
 } | null;
 
@@ -748,6 +812,7 @@ export async function computeWeaponStats(
     attackSpeed: item.attackSpeed,
     damageStat: item.damageStat,
     damageType: item.damageType ?? "physical",
+    weaponType: inferWeaponType(item),
     element:
       augmentElement ??
       (item.element !== undefined &&

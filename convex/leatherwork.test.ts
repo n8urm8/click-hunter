@@ -2,8 +2,11 @@
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import schema from "./schema";
-import { seedForestCraftingContent } from "./forestCraftingSeed";
-import { getConsumableSlotCount } from "./consumableSlots";
+import {
+  seedForestCraftingContent,
+  seedLeathercraftingContent,
+} from "./forestCraftingSeed";
+import { getConsumableSlotCount, getMaxConsumableSlots } from "./consumableSlots";
 import { getInventorySlotCapacity } from "./items";
 import { validateRecipeChain } from "./recipeValidation";
 
@@ -116,6 +119,24 @@ test("belt tiers set consumable slots: t1 → 1, t4 → 2, t8 → 3", async () =
   expect(await t.run((ctx) => getConsumableSlotCount(ctx, playerId))).toBe(3);
 });
 
+test("the consumable slot cap follows the maxConsumableSlots balance value", async () => {
+  const { t, playerId } = await setup();
+  await equipSeeded(t, playerId, "dragonhide-belt-t8", "belt");
+  expect(await t.run((ctx) => getConsumableSlotCount(ctx, playerId))).toBe(3);
+
+  // An admin lowers the cap: the belt can no longer grant its third slot.
+  await t.run(async (ctx) => {
+    const row = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "maxConsumableSlots"))
+      .first();
+    if (!row) throw new Error("Missing balance row");
+    await ctx.db.patch(row._id, { value: 2 });
+  });
+  expect(await t.run((ctx) => getConsumableSlotCount(ctx, playerId))).toBe(2);
+  expect(await t.run((ctx) => getMaxConsumableSlots(ctx))).toBe(2);
+});
+
 test("bags grant +10 inventory slots per tier with no stat bonus", async () => {
   const { t, playerId } = await setup();
   const base = await t.run((ctx) => getInventorySlotCapacity(ctx, playerId));
@@ -160,6 +181,92 @@ test("leather recipes are stageless, tier-gated, and skip chain validation", asy
     await ctx.db.query("recipeIngredients").withIndex("by_recipeId", (q) => q.eq("recipeId", "trollhide-belt-t4")).collect()
   );
   expect(ingredients.length).toBe(2);
+});
+
+test("leathercrafting backfill is insert-only and idempotent", async () => {
+  const t = convexTest(schema, modules);
+
+  const first = await t.run((ctx) => seedLeathercraftingContent(ctx));
+  expect(first).toMatchObject({
+    balanceKeysInserted: 4,
+    itemsInserted: 155,
+    skillsInserted: 1,
+    tiersInserted: 8,
+    recipesInserted: 152,
+    recipeIngredientsInserted: 301,
+    recipeOutputsInserted: 152,
+    lootTablesInserted: 3,
+    lootEntriesInserted: 3,
+    lootSourcesInserted: 3,
+  });
+
+  const counts = await t.run(async (ctx) => {
+    const items = await ctx.db.query("items").collect();
+    const recipes = await ctx.db.query("recipes").collect();
+    const tiers = await ctx.db
+      .query("skillTierDefinitions")
+      .withIndex("by_skillId", (q) => q.eq("skillId", "leathercrafting"))
+      .collect();
+    const ingredients = await ctx.db.query("recipeIngredients").collect();
+    const outputs = await ctx.db.query("recipeOutputs").collect();
+    const lootEntries = await ctx.db.query("lootTableEntries").collect();
+    const bag = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "traveler-bag-t3"))
+      .first();
+    return {
+      items: items.length,
+      recipes: recipes.length,
+      tiers: tiers.length,
+      ingredients: ingredients.length,
+      outputs: outputs.length,
+      lootEntries: lootEntries.length,
+      bagDescription: bag?.description,
+    };
+  });
+  expect(counts).toMatchObject({
+    items: 155,
+    recipes: 152,
+    tiers: 8,
+    ingredients: 301,
+    outputs: 152,
+    lootEntries: 3,
+  });
+  // Bag capacity text follows the configurable balance value (default 10).
+  expect(counts.bagDescription).toContain("+30 inventory slots");
+
+  // Admin edits survive a re-run because the backfill never patches rows.
+  await t.run(async (ctx) => {
+    const item = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "trollhide-leather-t1"))
+      .first();
+    if (item) await ctx.db.patch(item._id, { name: "Edited Trollhide" });
+    const entry = await ctx.db
+      .query("lootTableEntries")
+      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", "loot-monster-troll"))
+      .first();
+    if (entry) await ctx.db.patch(entry._id, { dropChance: 1 });
+  });
+
+  const second = await t.run((ctx) => seedLeathercraftingContent(ctx));
+  expect(Object.values(second).every((count) => count === 0)).toBe(true);
+
+  const preserved = await t.run(async (ctx) => {
+    const item = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "trollhide-leather-t1"))
+      .first();
+    const entry = await ctx.db
+      .query("lootTableEntries")
+      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", "loot-monster-troll"))
+      .first();
+    return { name: item?.name, dropChance: entry?.dropChance };
+  });
+  expect(preserved).toEqual({
+    name: "Edited Trollhide",
+    dropChance: 1,
+  });
 });
 
 test("armor infusions accept belts and talismans accept the amulet slot", async () => {

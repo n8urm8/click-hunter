@@ -9,6 +9,15 @@ export interface PlayerSummaryStats extends DerivedStats {
   int: number;
   luk: number;
   con: number;
+  wis?: number;
+  effectiveStats?: {
+    str: number;
+    dex: number;
+    int: number;
+    luk: number;
+    con: number;
+    wis?: number;
+  };
   totalExperience: number;
   currentTier: number;
   maxTierReached?: number;
@@ -26,15 +35,33 @@ export function PlayerStatsSummary({
   layout = "menu",
   className,
 }: PlayerStatsSummaryProps) {
+  // Base levels stay integers; effectiveness (rebirth multipliers, gear,
+  // etc.) flows into derived combat stats. Show the effective value only
+  // when it differs from the base level.
+  const attributeValue = (key: "str" | "dex" | "int" | "luk" | "con" | "wis"): string | number => {
+    const base = key === "wis" ? (player.wis ?? 1) : player[key];
+    const baseLevel = Number.isFinite(base) ? Math.floor(base) : 1;
+    const effective = player.effectiveStats?.[key];
+    if (
+      typeof effective === "number" &&
+      Number.isFinite(effective) &&
+      Math.abs(effective - baseLevel) > 1e-9
+    ) {
+      const eff = effective.toLocaleString(undefined, { maximumFractionDigits: 1 });
+      return `${baseLevel} (${eff} eff.)`;
+    }
+    return baseLevel;
+  };
   const groups = [
     {
       label: "Attributes",
       stats: [
-        { label: "Strength", shortLabel: "STR", value: player.str },
-        { label: "Dexterity", shortLabel: "DEX", value: player.dex },
-        { label: "Intelligence", shortLabel: "INT", value: player.int },
-        { label: "Luck", shortLabel: "LUK", value: player.luk },
-        { label: "Constitution", shortLabel: "CON", value: player.con },
+        { label: "Strength", shortLabel: "STR", value: attributeValue("str") },
+        { label: "Dexterity", shortLabel: "DEX", value: attributeValue("dex") },
+        { label: "Intelligence", shortLabel: "INT", value: attributeValue("int") },
+        { label: "Luck", shortLabel: "LUK", value: attributeValue("luk") },
+        { label: "Constitution", shortLabel: "CON", value: attributeValue("con") },
+        { label: "Wisdom", shortLabel: "WIS", value: attributeValue("wis") },
       ],
     },
     {

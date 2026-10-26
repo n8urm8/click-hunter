@@ -23,6 +23,12 @@ export const LEATHER_BALANCE_DEFAULTS = [
     description:
       "Belt tier that unlocks the 3rd equipped consumable slot (total slots)",
   },
+  {
+    key: "maxConsumableSlots",
+    value: 3,
+    description:
+      "Hard cap on equipped consumable slots, however many the belt and passives unlock",
+  },
 ] as const;
 
 function readPositiveInt(value: unknown, fallback: number) {
@@ -51,7 +57,16 @@ export async function readLeatherBalance(ctx: DatabaseCtx) {
     LEATHER_BALANCE_DEFAULTS[2].value
   );
   if (third < second) third = second;
-  return { bagSlotsPerTier: perTier, beltSecondSlotTier: second, beltThirdSlotTier: third };
+  const maxSlots = readPositiveInt(
+    values.get("maxConsumableSlots"),
+    LEATHER_BALANCE_DEFAULTS[3].value
+  );
+  return {
+    bagSlotsPerTier: perTier,
+    beltSecondSlotTier: second,
+    beltThirdSlotTier: third,
+    maxConsumableSlots: maxSlots,
+  };
 }
 
 /** Total equipped consumable slots granted by a belt of the given tier. */

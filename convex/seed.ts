@@ -125,8 +125,21 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "rebirthStatLevelRequirement", value: 99, description: "Stat or skill level required in at least one stat or skill to rebirth" },
     { key: "rebirthStatBonusPercent", value: 0.05, description: "Permanent bonus per rebirth to each stat at the rebirth requirement (fraction: 0.05 = +5%)" },
     { key: "rebirthSkillBonusPercent", value: 0.05, description: "Permanent action speed bonus per rebirth to each skill at the rebirth requirement (fraction: 0.05 = +5%)" },
+    { key: "rebirthAbilityBonusPercent", value: 0.03, description: "Permanent power bonus per rebirth to each ability at the rebirth requirement (fraction: 0.03 = +3%)" },
+    { key: "rebirthAbilityCooldownReductionPerBonus", value: 0.02, description: "Cooldown reduction per rebirth ability bonus (fraction: 0.02 = 2% per bonus, capped at 50%)" },
+    { key: "rebirthAbilityWisdomXpBonusPerBonus", value: 0.05, description: "Wisdom XP gain bonus per rebirth ability bonus (fraction: 0.05 = +5% per bonus)" },
     { key: "skillLevelSpeedBonusPerLevel", value: 0.01, description: "Action speed bonus per skill level for that skill (fraction per level above 1: 0.01 = +1% speed per level)" },
-    { key: "startingStats",        value: { str: 1, dex: 1, int: 1, luk: 1, con: 1 }, description: "Starting stats for new players" },
+    // Wisdom balance
+    { key: "wisdomXpPerAbilityUse", value: 10, description: "Base wisdom XP granted per ability use in combat" },
+    { key: "wisdomPowerBonusPerLevel", value: 0.005, description: "Ability power bonus per wisdom level (fraction: 0.005 = +0.5% per level)" },
+    { key: "wisdomBaseSlots", value: 1, description: "Base number of equipped ability slots at wisdom level 1" },
+    { key: "wisdomLevelsPerSlot", value: 33, description: "Wisdom levels required per additional ability slot" },
+    { key: "wisdomMaxSlots", value: 4, description: "Maximum equipped ability slots" },
+    { key: "starterAbilityIds", value: { staff: "arcane_bolt" }, description: "Ability auto-learned and equipped by each starter kit (starter key to ability id)" },
+    // Ability book balance
+    { key: "abilityBookBaseXp", value: 100, description: "Base XP granted by tier 1 ability books" },
+    { key: "abilityBookXpPerBookTier", value: 1.0, description: "Linear XP multiplier per book tier" },
+    { key: "startingStats",        value: { str: 1, dex: 1, int: 1, luk: 1, con: 1, wis: 1 }, description: "Starting stats for new players (includes wisdom)" },
     { key: "inventorySlotCapacity", value: 50,                     description: "Maximum number of unequipped inventory stacks or item instances" },
     { key: "statUpgradeCostMultiplier", value: 2, description: "Cost multiplier applied to each paid stat-upgrade level" },
     { key: "statUpgradeLevelRequirements", value: [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377], description: "Character levels required for paid stat-upgrade levels" },
@@ -154,6 +167,465 @@ async function populateGameBalance(ctx: MutationCtx) {
     const existing = await ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", entry.key)).first();
     if (!existing) {
       await ctx.db.insert("gameBalance", { ...entry, lastUpdated: Date.now() });
+    }
+  }
+}
+
+async function populateAbilities(ctx: MutationCtx) {
+  const now = Date.now();
+
+  // Weapon-specific abilities (2 per weapon: lesser + greater)
+  // Staff gets 12 elemental abilities (2 per element: fire, water, wind, earth, light, dark) + 2 arcane
+  const abilities: Array<{
+    abilityId: string;
+    name: string;
+    description: string;
+    type: "attack" | "heal" | "buff_offense" | "buff_defense" | "utility";
+    target: "self" | "enemy" | "ally";
+    weaponType: "sword" | "dagger" | "mace" | "bow" | "staff" | "any";
+    element?: string;
+    basePower: number;
+    powerScalingPerLevel: number;
+    cooldownMs: number;
+    castTimeMs?: number;
+    manaCost?: number;
+    hpCost?: number;
+    buffDurationMs?: number;
+    buffStat?: string;
+    buffValue?: number;
+    buffIsPercent?: boolean;
+    maxLevel?: number;
+    icon?: string;
+    tier: number;
+    enabled: boolean;
+  }> = [
+    // Sword abilities
+    {
+      abilityId: "whirlwind",
+      name: "Whirlwind",
+      description: "Spin attack hitting all enemies in range. Scales with STR.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "sword",
+      basePower: 25,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 8000,
+      tier: 2,
+      enabled: true,
+    },
+    {
+      abilityId: "executioner_strike",
+      name: "Executioner's Strike",
+      description: "Single-target strike dealing bonus damage below 30% enemy HP.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "sword",
+      basePower: 45,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 12000,
+      tier: 6,
+      enabled: true,
+    },
+    // Dagger abilities
+    {
+      abilityId: "backstab",
+      name: "Backstab",
+      description: "High crit chance attack. Bonus damage when striking from stealth.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "dagger",
+      element: "dark",
+      basePower: 30,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 6000,
+      tier: 1,
+      enabled: true,
+    },
+    {
+      abilityId: "shadow_dance",
+      name: "Shadow Dance",
+      description: "Rapid 4-hit combo. Each hit applies stacking poison DoT.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "dagger",
+      element: "dark",
+      basePower: 18,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 10000,
+      tier: 5,
+      enabled: true,
+    },
+    // Mace abilities
+    {
+      abilityId: "smite",
+      name: "Smite",
+      description: "Heavy blow with chance to stun enemy for 1 round. Scales with STR.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "mace",
+      element: "light",
+      basePower: 35,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 10000,
+      tier: 3,
+      enabled: true,
+    },
+    {
+      abilityId: "crushing_judgment",
+      name: "Crushing Judgment",
+      description: "Deals damage and permanently reduces enemy defense for the fight.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "mace",
+      element: "earth",
+      basePower: 40,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 14000,
+      tier: 7,
+      enabled: true,
+    },
+    // Bow abilities
+    {
+      abilityId: "piercing_shot",
+      name: "Piercing Shot",
+      description: "Ignores 50% of enemy defense. Scales with DEX.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "bow",
+      basePower: 28,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 8000,
+      tier: 2,
+      enabled: true,
+    },
+    {
+      abilityId: "rain_of_arrows",
+      name: "Rain of Arrows",
+      description: "Volley hitting 3 times. Greater version of Piercing Shot.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "bow",
+      basePower: 22,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 12000,
+      tier: 6,
+      enabled: true,
+    },
+    // Staff abilities - Fire (2)
+    {
+      abilityId: "fireball",
+      name: "Fireball",
+      description: "Ranged fire damage. +25% with fire staff, -15% with water staff.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "fire",
+      basePower: 32,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 7000,
+      tier: 1,
+      enabled: true,
+    },
+    {
+      abilityId: "scorching_ray",
+      name: "Scorching Ray",
+      description: "Concentrated fire beam, 3 hits over 2s. Each hit applies Burn. +25% fire, -15% water.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "fire",
+      basePower: 15,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 10000,
+      tier: 5,
+      enabled: true,
+    },
+    // Staff abilities - Water/Ice (2)
+    {
+      abilityId: "ice_shard",
+      name: "Ice Shard",
+      description: "Water damage + applies Chill (reduces enemy attack speed 20%). +25% water, -15% fire.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "water",
+      basePower: 28,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 6000,
+      tier: 2,
+      enabled: true,
+    },
+    {
+      abilityId: "glacial_spike",
+      name: "Glacial Spike",
+      description: "Heavy ice projectile. On Chill target: consumes Chill for 2x damage + Freeze (stun 1 round). +25% water, -15% fire.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "water",
+      basePower: 45,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 12000,
+      tier: 6,
+      enabled: true,
+    },
+    // Staff abilities - Wind/Lightning (2)
+    {
+      abilityId: "lightning_bolt",
+      name: "Lightning Bolt",
+      description: "Wind damage with 25% chain chance to 2nd target. +25% wind, -15% earth.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "wind",
+      basePower: 30,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 6500,
+      tier: 3,
+      enabled: true,
+    },
+    {
+      abilityId: "storm_call",
+      name: "Storm Call",
+      description: "Summons lightning storm: 4 random strikes over 3s. Each chains independently. +25% wind, -15% earth.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "wind",
+      basePower: 18,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 14000,
+      tier: 7,
+      enabled: true,
+    },
+    // Staff abilities - Earth (2)
+    {
+      abilityId: "stone_spikes",
+      name: "Stone Spikes",
+      description: "Earth damage + applies Bleed. +25% earth, -15% wind.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "earth",
+      basePower: 30,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 7000,
+      tier: 4,
+      enabled: true,
+    },
+    {
+      abilityId: "seismic_slam",
+      name: "Seismic Slam",
+      description: "Ground slam AoE. Enemies hit gain Petrify (defense -30%, cannot act 1 round). +25% earth, -15% wind.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "earth",
+      basePower: 40,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 15000,
+      tier: 8,
+      enabled: true,
+    },
+    // Staff abilities - Light (2)
+    {
+      abilityId: "holy_light",
+      name: "Holy Light",
+      description: "Light damage + heals self for 40% of damage dealt. Bonus vs undead/dark. +25% light, -15% dark.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "light",
+      basePower: 35,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 8000,
+      tier: 5,
+      enabled: true,
+    },
+    {
+      abilityId: "radiant_judgment",
+      name: "Radiant Judgment",
+      description: "High light damage, applies Blind (miss chance 30% for 2 rounds), heals 25% max HP. +25% light, -15% dark.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "light",
+      basePower: 55,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 18000,
+      tier: 8,
+      enabled: true,
+    },
+    // Staff abilities - Dark (2)
+    {
+      abilityId: "shadow_bolt",
+      name: "Shadow Bolt",
+      description: "Dark damage, applies Curse (reduces enemy defense 15%). +25% dark, -15% light.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "dark",
+      basePower: 38,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 8000,
+      tier: 6,
+      enabled: true,
+    },
+    {
+      abilityId: "void_tendrils",
+      name: "Void Tendrils",
+      description: "3 shadow lashes, each steals 10% damage as HP. Applies Dread (enemy damage -15%). +25% dark, -15% light.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "dark",
+      basePower: 20,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 15000,
+      tier: 8,
+      enabled: true,
+    },
+    // Staff abilities - Arcane (2)
+    {
+      abilityId: "arcane_bolt",
+      name: "Arcane Bolt",
+      description:
+        "A basic non-elemental bolt of arcane force. Granted to every new caster.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "arcane",
+      basePower: 4,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 7000,
+      tier: 0,
+      enabled: true,
+    },
+    {
+      abilityId: "arcane_explosion",
+      name: "Arcane Explosion",
+      description: "Non-elemental AoE centered on target. Scales with INT only. No elemental interaction.",
+      type: "attack",
+      target: "enemy",
+      weaponType: "staff",
+      element: "arcane",
+      basePower: 45,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 12000,
+      tier: 7,
+      enabled: true,
+    },
+    // Universal abilities - Healing
+    {
+      abilityId: "healing_touch",
+      name: "Healing Touch",
+      description: "Restore HP = 15% max HP + INT×2. 12s cooldown.",
+      type: "heal",
+      target: "self",
+      weaponType: "any",
+      element: "light",
+      basePower: 15,
+      powerScalingPerLevel: 0.05,
+      cooldownMs: 12000,
+      tier: 1,
+      enabled: true,
+    },
+    {
+      abilityId: "greater_heal",
+      name: "Greater Heal",
+      description: "Restore HP = 35% max HP + INT×5. 20s cooldown.",
+      type: "heal",
+      target: "self",
+      weaponType: "any",
+      element: "light",
+      basePower: 35,
+      powerScalingPerLevel: 0.06,
+      cooldownMs: 20000,
+      tier: 5,
+      enabled: true,
+    },
+    // Universal abilities - Offense Buff
+    {
+      abilityId: "battle_cry",
+      name: "Battle Cry",
+      description: "+15% damage, +10% crit chance for 20s. 30s cooldown.",
+      type: "buff_offense",
+      target: "self",
+      weaponType: "any",
+      basePower: 15,
+      powerScalingPerLevel: 0.03,
+      cooldownMs: 30000,
+      buffDurationMs: 20000,
+      buffStat: "damage",
+      buffValue: 15,
+      buffIsPercent: true,
+      tier: 2,
+      enabled: true,
+    },
+    {
+      abilityId: "berserker_rage",
+      name: "Berserker Rage",
+      description: "+30% damage, +20% attack speed, -20% defense for 15s. 45s cooldown.",
+      type: "buff_offense",
+      target: "self",
+      weaponType: "any",
+      basePower: 30,
+      powerScalingPerLevel: 0.04,
+      cooldownMs: 45000,
+      buffDurationMs: 15000,
+      buffStat: "damage",
+      buffValue: 30,
+      buffIsPercent: true,
+      tier: 6,
+      enabled: true,
+    },
+    // Universal abilities - Defense Buff
+    {
+      abilityId: "iron_will",
+      name: "Iron Will",
+      description: "+40% defense, +25% magical defense for 25s. 30s cooldown.",
+      type: "buff_defense",
+      target: "self",
+      weaponType: "any",
+      basePower: 40,
+      powerScalingPerLevel: 0.03,
+      cooldownMs: 30000,
+      buffDurationMs: 25000,
+      buffStat: "defense",
+      buffValue: 40,
+      buffIsPercent: true,
+      tier: 3,
+      enabled: true,
+    },
+    {
+      abilityId: "warding_light",
+      name: "Warding Light",
+      description: "+30% all defense, gain elemental wards (all elements +20) for 20s. 40s cooldown.",
+      type: "buff_defense",
+      target: "self",
+      weaponType: "any",
+      element: "light",
+      basePower: 30,
+      powerScalingPerLevel: 0.04,
+      cooldownMs: 40000,
+      buffDurationMs: 20000,
+      buffStat: "defense",
+      buffValue: 30,
+      buffIsPercent: true,
+      tier: 7,
+      enabled: true,
+    },
+  ];
+
+  for (const ability of abilities) {
+    const existing = await ctx.db
+      .query("abilities")
+      .withIndex("by_abilityId", (q) => q.eq("abilityId", ability.abilityId))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { ...ability, updatedAt: now });
+    } else {
+      await ctx.db.insert("abilities", { ...ability, createdAt: now, updatedAt: now });
     }
   }
 }
@@ -476,6 +948,7 @@ export const populateAll = mutation({
     await populateUpgrades(ctx);
     await populateItemRarities(ctx);
     await populateGameBalance(ctx);
+    await populateAbilities(ctx);
     await populateTaskDefinitions(ctx);
     await seedPassiveContent(ctx);
     await ensureBossForTier(ctx, 1);
@@ -505,6 +978,37 @@ export const upsertForestCrafting = internalMutation({
     await seedForestCraftingContent(ctx);
     await validateAllRecipeChains(ctx);
     return { success: true };
+  },
+});
+
+/**
+ * Deployment-safe abilities seed (no admin player required).
+ * Upserts gameBalance (wisdom/ability/rebirth keys) + ability definitions.
+ * Idempotent: safe to re-run on every deploy; never touches player data.
+ * Invoke from CLI against self-hosted:
+ * npx convex run --env-file docker/.env.selfhosted seed:seedAbilitiesContent '{}'
+ */
+export const seedAbilitiesContent = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const startTime = Date.now();
+    await populateGameBalance(ctx);
+    await populateAbilities(ctx);
+    const duration = Date.now() - startTime;
+    const abilities = await ctx.db.query("abilities").collect();
+    const wisdomKeys = ["wisdomXpPerAbilityUse", "wisdomPowerBonusPerLevel", "wisdomBaseSlots", "wisdomLevelsPerSlot", "wisdomMaxSlots", "abilityBookBaseXp", "rebirthAbilityBonusPercent"];
+    const balanceRows = await Promise.all(
+      wisdomKeys.map((key) =>
+        ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", key)).first()
+      )
+    );
+    return {
+      success: true,
+      message: `Seeded abilities content in ${duration}ms`,
+      abilityCount: abilities.length,
+      wisdomBalanceKeysPresent: balanceRows.filter(Boolean).length,
+      missingKeys: wisdomKeys.filter((_, i) => !balanceRows[i]),
+    };
   },
 });
 

@@ -332,13 +332,14 @@ test("combat stats and non-combat skills compose toward the target level", async
   const sim = await Sim.create(modules, { seed: 11 });
   // STR fixed at 30; the remaining 60 (70 target minus mining 10) splits
   // across dex/int/luk/con at 15 each: 30 + 60 + 10 = 100.
+  // With wisdom (default 1): 30 + 60 + 1 + 10 = 101.
   const hybrid = await sim.spawnPlayer({
     name: "Hybrid",
     level: 70,
     stats: { str: 30 },
     skills: [{ skillId: "mining", level: 10 }],
   });
-  expect(hybrid.level).toBe(100);
+  expect(hybrid.level).toBe(101);
 
   // Pure combat: exact stat levels. Note the +1: the `mining` definition
   // created for Hybrid above is enabled, so it counts 1 level for every
@@ -347,7 +348,8 @@ test("combat stats and non-combat skills compose toward the target level", async
     name: "Bruiser",
     stats: { str: 99, dex: 40, int: 1, luk: 1, con: 30 },
   });
-  expect(bruiser.level).toBe(99 + 40 + 1 + 1 + 30 + 1);
+  // 5 stats + wisdom (1) + unstarted mining skill (1) = 99+40+1+1+30+1+1 = 173
+  expect(bruiser.level).toBe(99 + 40 + 1 + 1 + 30 + 1 + 1);
 
   await expect(
     sim.spawnPlayer({ name: "Bad", skills: [{ skillId: "mining", level: 0 }] })
@@ -379,8 +381,10 @@ test("spawnPlayer supports skills, items, and equipment", async () => {
     skills: [{ skillId: "woodcutting", level: 10 }],
     items: [{ slug: "sim-test-sword", equipSlot: "mainHand" }],
   });
-  // 10 per stat (remaining 50 split 5 ways) + 10 woodcutting = 60.
-  expect(player.level).toBe(60);
+  // 10 per stat (6 stats including wisdom) + 10 woodcutting = 70.
+  // But level: 60 sets stats to 10 each for 5 stats, wisdom defaults to 1.
+  // So 5*10 + 1 + 10 = 61.
+  expect(player.level).toBe(61);
 
   const equipped = await sim.client.run((ctx) =>
     ctx.db
