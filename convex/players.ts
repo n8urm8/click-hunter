@@ -1,5 +1,9 @@
+import { awardCrossedAchievements } from "./achievements";
+import { forfeitShelteredGuildGold } from "./guilds";
+import { findOpenBuyOrder } from "./bazaar";
+import { readBalanceValue } from "./balance";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { requireAuthSubject, requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requireAuthSubject, requirePlayer, requirePlayerRead, requirePlayerOwner, setPlayerOwner } from "./playerAuth";
 import { v } from "convex/values";
 import { api, components, internal } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
@@ -87,11 +91,7 @@ function readRebirthThresholds(value: unknown) {
 }
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
-  const row = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", key))
-    .first();
-  return row?.value;
+  return await readBalanceValue(ctx, key);
 }
 
 async function withEquipmentStats(
@@ -216,6 +216,8 @@ async function grantStarterKit(
   }
 }
 
+const MAX_PLAYER_NAME_LENGTH = 32;
+
 /**
  * Get or create a player
  */
@@ -227,6 +229,10 @@ export const getOrCreatePlayer = mutation({
   },
   handler: async (ctx, { anonymousId, name, starterId }) => {
     const subject = await requireAuthSubject(ctx);
+    const trimmedName = name.trim();
+    if (trimmedName.length < 1 || trimmedName.length > MAX_PLAYER_NAME_LENGTH) {
+      throw new Error(`Name must be 1-${MAX_PLAYER_NAME_LENGTH} characters`);
+    }
 
     const owned = await ctx.db
       .query("players")
@@ -251,6 +257,7 @@ export const getOrCreatePlayer = mutation({
         throw new Error("That character is already claimed by another session.");
       }
       await ctx.db.patch(existing._id, { authSubject: subject });
+      await setPlayerOwner(ctx, existing._id, subject);
       return await ctx.db.get(existing._id);
     }
 
@@ -266,8 +273,8 @@ export const getOrCreatePlayer = mutation({
     const playerId = await ctx.db.insert("players", {
       anonymousId,
       authSubject: subject,
-      name,
-      role: "admin",
+      name: trimmedName,
+      role: "player",
       str: startingStats.str,
       dex: startingStats.dex,
       int: startingStats.int,
@@ -287,6 +294,8 @@ export const getOrCreatePlayer = mutation({
       createdAt: now,
       lastUpdated: now,
     });
+
+    await setPlayerOwner(ctx, playerId, subject);
 
     if (starterId !== undefined) {
       await grantStarterKit(ctx, playerId, starterId, true);
@@ -517,7 +526,7 @@ export const advanceTierProgression = mutation({
     });
     await ensureBossForTier(ctx, newMaxTier);
 
-    // Note: Leaderboards could be updated here, but keeping simple for now
+    // Note: Leaderboards refresh on a schedule.
 
     return { maxTier: newMaxTier };
   },
@@ -606,6 +615,13 @@ export const rebirth = mutation({
       );
     }
 
+    // Gold locked in a buy order would survive the wipe below. Cancelling refunds
+    // it first, so ask for that instead of letting it dodge the reset.
+    const openBuyOrder = await findOpenBuyOrder(ctx, playerId);
+    if (openBuyOrder) {
+      throw new Error("Cancel your open bazaar buy orders before rebirthing");
+    }
+
     const nextRebirthCount = player.rebirthCount + 1;
 
     const rebirthThresholds = readRebirthThresholds(
@@ -639,6 +655,7 @@ export const rebirth = mutation({
     // Full wipe: all stats and skills return to base (earned and paid alike).
     // Passive skill web fully resets each run.
     // Ability levels reset to 1, equipped abilities cleared.
+    await forfeitShelteredGuildGold(ctx, playerId);
     await resetAllStatUpgrades(ctx, playerId);
     await clearPlayerPassives(ctx, playerId);
     await resetAllPlayerSkills(ctx, playerId);
@@ -668,7 +685,12 @@ export const rebirth = mutation({
       lastUpdated: Date.now(),
     });
 
-    // Note: Leaderboards could be updated here, but keeping simple for now
+    await awardCrossedAchievements(
+      ctx,
+      playerId,
+      { maxTierReached: 1, totalExperience: 0, rebirthCount: player.rebirthCount },
+      { maxTierReached: 1, totalExperience: 0, rebirthCount: nextRebirthCount }
+    );
 
     return {
       rebirthCount: nextRebirthCount,
@@ -692,7 +714,7 @@ export const setAutoAttack = mutation({
     enabled: v.boolean(),
   },
   handler: async (ctx, { playerId, enabled }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     if (!enabled) throw new Error("Auto attack is always enabled");
 
     await ctx.db.patch(playerId, {
@@ -711,7 +733,7 @@ export const setAutoStartFight = mutation({
     enabled: v.boolean(),
   },
   handler: async (ctx, { playerId, enabled }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
 
     await ctx.db.patch(playerId, {
       autoStartFightEnabled: enabled,

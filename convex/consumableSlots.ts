@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -288,7 +288,7 @@ export async function tickEquippedConsumables(
 export const getConsumableSlots = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const [slotCount, maxSlots] = await Promise.all([
       getConsumableSlotCount(ctx, playerId),
       getMaxConsumableSlots(ctx),
@@ -334,7 +334,7 @@ export const setConsumableSlot = mutation({
     itemDefId: v.optional(v.id("items")),
   },
   handler: async (ctx, { playerId, slotIndex, itemDefId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const [slotCount, maxSlots] = await Promise.all([
       getConsumableSlotCount(ctx, playerId),

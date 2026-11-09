@@ -167,6 +167,7 @@ test("enchanting consumes tier-matched essence and raises base damage", async ()
     await ctx.db.insert("playerItems", {
       playerId, itemId: essence, quantity: 100, acquiredAt: 0, updatedAt: 0,
     });
+    await ctx.db.patch(playerId, { gold: 100_000 });
   });
   vi.spyOn(Math, "random").mockReturnValue(0);
   const result = await t.mutation(api.infusion.enchantEquipment, {
@@ -196,6 +197,7 @@ test("failed enchants burn essence but grant half XP", async () => {
     await ctx.db.insert("playerItems", {
       playerId, itemId: essence, quantity: 100, acquiredAt: 0, updatedAt: 0,
     });
+    await ctx.db.patch(playerId, { gold: 100_000 });
   });
   vi.spyOn(Math, "random").mockReturnValue(0.999);
   const result = await t.mutation(api.infusion.enchantEquipment, {

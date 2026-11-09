@@ -1,6 +1,6 @@
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { readBalanceValue } from "./balance";
+import { readBalanceMap, readBalanceValue } from "./balance";
 import {
   getSkillXpRequiredForLevel,
   readSkillXpBase,
@@ -51,9 +51,8 @@ function readPositiveInteger(value: unknown, fallback: number): number {
  * Read all wisdom balance values in a single batch.
  */
 export async function readWisdomBalance(ctx: DatabaseCtx) {
-  const map = await ctx.db.query("gameBalance").collect();
-  const get = (key: string) =>
-    map.find((row) => row.key === key)?.value ?? WISDOM_DEFAULTS[key as keyof typeof WISDOM_DEFAULTS];
+  const map = await readBalanceMap(ctx, Object.values(WISDOM_BALANCE_KEYS));
+  const get = (key: string) => map.get(key);
 
   return {
     xpPerAbilityUse: readNonNegativeNumber(get(WISDOM_BALANCE_KEYS.xpPerAbilityUse), WISDOM_DEFAULTS.xpPerAbilityUse),
@@ -181,8 +180,11 @@ export async function awardWisdomXp(
 
   const currentWisXp = player.statXp?.wis ?? 0;
   const newWisXp = currentWisXp + xpGain;
+  const xpBase = readSkillXpBase(await readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key));
 
   await ctx.db.patch(playerId, {
+    // Combat, character level, and rebirth all read this; XP alone moves nothing.
+    wis: calculateWisdomLevel(newWisXp, xpBase),
     statXp: {
       str: player.statXp?.str ?? 0,
       dex: player.statXp?.dex ?? 0,

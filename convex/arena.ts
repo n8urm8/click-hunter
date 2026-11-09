@@ -4,7 +4,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { calculateCharacterLevel, calculateCombatLevel } from "./characterLevel";
 import { readPlayerCombatProfile } from "./combat";
 import {
@@ -919,7 +919,7 @@ export const leaveLobby = mutation({
     lobbyId: v.id("arenaLobbies"),
   },
   handler: async (ctx, { playerId, lobbyId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const lobby = await ctx.db.get(lobbyId);
     if (!lobby) throw new Error("Arena lobby not found");
     const now = Date.now();
@@ -1011,7 +1011,7 @@ export const cancelLobby = mutation({
     lobbyId: v.id("arenaLobbies"),
   },
   handler: async (ctx, { playerId, lobbyId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const lobby = await ctx.db.get(lobbyId);
     if (!lobby) throw new Error("Arena lobby not found");
     if (lobby.creatorId !== playerId) {
@@ -1040,7 +1040,7 @@ export const kickFromLobby = mutation({
     targetPlayerId: v.id("players"),
   },
   handler: async (ctx, { playerId, lobbyId, targetPlayerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const lobby = await ctx.db.get(lobbyId);
     if (!lobby) throw new Error("Arena lobby not found");
     if (lobby.creatorId !== playerId) {
@@ -1144,7 +1144,7 @@ export const setReady = mutation({
     ready: v.boolean(),
   },
   handler: async (ctx, { playerId, lobbyId, ready }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const lobby = await ctx.db.get(lobbyId);
     if (!lobby) throw new Error("Arena lobby not found");
     const now = Date.now();
@@ -1207,7 +1207,7 @@ export const tickFight = mutation({
     lobbyId: v.id("arenaLobbies"),
   },
   handler: async (ctx, { playerId, lobbyId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const gate = await rateLimiter.limit(ctx, "pvpTick", {
       key: playerId,
       config: { kind: "token bucket", rate: 4, period: 1_000, capacity: 4 },
@@ -1433,7 +1433,7 @@ export const forfeitFight = mutation({
     lobbyId: v.id("arenaLobbies"),
   },
   handler: async (ctx, { playerId, lobbyId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const lobby = await ctx.db.get(lobbyId);
     if (!lobby) throw new Error("Arena lobby not found");
     if (lobby.status !== "active") {
@@ -1509,7 +1509,7 @@ export const getPvpConfig = query({
 export const getOpenLobbies = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const now = Date.now();
     const [general, privateLobbies] = await Promise.all([
       ctx.db
@@ -1538,7 +1538,7 @@ export const getLobby = query({
     lobbyId: v.id("arenaLobbies"),
   },
   handler: async (ctx, { playerId, lobbyId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const lobby = await ctx.db.get(lobbyId);
     if (!lobby) return null;
     return await toPublicLobby(ctx, lobby);
@@ -1548,7 +1548,7 @@ export const getLobby = query({
 export const getMyLobby = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const found = await findMyLobby(ctx, playerId);
     if (!found) return null;
     return { ...(await toPublicLobby(ctx, found.lobby)), role: found.role };
@@ -1561,7 +1561,7 @@ export const getRecentResults = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, { playerId, limit }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const capped =
       typeof limit === "number" && Number.isSafeInteger(limit)
         ? Math.min(Math.max(limit, 1), 50)

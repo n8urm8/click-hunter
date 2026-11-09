@@ -94,6 +94,33 @@ function ProgressRow({
   );
 }
 
+/** Permanent rewards unlocked by reaching each rebirth count. */
+function RebirthMilestones({ rebirthCount }: { rebirthCount: number }) {
+  const rewards = useQuery({
+    ...convexQuery(api.seed.getRebirthRewards, {}),
+    ...convexQueryCacheOptions,
+  });
+  if (!rewards.data || rewards.data.length === 0) return null;
+  const sorted = [...rewards.data].sort((left, right) => left.rebirthLevel - right.rebirthLevel);
+  return (
+    <section aria-label="Rebirth milestones" className="mt-4 space-y-1">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-foreground/80">
+        Rebirth milestones
+      </h3>
+      <ul className="space-y-1 text-xs">
+        {sorted.map((reward) => {
+          const earned = rebirthCount >= reward.rebirthLevel;
+          return (
+            <li key={reward._id} className={earned ? "text-mystic-glow" : "text-muted-foreground"}>
+              {earned ? "✓" : "○"} Rebirth {reward.rebirthLevel}: {reward.name} ({reward.description})
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 export function RebirthPanel({ player }: RebirthPanelProps) {
   const canRebirthQuery = useCanRebirth(player._id);
   const rebirthMutation = useRebirth();
@@ -288,6 +315,7 @@ export function RebirthPanel({ player }: RebirthPanelProps) {
           skill again next run to stack it.
         </p>
       </div>
+      <RebirthMilestones rebirthCount={player.rebirthCount} />
     </Card>
   );
 }

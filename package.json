@@ -18,7 +18,8 @@
     "migrate:staffWeapons": "convex run migrations:rebalanceStaffWeapons --env-file ./docker/.env.selfhosted",
     "migrate:starterAbilities": "convex run migrations:backfillStarterAbilities --env-file ./docker/.env.selfhosted",
     "migrate:arenaKeys": "convex run migrations:dropArenaLobbySettlementKeys --env-file ./docker/.env.selfhosted",
-    "migrate:all": "pnpm run migrate:wisdom && pnpm run migrate:rebirthAbilities && pnpm run migrate:startingStatsWisdom && pnpm run migrate:leathercrafting && pnpm run migrate:staffWeapons && pnpm run migrate:starterAbilities && pnpm run migrate:arenaKeys",
+    "migrate:performance": "convex run migrations:applyPerformanceAndBalanceUpdate --env-file ./docker/.env.selfhosted",
+    "migrate:all": "pnpm run migrate:wisdom && pnpm run migrate:rebirthAbilities && pnpm run migrate:startingStatsWisdom && pnpm run migrate:leathercrafting && pnpm run migrate:staffWeapons && pnpm run migrate:starterAbilities && pnpm run migrate:arenaKeys && pnpm run migrate:performance",
     "seed:abilities": "convex run seed:seedAbilitiesContent --env-file ./docker/.env.selfhosted",
     "deploy:migrations": "pnpm run migrate:all && pnpm run seed:abilities"
   },

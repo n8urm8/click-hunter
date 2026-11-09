@@ -236,3 +236,42 @@ export function rebirthAbilityMultiplier(
 ): number {
   return 1 + bonusPercent * Math.max(0, bonusCount);
 }
+
+
+export type RebirthRewardBonuses = {
+  goldMultiplier: number;
+  xpMultiplier: number;
+  statMultiplier: number;
+  critChance: number;
+};
+
+/**
+ * Milestone rewards (the `rebirthRewards` table) earned so far. Every reward at or
+ * below the player's rebirth count stays active. Reads nothing before the first
+ * rebirth.
+ */
+export async function readRebirthRewardBonuses(
+  ctx: DatabaseCtx,
+  rebirthCount: number
+): Promise<RebirthRewardBonuses> {
+  const bonuses: RebirthRewardBonuses = {
+    goldMultiplier: 1,
+    xpMultiplier: 1,
+    statMultiplier: 1,
+    critChance: 0,
+  };
+  if (!(rebirthCount >= 1)) return bonuses;
+  const earned = await ctx.db
+    .query("rebirthRewards")
+    .withIndex("by_rebirthLevel", (q) => q.lte("rebirthLevel", rebirthCount))
+    .take(100);
+  for (const reward of earned) {
+    const value = reward.effectValue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+    if (reward.effectType === "gold-multiplier") bonuses.goldMultiplier *= value;
+    else if (reward.effectType === "xp-multiplier") bonuses.xpMultiplier *= value;
+    else if (reward.effectType === "stat-multiplier") bonuses.statMultiplier *= value;
+    else if (reward.effectType === "crit-chance") bonuses.critChance += value;
+  }
+  return bonuses;
+}

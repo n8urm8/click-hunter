@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSearchParams } from "react-router";
+import { ChatReportsPanel } from "~/components/admin/ChatReportsPanel";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -287,12 +288,13 @@ function AdminSection({
   );
 }
 
-type AdminTab = "players" | "monsters" | "items" | "skills" | "tree" | "guilds" | "general";
+type AdminTab = "players" | "reports" | "monsters" | "items" | "skills" | "tree" | "guilds" | "general";
 
 const ADMIN_TAB_PARAM = "adminTab";
 const DEFAULT_ADMIN_TAB: AdminTab = "players";
 const ADMIN_TABS: Array<{ value: AdminTab; label: string }> = [
   { value: "players", label: "Players" },
+  { value: "reports", label: "Reports" },
   { value: "monsters", label: "Monsters" },
   { value: "items", label: "Items" },
   { value: "skills", label: "Skills" },
@@ -4114,6 +4116,10 @@ export function AdminPanel({ playerId }: AdminPanelProps) {
           className="space-y-6 outline-none"
         >
           <CharacterEditorCard playerId={playerId} active={activeTab === "players"} />
+        </TabsContent>
+
+        <TabsContent value="reports" className="space-y-6 outline-none">
+          <ChatReportsPanel playerId={playerId} />
         </TabsContent>
 
         <ConfigSection

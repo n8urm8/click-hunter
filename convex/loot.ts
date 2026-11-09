@@ -1,4 +1,6 @@
-import type { MutationCtx } from "./_generated/server";
+import { readRebirthRewardBonuses } from "./rebirth";
+import { readBalanceValue } from "./balance";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ensureBossForTier } from "./bossData";
 import {
@@ -7,8 +9,10 @@ import {
   recordFightHistory,
 } from "./fightHistory";
 import type { CombatZone } from "./zones";
-import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon } from "./items";
-import { grantInfusionDrops } from "./infusion";
+import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon, readInventoryForGrants } from "./items";
+import { grantInfusionDrops, rollBatchBonusDrops } from "./infusion";
+import { awardAbilityWisdomXp } from "./abilityCombat";
+import { awardCrossedAchievements } from "./achievements";
 import { getPassiveBonuses } from "./passiveTree";
 import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
 import { progressWeeklyObjectives } from "./guildObjectives";
@@ -24,25 +28,18 @@ type TrainableStat = "str" | "dex" | "int" | "con";
  * 35/35/30 unarmed) into per-stat XP pools leveled with the skill XP curve.
  * Exported for raid settlements, which pay boss-tier XP without player loot.
  */
-export async function awardCombatStatXp(
-  ctx: MutationCtx,
-  playerId: PlayerId,
-  experienceEarned: number
+export function applyCombatStatXp(
+  player: Doc<"players">,
+  weaponDamageStat: string | null,
+  experienceEarned: number,
+  xpBase: number
 ) {
-  if (!Number.isFinite(experienceEarned) || experienceEarned <= 0) return;
-  const [weapon, player, xpBaseValue] = await Promise.all([
-    getEquippedWeapon(ctx, playerId),
-    ctx.db.get(playerId),
-    getBalanceValue(ctx, "skillXpPerLevel"),
-  ]);
-  if (!player) throw new Error("Player not found");
-  const xpBase = readSkillXpBase(xpBaseValue);
   const splits: Record<TrainableStat, number> =
-    weapon?.damageStat === "dex"
+    weaponDamageStat === "dex"
       ? { str: 0, dex: 0.7, int: 0, con: 0.3 }
-      : weapon?.damageStat === "int"
+      : weaponDamageStat === "int"
         ? { str: 0, dex: 0, int: 0.7, con: 0.3 }
-        : weapon?.damageStat === "str"
+        : weaponDamageStat === "str"
           ? { str: 0.7, dex: 0, int: 0, con: 0.3 }
           : { str: 0.35, dex: 0.35, int: 0, con: 0.3 };
   const pools = {
@@ -53,7 +50,7 @@ export async function awardCombatStatXp(
     con: 0,
     ...(player.statXp ?? {}),
   };
-  const patch: Record<string, unknown> = { statXp: pools };
+  const levels: Partial<Record<TrainableStat, number>> = {};
   for (const stat of ["str", "dex", "int", "con"] as const) {
     const share = splits[stat];
     if (share <= 0) continue;
@@ -68,12 +65,31 @@ export async function awardCombatStatXp(
         throw new Error("Stat XP requirement exceeds the supported limit");
       }
     }
-    patch[stat] = level;
+    levels[stat] = level;
     pools[stat] = pool;
   }
-  await ctx.db.patch(playerId, { ...patch, lastUpdated: Date.now() });
+  return { ...levels, statXp: pools };
 }
 
+export async function awardCombatStatXp(
+  ctx: MutationCtx,
+  playerId: PlayerId,
+  experienceEarned: number
+) {
+  if (!Number.isFinite(experienceEarned) || experienceEarned <= 0) return;
+  const [weapon, player, xpBaseValue] = await Promise.all([
+    getEquippedWeapon(ctx, playerId),
+    ctx.db.get(playerId),
+    getBalanceValue(ctx, "skillXpPerLevel"),
+  ]);
+  if (!player) throw new Error("Player not found");
+  await ctx.db.patch(playerId, {
+    ...applyCombatStatXp(player, weapon?.damageStat ?? null, experienceEarned, readSkillXpBase(xpBaseValue)),
+    lastUpdated: Date.now(),
+  });
+}
+
+type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
 type CombatSourceType = "monster" | "boss";
 
@@ -117,13 +133,8 @@ export type CombatSettlement = {
 const DEFAULT_BOSS_GOLD_PER_TIER = 500;
 const DEFAULT_BOSS_EXPERIENCE_PER_TIER = 250;
 
-async function getBalanceValue(ctx: MutationCtx, key: string) {
-  return (
-    await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", key))
-      .first()
-  )?.value;
+async function getBalanceValue(ctx: DatabaseCtx, key: string) {
+  return await readBalanceValue(ctx, key);
 }
 
 function readNonNegativeNumber(value: unknown, fallback: number) {
@@ -132,15 +143,15 @@ function readNonNegativeNumber(value: unknown, fallback: number) {
     : fallback;
 }
 
-export async function getActiveEventMultipliers(ctx: MutationCtx, now: number) {
-  // Indexed range on startTime (events already started), then wall-clock
-  // endTime check in JS. Avoids the prior full-table filter() scan while
-  // staying correct even if the maintained isActive flag goes stale.
-  const candidates = await ctx.db
+export async function getActiveEventMultipliers(ctx: DatabaseCtx, now: number) {
+  // Range on endTime so finished events cost nothing however many accumulate,
+  // then a start check in JS for events scheduled ahead. Doesn't trust the
+  // maintained isActive flag, which can go stale.
+  const unfinished = await ctx.db
     .query("gameEvents")
-    .withIndex("by_startTime", (q) => q.lte("startTime", now))
+    .withIndex("by_endTime", (q) => q.gt("endTime", now))
     .take(100);
-  const events = candidates.filter((event) => event.endTime > now);
+  const events = unfinished.filter((event) => event.startTime <= now);
   let goldMultiplier = 1;
   let experienceMultiplier = 1;
   for (const event of events) {
@@ -234,17 +245,7 @@ export async function rollBossLoot(
   );
   const rolled: RolledLoot[] = [];
   for (const entry of entries) {
-    if (
-      !Number.isSafeInteger(entry.minQuantity) ||
-      !Number.isSafeInteger(entry.maxQuantity) ||
-      entry.minQuantity < 1 ||
-      entry.maxQuantity < entry.minQuantity ||
-      !Number.isFinite(entry.dropChance) ||
-      entry.dropChance < 0 ||
-      entry.dropChance > 1
-    ) {
-      throw new Error("Loot table contains invalid entry values");
-    }
+    assertValidLootEntry(entry);
     rolled.push({ itemId: entry.itemId, quantity: randomQuantity(entry) });
   }
   return rolled;
@@ -269,17 +270,7 @@ async function resolveLoot(
   );
   const summary: LootSummary[] = [];
   for (const entry of entries) {
-    if (
-      !Number.isSafeInteger(entry.minQuantity) ||
-      !Number.isSafeInteger(entry.maxQuantity) ||
-      entry.minQuantity < 1 ||
-      entry.maxQuantity < entry.minQuantity ||
-      !Number.isFinite(entry.dropChance) ||
-      entry.dropChance < 0 ||
-      entry.dropChance > 1
-    ) {
-      throw new Error("Loot table contains invalid entry values");
-    }
+    assertValidLootEntry(entry);
     const quantity = randomQuantity(entry);
     const item = await ctx.db.get(entry.itemId);
     if (!item) throw new Error("Loot table references a missing item");
@@ -427,10 +418,11 @@ export async function settleCombatFight(
       .first();
     if (!monster) throw new Error("Monster not found");
     const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
-    const [combatBoosts, passives, guildBonuses] = await Promise.all([
+    const [combatBoosts, passives, guildBonuses, rebirthRewards] = await Promise.all([
       getActiveCombatBoosts(ctx, args.playerId, Date.now()),
       getPassiveBonuses(ctx, args.playerId),
       getGuildBonusesForPlayer(ctx, args.playerId),
+      readRebirthRewardBonuses(ctx, player.rebirthCount),
     ]);
     if (
       args.rewardOverride &&
@@ -448,7 +440,7 @@ export async function settleCombatFight(
         Math.max(
           0,
           Math.floor(
-            monster.goldDrop * args.tier * eventMultipliers.goldMultiplier * passives.goldMultiplier * guildGoldMult
+            monster.goldDrop * args.tier * eventMultipliers.goldMultiplier * passives.goldMultiplier * rebirthRewards.goldMultiplier * guildGoldMult
           )
         )
       : 0;
@@ -462,6 +454,7 @@ export async function settleCombatFight(
               eventMultipliers.experienceMultiplier *
               combatBoosts.xpMultiplier *
               passives.xpMultiplier *
+              rebirthRewards.xpMultiplier *
               guildXpMult
           )
         )
@@ -544,15 +537,16 @@ export async function settleCombatFight(
     args.tier *
     boss.rewardMultiplier;
   const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
-  const [combatBoosts, passives, guildBonuses] = await Promise.all([
+  const [combatBoosts, passives, guildBonuses, rebirthRewards] = await Promise.all([
     getActiveCombatBoosts(ctx, args.playerId, Date.now()),
     getPassiveBonuses(ctx, args.playerId),
     getGuildBonusesForPlayer(ctx, args.playerId),
+    readRebirthRewardBonuses(ctx, player.rebirthCount),
   ]);
   const guildGoldMult = 1 + (guildBonuses.goldBonusPercent ?? 0) / 100;
   const guildXpMult = 1 + (guildBonuses.xpBonusPercent ?? 0) / 100;
   const goldEarned = args.won
-    ? Math.max(0, Math.floor(baseGold * eventMultipliers.goldMultiplier * passives.goldMultiplier * guildGoldMult))
+    ? Math.max(0, Math.floor(baseGold * eventMultipliers.goldMultiplier * passives.goldMultiplier * rebirthRewards.goldMultiplier * guildGoldMult))
     : 0;
   const experienceEarned = args.won
     ? Math.max(
@@ -562,6 +556,7 @@ export async function settleCombatFight(
             eventMultipliers.experienceMultiplier *
             combatBoosts.xpMultiplier *
             passives.xpMultiplier *
+              rebirthRewards.xpMultiplier *
             guildXpMult
         )
       )
@@ -619,4 +614,183 @@ export async function settleCombatFight(
     experienceEarned,
     loot,
   };
+}
+
+export type BatchFight = {
+  monsterType: string;
+  monsterName: string;
+  won: boolean;
+  goldEarned: number;
+  experienceEarned: number;
+  abilityCasts?: Array<{ abilityId: string; level: number; casts: number }>;
+};
+
+function assertValidLootEntry(entry: Doc<"lootTableEntries">) {
+  if (
+    !Number.isSafeInteger(entry.minQuantity) ||
+    !Number.isSafeInteger(entry.maxQuantity) ||
+    entry.minQuantity < 1 ||
+    entry.maxQuantity < entry.minQuantity ||
+    !Number.isFinite(entry.dropChance) ||
+    entry.dropChance < 0 ||
+    entry.dropChance > 1
+  ) {
+    throw new Error("Loot table contains invalid entry values");
+  }
+}
+
+/**
+ * Settle a run of auto-battle fights as one set of writes.
+ *
+ * The whole batch commits atomically with the task's progress, so it needs no
+ * per-fight dedupe key and writes one fight-history row. Loot tables are read
+ * once per monster type, the inventory once per batch, and a loot item that
+ * dropped five times is one grant. Rewards were resolved when each encounter
+ * was rolled; level-ups earned here apply from the next batch.
+ */
+export async function settleAutoBattleBatch(
+  ctx: MutationCtx,
+  args: {
+    player: Doc<"players">;
+    settlementKey: string;
+    tier: number;
+    monsterZone?: CombatZone;
+    weaponDamageStat: string | null;
+    fights: BatchFight[];
+  }
+): Promise<{ goldEarned: number; experienceEarned: number; loot: LootSummary[] }> {
+  const { player, tier, fights } = args;
+  const playerId = player._id;
+  const wins = fights.filter((fight) => fight.won);
+  let goldEarned = 0;
+  let experienceEarned = 0;
+  for (const fight of wins) {
+    goldEarned += fight.goldEarned;
+    experienceEarned += fight.experienceEarned;
+  }
+
+  if (wins.length > 0) {
+    const xpBase = readSkillXpBase(await getBalanceValue(ctx, "skillXpPerLevel"));
+    const previousBest = player.maxTierReached ?? player.currentTier ?? 1;
+    const maxTierReached = Math.max(previousBest, tier);
+    await ctx.db.patch(playerId, {
+      ...applyCombatStatXp(player, args.weaponDamageStat, experienceEarned, xpBase),
+      gold: player.gold + goldEarned,
+      totalExperience: player.totalExperience + experienceEarned,
+      maxTierReached,
+      currentTier: tier,
+      lastUpdated: Date.now(),
+    });
+    if (maxTierReached > previousBest) await ensureBossForTier(ctx, maxTierReached);
+    await accrueGuildXpFromEarned(ctx, playerId, experienceEarned);
+    await progressWeeklyObjectives(ctx, playerId, {
+      wins: wins.length,
+      gold: goldEarned,
+      xp: experienceEarned,
+    });
+    await awardCrossedAchievements(
+      ctx,
+      playerId,
+      { maxTierReached: previousBest, totalExperience: player.totalExperience, rebirthCount: player.rebirthCount },
+      {
+        maxTierReached,
+        totalExperience: player.totalExperience + experienceEarned,
+        rebirthCount: player.rebirthCount,
+      }
+    );
+  }
+
+  // Merge casts per ability first: each award is a read-modify-write.
+  const castsByAbility = new Map<string, { abilityId: string; level: number; casts: number }>();
+  for (const fight of fights) {
+    for (const cast of fight.abilityCasts ?? []) {
+      const existing = castsByAbility.get(cast.abilityId);
+      if (existing) existing.casts += cast.casts;
+      else castsByAbility.set(cast.abilityId, { ...cast });
+    }
+  }
+  if (castsByAbility.size > 0) {
+    await awardAbilityWisdomXp(ctx, playerId, [...castsByAbility.values()]);
+  }
+
+  // Roll loot in memory, then grant each item once.
+  const drops = new Map<
+    Id<"items">,
+    { quantity: number; purpose: LootSummary["purpose"]; sourceId: string }
+  >();
+  const addDrop = (
+    itemId: Id<"items">,
+    quantity: number,
+    purpose: LootSummary["purpose"],
+    sourceId: string
+  ) => {
+    const existing = drops.get(itemId);
+    if (existing) existing.quantity += quantity;
+    else drops.set(itemId, { quantity, purpose, sourceId });
+  };
+  const winsByMonster = new Map<string, number>();
+  for (const fight of wins) {
+    winsByMonster.set(fight.monsterType, (winsByMonster.get(fight.monsterType) ?? 0) + 1);
+  }
+  for (const [monsterType, count] of winsByMonster) {
+    const tableData = await getLootTable(ctx, "monster", monsterType, tier);
+    if (!tableData) continue;
+    const rollCount = Math.min(100, Math.max(0, tableData.table.rollCount));
+    for (let index = 0; index < count; index += 1) {
+      for (const entry of pickLootEntries(tableData.entries, rollCount)) {
+        assertValidLootEntry(entry);
+        addDrop(entry.itemId, randomQuantity(entry), entry.purpose, monsterType);
+      }
+    }
+  }
+  const lastMonster = fights[fights.length - 1]?.monsterType ?? "";
+  const bonusDrops = await rollBatchBonusDrops(ctx, tier, wins.length);
+  for (const drop of bonusDrops) {
+    addDrop(drop.itemId, drop.quantity, drop.purpose, lastMonster);
+  }
+
+  const loot: LootSummary[] = [];
+  if (drops.size > 0) {
+    const inventory = await readInventoryForGrants(ctx, playerId);
+    for (const [itemId, drop] of drops) {
+      const item = await ctx.db.get(itemId);
+      if (!item) throw new Error("Loot table references a missing item");
+      const grant = await grantItemToInventory(ctx, {
+        playerId,
+        itemId,
+        quantity: drop.quantity,
+        overflowSource: {
+          sourceType: "monster",
+          sourceId: drop.sourceId,
+          settlementKey: args.settlementKey,
+        },
+        inventory,
+      });
+      loot.push({
+        itemId,
+        itemName: item.name,
+        quantity: drop.quantity,
+        pending: grant.pending,
+        purpose: drop.purpose,
+        itemSlug: item.itemId,
+        itemFamily: item.itemFamily,
+        category: item.category,
+      });
+    }
+  }
+
+  await recordFightHistory(ctx, {
+    playerId,
+    settlementKey: args.settlementKey,
+    monsterTier: tier,
+    monsterType: lastMonster,
+    // Proof of a victory at this tier, so a batch with any win counts as won.
+    won: wins.length > 0,
+    isBoss: false,
+    ...(args.monsterZone === undefined ? {} : { monsterZone: args.monsterZone }),
+    goldEarned,
+    experienceEarned,
+    fightCount: fights.length,
+  });
+  return { goldEarned, experienceEarned, loot };
 }

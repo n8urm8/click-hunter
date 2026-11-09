@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, type ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 import {
   createBrowserRouter,
@@ -11,18 +11,6 @@ import { ConvexReactClient } from "convex/react";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import "./app.css";
 import GameShell from "./routes/game";
-import Home from "./routes/home";
-import Profile from "./routes/profile";
-import CombatPage from "./routes/combat";
-import SkillsPage from "./routes/skills";
-import TreePage from "./routes/tree";
-import BazaarPage from "./routes/bazaar";
-import InventoryPage from "./routes/inventory";
-import RebirthPage from "./routes/rebirth";
-import BoardPage from "./routes/board";
-import GuildPage from "./routes/guild";
-import ArenaPage from "./routes/arena";
-import AdminPage from "./routes/admin";
 import { CONVEX_QUERY_GC_TIME } from "./lib/queryCache";
 import { GAME_PATHS } from "./lib/gameRoutes";
 
@@ -40,37 +28,42 @@ const queryClient = new QueryClient({
 });
 convexQueryClient.connect(queryClient);
 
+/** Load a page's code when it's first visited, so nobody downloads the admin panel to play. */
+function page(load: () => Promise<{ default: ComponentType }>) {
+  return async () => ({ Component: (await load()).default });
+}
+
 const router = createBrowserRouter([
   {
     path: "/",
     Component: GameShell,
     children: [
-      { index: true, Component: Home },
-      { path: "combat", Component: CombatPage },
-      { path: "skills", Component: SkillsPage },
-      { path: "skills/:skillId", Component: SkillsPage },
-      { path: "tree", Component: TreePage },
+      { index: true, lazy: page(() => import("./routes/home")) },
+      { path: "combat", lazy: page(() => import("./routes/combat")) },
+      { path: "skills", lazy: page(() => import("./routes/skills")) },
+      { path: "skills/:skillId", lazy: page(() => import("./routes/skills")) },
+      { path: "tree", lazy: page(() => import("./routes/tree")) },
       {
         path: "bazaar",
         Component: () => (
           <Navigate to={`${GAME_PATHS.bazaar}/browse`} replace />
         ),
       },
-      { path: "bazaar/:view", Component: BazaarPage },
-      { path: "inventory", Component: InventoryPage },
-      { path: "inventory/:tab", Component: InventoryPage },
-      { path: "rebirth", Component: RebirthPage },
-      { path: "board", Component: BoardPage },
+      { path: "bazaar/:view", lazy: page(() => import("./routes/bazaar")) },
+      { path: "inventory", lazy: page(() => import("./routes/inventory")) },
+      { path: "inventory/:tab", lazy: page(() => import("./routes/inventory")) },
+      { path: "rebirth", lazy: page(() => import("./routes/rebirth")) },
+      { path: "board", lazy: page(() => import("./routes/board")) },
       {
         path: "guild",
         Component: () => (
           <Navigate to={`${GAME_PATHS.guild}/hall`} replace />
         ),
       },
-      { path: "guild/:view", Component: GuildPage },
-      { path: "arena", Component: ArenaPage },
-      { path: "admin", Component: AdminPage },
-      { path: "profile", Component: Profile },
+      { path: "guild/:view", lazy: page(() => import("./routes/guild")) },
+      { path: "arena", lazy: page(() => import("./routes/arena")) },
+      { path: "admin", lazy: page(() => import("./routes/admin")) },
+      { path: "profile", lazy: page(() => import("./routes/profile")) },
     ],
   },
 ]);

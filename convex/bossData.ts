@@ -1,3 +1,4 @@
+import { readBalanceValue } from "./balance";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ELEMENT_VALUES, type ElementKind } from "./itemTypes";
 
@@ -83,19 +84,11 @@ function readBossUnlockLevelPerTier(value: unknown) {
 }
 
 export async function getBossUnlockLevelPerTier(ctx: DatabaseCtx) {
-  const levelRow = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", "bossUnlockLevelPerTier"))
-    .first();
-  return readBossUnlockLevelPerTier(levelRow?.value);
+  return readBossUnlockLevelPerTier(await readBalanceValue(ctx, "bossUnlockLevelPerTier"));
 }
 
 export async function getTierScaleMultiplier(ctx: DatabaseCtx) {
-  const multiplierRow = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", "tierScaleMultiplier"))
-    .first();
-  return readTierScaleMultiplier(multiplierRow?.value);
+  return readTierScaleMultiplier(await readBalanceValue(ctx, "tierScaleMultiplier"));
 }
 
 export function getTierScale(tier: number, tierMultiplier: number) {
@@ -155,7 +148,8 @@ export async function ensureBossForTier(ctx: MutationCtx, tier: number) {
     .withIndex("by_key", (q) => q.eq("key", "bossStatMultiplier"))
     .first();
   const statMultiplier = readBossStatMultiplier(bossMultiplierRow?.value);
-  const tierScale = getTierScale(tier, await getTierScaleMultiplier(ctx));
+  const tierMultiplier = await getTierScaleMultiplier(ctx);
+  const tierScale = getTierScale(tier, tierMultiplier);
   const now = Date.now();
   if (!bossMultiplierRow) {
     await ctx.db.insert("gameBalance", {
@@ -180,6 +174,7 @@ export async function ensureBossForTier(ctx: MutationCtx, tier: number) {
     luk: multiplyStat(strongestMonster.luk),
     con: multiplyStat(strongestMonster.con),
     statsTierScaled: true,
+    statsTierMultiplier: tierMultiplier,
     rewardMultiplier: DEFAULT_BOSS_REWARD_MULTIPLIER,
     createdAt: now,
   };

@@ -9,6 +9,7 @@ import { Button } from "~/components/ui/button";
 import {
   MAX_CHAT_MESSAGE_LENGTH,
   useMarkPrivateChatRead,
+  useReportMessage,
   useChatMessages,
   usePrivateChats,
   useSendChatMessage,
@@ -32,6 +33,7 @@ interface ChatPlayer {
 }
 
 interface MessageActionTarget extends ChatPlayer {
+  messageId: Id<"chatMessages">;
   top: number;
   left: number;
 }
@@ -43,7 +45,13 @@ interface ChatBoxProps {
 }
 
 const PRIVATE_POPOVER_WIDTH_PX = 144;
-const PRIVATE_POPOVER_HEIGHT_PX = 36;
+const PRIVATE_POPOVER_HEIGHT_PX = 180;
+const REPORT_REASONS = [
+  { value: "harassment", label: "Harassment" },
+  { value: "spam", label: "Spam" },
+  { value: "cheating", label: "Cheating" },
+  { value: "other", label: "Something else" },
+] as const;
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unable to send message.";
@@ -62,6 +70,9 @@ export function ChatBox({ player }: ChatBoxProps) {
   const [recipient, setRecipient] = useState<ChatPlayer | null>(null);
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  const [reportStatus, setReportStatus] = useState<string | null>(null);
+  const [isChoosingReportReason, setIsChoosingReportReason] = useState(false);
+  const reportMessage = useReportMessage();
   const [isSending, setIsSending] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [messageActionTarget, setMessageActionTarget] =
@@ -157,10 +168,30 @@ export function ChatBox({ player }: ChatBoxProps) {
     });
   };
 
+  const handleReport = async (
+    target: { messageId: Id<"chatMessages">; name: string },
+    reason: (typeof REPORT_REASONS)[number]["value"]
+  ) => {
+    setMessageActionTarget(null);
+    setIsChoosingReportReason(false);
+    setSendError(null);
+    try {
+      await reportMessage({
+        playerId: player._id,
+        messageId: target.messageId,
+        reason,
+      });
+      setReportStatus(`Thanks. ${target.name} has been reported.`);
+    } catch (error) {
+      setSendError(getErrorMessage(error));
+    }
+  };
+
   const handleMessageSenderClick = (
     event: React.MouseEvent<HTMLButtonElement>,
     senderId: Id<"players"> | undefined,
-    senderName: string
+    senderName: string,
+    messageId: Id<"chatMessages">
   ) => {
     if (!senderId || senderId === player._id) return;
 
@@ -175,9 +206,12 @@ export function ChatBox({ player }: ChatBoxProps) {
         ? Math.max(8, bounds.top - PRIVATE_POPOVER_HEIGHT_PX - 4)
         : preferredTop;
 
+    setIsChoosingReportReason(false);
+    setReportStatus(null);
     setMessageActionTarget({
       id: senderId,
       name: senderName,
+      messageId,
       top,
       left,
     });
@@ -389,7 +423,8 @@ export function ChatBox({ player }: ChatBoxProps) {
                                 handleMessageSenderClick(
                                   event,
                                   message.senderId,
-                                  message.senderName
+                                  message.senderName,
+                                  message._id
                                 )
                               }
                               className="font-semibold text-gold-light hover:text-gold-light/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold"
@@ -447,15 +482,40 @@ export function ChatBox({ player }: ChatBoxProps) {
             left: messageActionTarget.left,
           }}
         >
-          <button
-            type="button"
-            role="menuitem"
-            autoFocus
-            onClick={() => handleRecipientSelect(messageActionTarget)}
-            className="block w-full px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gold-light hover:bg-forest-mid focus-visible:bg-forest-mid focus-visible:outline-none"
-          >
-            Private message
-          </button>
+          {isChoosingReportReason ? (
+            REPORT_REASONS.map((reason, index) => (
+              <button
+                key={reason.value}
+                type="button"
+                role="menuitem"
+                autoFocus={index === 0}
+                onClick={() => void handleReport(messageActionTarget, reason.value)}
+                className="block w-full px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gold-light hover:bg-forest-mid focus-visible:bg-forest-mid focus-visible:outline-none"
+              >
+                {reason.label}
+              </button>
+            ))
+          ) : (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                autoFocus
+                onClick={() => handleRecipientSelect(messageActionTarget)}
+                className="block w-full px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gold-light hover:bg-forest-mid focus-visible:bg-forest-mid focus-visible:outline-none"
+              >
+                Private message
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setIsChoosingReportReason(true)}
+                className="block w-full px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gold-light hover:bg-forest-mid focus-visible:bg-forest-mid focus-visible:outline-none"
+              >
+                Report player
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -478,8 +538,11 @@ export function ChatBox({ player }: ChatBoxProps) {
             className="min-h-16 w-full resize-none rounded-none border-0 bg-transparent px-2 py-1.5 pb-8 pr-32 text-sm text-foreground outline-none placeholder:text-muted-foreground/70 focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
           />
           <div className="absolute inset-x-0 bottom-0 flex min-h-7 items-center justify-between gap-2 px-1 pb-1">
-            <div className="min-w-0 truncate text-xs text-blood-light">
-              {sendError}
+            <div
+              role="status"
+              className={`min-w-0 truncate text-xs ${sendError ? "text-blood-light" : "text-muted-foreground"}`}
+            >
+              {sendError ?? reportStatus}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <span className="text-xs text-muted-foreground">

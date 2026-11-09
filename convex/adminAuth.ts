@@ -18,8 +18,8 @@ export async function requireAdmin(
     throw new Error("Player not found");
   }
 
-  // Bind the admin row to the caller's signed-in session. Role semantics are
-  // intentionally unchanged (everyone is admin while testing).
+  // Bind the admin row to the caller's signed-in session. New characters are
+  // plain players; grant admin with admin:setPlayerRole from the CLI.
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) {
     throw new Error("Authentication required. Sign in to play.");

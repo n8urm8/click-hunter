@@ -1,5 +1,5 @@
 import { mutation } from "./_generated/server";
-import { requirePlayer } from "./playerAuth";
+import { requirePlayer, requirePlayerOwner } from "./playerAuth";
 import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { components } from "./_generated/api";
@@ -570,7 +570,7 @@ export const checkBossFight = mutation({
     sessionId: v.id("bossSessions"),
   },
   handler: async (ctx, { playerId, sessionId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const session = await ctx.db.get(sessionId);
     if (!session || session.playerId !== playerId) {
       throw new Error("Boss session not found");

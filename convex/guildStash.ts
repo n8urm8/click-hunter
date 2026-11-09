@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { grantItemToInventory } from "./items";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 
@@ -84,7 +84,7 @@ async function requireGuildMember(
 export const getGuildStash = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const membership = await ctx.db
       .query("guildMembers")
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
@@ -115,7 +115,7 @@ export const withdrawFromGuildStash = mutation({
     quantity: v.number(),
   },
   handler: async (ctx, { playerId, stashId, quantity }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const { membership } = await requireGuildMember(ctx, playerId);
     if (membership.role !== "master" && membership.role !== "officer") {

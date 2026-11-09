@@ -1,12 +1,13 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
+import { awardAbilityWisdomXp } from "./abilityCombat";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import {
   DEFAULT_MONSTER_POWER_MULTIPLIER,
   readPlayerCombatProfile,
-  settleRegularFight,
+
   simulateRegularBattle,
 } from "./combat";
 import {
@@ -66,6 +67,10 @@ async function setup(weaponSpeed = 1.3) {
       luk: 1, con: 1_000, goldDrop: 10, experienceReward: 5,
       baseMsPerAttack: 2_000, strength: 1, createdAt: 0,
     });
+    // These tests pin speed math; batchSettlement.test.ts covers the compensation.
+    await ctx.db.insert("gameBalance", {
+      key: "weaponSpeedDamageExponent", value: 0, description: "Test", lastUpdated: 0,
+    });
     return { playerId, itemId };
   });
   return { t, ...fixture };
@@ -81,7 +86,7 @@ test("every weapon is exactly half speed, including slow weapons and the speed f
     })).toBeCloseTo(expected);
     for (const dex of [5, 20]) {
       for (const armorPenalty of [0, 0.08, 3]) {
-        const previous = Math.max(0.5, speed + Math.max(0, dex - 10) * 0.1 - armorPenalty);
+        const previous = Math.max(0.5, speed * (1 + Math.max(0, dex - 10) * 0.1 - armorPenalty));
         expect(computeAttackSpeed(speed, dex, armorPenalty, {
           dexSpeedCoeff: 0.1, minAttackSpeed: 0.5, attackSpeedMultiplier: 0.5,
         })).toBeCloseTo(previous / 2);
@@ -179,7 +184,7 @@ test("existing weapons, displayed stats, inventory and real auto-battle use conf
   expect(player?.autoAttackEnabled).toBe(true);
   expect(player?.effectiveStats.dex).toBe(12);
   expect(player?.combatStats).toMatchObject({
-    attack: 22.4, health: 500, defense: 40, attackSpeed: 0.67, critChance: 0,
+    attack: 22.4, health: 500, defense: 40, attackSpeed: 1.3 * 1.01 * 0.5, critChance: 0,
   });
   const result = await t.mutation(async (ctx) => {
     const row = await ctx.db.get(playerId);
@@ -187,7 +192,7 @@ test("existing weapons, displayed stats, inventory and real auto-battle use conf
     return simulateRegularBattle(ctx, row, 1);
   });
   expect(result.playerAttackSpeed).toBe(player?.combatStats.attackSpeed);
-  expect(result.playerDamagePerSecond).toBeCloseTo(22.4 * 1000 / 1_493);
+  expect(result.playerDamagePerSecond).toBeCloseTo(22.4 * 1000 / 1_524);
   expect(result.playerMaxHealth).toBe(player?.combatStats.health);
   expect((await t.query(api.items.getPlayerInventory, { playerId })).attackSpeedMultiplier).toBe(0.5);
 });
@@ -307,14 +312,14 @@ test("shared equipment stats preserve speed passives and elemental damage", asyn
     }
   });
   const player = await t.query(api.players.getPlayerById, { playerId });
-  expect(player?.combatStats.attackSpeed).toBeCloseTo(0.67 * 1.2);
+  expect(player?.combatStats.attackSpeed).toBeCloseTo(0.6565 * 1.2);
   expect(player?.combatStats.attack).toBeCloseTo(22.4 * 1.1 * 1.4);
   const result = await t.mutation(async (ctx) => {
     const row = await ctx.db.get(playerId);
     if (!row) throw new Error("Missing test player");
     return simulateRegularBattle(ctx, row, 1);
   });
-  expect(result.playerDamagePerSecond).toBeCloseTo(22.4 * 1.1 * 1.4 * 1000 / 1_244);
+  expect(result.playerDamagePerSecond).toBeCloseTo(22.4 * 1.1 * 1.4 * 1000 / 1_270);
 });
 
 test("real slow-weapon encounters cannot damage or finish before the first swing", async () => {
@@ -365,7 +370,7 @@ test("in-fight regen heals on its own schedule instead of netting into hits", as
   expect(result.won).toBe(true);
   // Gross damage is stored (not netted to zero), with healing alongside it.
   expect(result.attackTiming?.monsterDamagePerHit).toBeCloseTo(8.5);
-  expect(result.regenPerSecond).toBeCloseTo(7.5);
+  expect(result.regenPerSecond).toBeCloseTo(10);
   // The bar climbs back toward full instead of pinning at starting HP.
   expect(
     projectBattleHealth(result, 2_000).currentPlayerHealth
@@ -379,11 +384,11 @@ test("out-of-combat HP ticks at the same rate as in-fight regen", async () => {
     await ctx.db.patch(playerId, { currentHp: 5, currentHpUpdatedAt: 0 });
     const player = await ctx.db.get(playerId);
     if (!player) throw new Error("Missing test player");
-    return resolveCurrentHp(player, 500, 50, await readHpRegenBalance(ctx), 60_000, false);
+    return resolveCurrentHp(player, 500, 50, await readHpRegenBalance(ctx), 30_000, false);
   });
-  // 7.5/s for 60s from 5 HP. The old 3x out-of-combat multiplier would clamp to 500.
+  // 10/s for 30s from 5 HP. The old 3x out-of-combat multiplier would clamp to 500.
   expect(state.maxHp).toBe(500);
-  expect(state.currentHp).toBeCloseTo(455);
+  expect(state.currentHp).toBeCloseTo(305);
   expect(state.currentHp).toBeLessThan(500);
 });
 
@@ -411,9 +416,9 @@ test("live speed buffs affect encounters and cooldowns without adding clock-depe
     if (!player) throw new Error("Missing test player");
     return readPlayerCombatProfile(ctx, player, { now });
   });
-  expect((await profileAt(0)).combatStats.attackSpeed).toBe(0.77);
-  expect((await profileAt(10_000)).combatStats.attackSpeed).toBe(0.67);
-  expect((await t.mutation(api.players.attemptAttack, { playerId })).cooldownMs).toBe(1_299);
+  expect((await profileAt(0)).combatStats.attackSpeed).toBeCloseTo(0.689);
+  expect((await profileAt(10_000)).combatStats.attackSpeed).toBeCloseTo(0.6565);
+  expect((await t.mutation(api.players.attemptAttack, { playerId })).cooldownMs).toBe(1_452);
   const before = await t.query(api.players.getPlayerById, { playerId });
   vi.setSystemTime(100_000);
   expect(await t.query(api.players.getPlayerById, { playerId })).toEqual(before);
@@ -445,6 +450,9 @@ test("legacy client-calculated regular fights cannot bypass server auto-battle",
 
 test("combat balance backfill is idempotent, preserves tuning and validates bad multipliers", async () => {
   const { t, playerId } = await setup();
+  await t.run(async (ctx) => {
+    for (const row of await ctx.db.query("gameBalance").collect()) await ctx.db.delete(row._id);
+  });
   expect((await t.mutation(internal.migrations.backfillCombatBalance, {})).created)
     .toBe(COMBAT_BALANCE_DEFAULTS.length + HP_REGEN_BALANCE_DEFAULTS.length + LEATHER_BALANCE_DEFAULTS.length);
   expect(await t.mutation(internal.migrations.backfillCombatBalance, {})).toEqual({ created: 0 });
@@ -712,36 +720,26 @@ test("abilities do not fire while a mismatched weapon is equipped", async () => 
   expect(result.abilityCasts).toBeUndefined();
 });
 
-test("ability casts award wisdom XP once per settled fight", async () => {
+test("ability casts award wisdom XP and keep the wisdom level current", async () => {
   const { t, playerId } = await setupCaster({
     monsterCon: 30,
     abilities: [{ slot: 0, ability: ARCANE_BOLT }],
   });
 
-  const settle = (settlementKey: string) =>
-    t.mutation(async (ctx) => {
-      const player = await ctx.db.get(playerId);
-      if (!player) throw new Error("Missing test player");
-      const result = await simulateRegularBattle(ctx, player, 1);
-      return settleRegularFight(ctx, {
-        playerId,
-        monsterTier: 1,
-        monsterType: result.monsterType,
-        won: result.won,
-        settlementKey,
-        goldEarned: 0,
-        experienceEarned: 0,
-        abilityCasts: result.abilityCasts,
-      });
-    });
+  await t.mutation(async (ctx) => {
+    const player = await ctx.db.get(playerId);
+    if (!player) throw new Error("Missing test player");
+    const result = await simulateRegularBattle(ctx, player, 1);
+    await awardAbilityWisdomXp(ctx, playerId, result.abilityCasts ?? []);
+  });
 
-  const key = `${playerId}:caster-fight-1`;
-  await settle(key);
-  const afterFirst = await t.run((ctx) => ctx.db.get(playerId));
-  expect(afterFirst?.statXp?.wis ?? 0).toBeGreaterThan(0);
-
-  // Re-delivering the same settlement key must not double-award.
-  await settle(key);
-  const afterSecond = await t.run((ctx) => ctx.db.get(playerId));
-  expect(afterSecond?.statXp?.wis).toBe(afterFirst?.statXp?.wis);
+  const after = await t.run((ctx) => ctx.db.get(playerId));
+  expect(after?.statXp?.wis ?? 0).toBeGreaterThan(0);
+  // Combat and rebirth read the level, so XP has to move it. Enough XP for
+  // level 2 at the default curve is awarded by a large cast count below.
+  await t.mutation((ctx) =>
+    awardAbilityWisdomXp(ctx, playerId, [{ abilityId: ARCANE_BOLT.abilityId, level: 1, casts: 10_000 }])
+  );
+  const levelled = await t.run((ctx) => ctx.db.get(playerId));
+  expect(levelled?.wis ?? 1).toBeGreaterThan(1);
 });

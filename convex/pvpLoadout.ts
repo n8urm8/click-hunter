@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import {
   computeEquipmentStats,
   computeWeaponStats,
@@ -193,7 +193,7 @@ async function validateLoadoutSlots(
 export const getPvpLoadout = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const [saved, owned] = await Promise.all([
       ctx.db
         .query("pvpLoadoutSlots")
@@ -259,7 +259,7 @@ export const savePvpLoadout = mutation({
     ),
   },
   handler: async (ctx, { playerId, slots }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await validateLoadoutSlots(ctx, playerId, slots);
     const existing = await ctx.db
       .query("pvpLoadoutSlots")
@@ -288,7 +288,7 @@ export const savePvpLoadout = mutation({
 export const clearPvpLoadout = mutation({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const existing = await ctx.db
       .query("pvpLoadoutSlots")
       .withIndex("by_player", (q) => q.eq("playerId", playerId))

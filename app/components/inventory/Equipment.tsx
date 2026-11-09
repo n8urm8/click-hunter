@@ -548,7 +548,8 @@ export function EnchantmentControls({
   const essenceCount = inventoryItems
     .filter((row) => row.item.itemId === essenceSlug)
     .reduce((total, row) => total + row.quantity, 0);
-  const need = rates?.enchantEssenceQty ?? 100;
+  const need = rates?.enchantEssenceQty ?? 25;
+  const goldCost = Math.ceil((rates?.enchantGoldPerLevel ?? 0) * next);
   const atCap = rates ? next > rates.enchantLevelCap : false;
   const chance = rates
     ? infusionSuccessChance(infusionLevel, next, rates)
@@ -603,7 +604,7 @@ export function EnchantmentControls({
       ) : (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[11px] text-forest-glow">
-            +{next}: {need}x {essenceSlug} (have {essenceCount}) · {bonus}
+            +{next}: {need}x {essenceSlug} (have {essenceCount}){goldCost > 0 ? ` + ${goldCost.toLocaleString()} gold` : ""} · {bonus}
             {chance !== null &&
               ` · ${formatPercent(chance)} at Infusion ${infusionLevel}`}
           </p>

@@ -375,7 +375,7 @@ export function resolveAbilitySpec(input: {
         value: healAmount,
         buffPercent: false,
         buffDurationMs: 0,
-        description: `${ability.name} heals for ${healAmount} HP`,
+        description: `${ability.name} restores ${healAmount}% of max HP`,
       };
     }
 

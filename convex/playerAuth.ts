@@ -49,20 +49,52 @@ export async function requirePlayerRead(
   ctx: DatabaseCtx,
   playerId: Id<"players">
 ): Promise<Doc<"players">> {
+  return await requirePlayer(ctx, playerId);
+}
+
+/**
+ * Ownership check that doesn't read the player row. Prefer this when the caller
+ * doesn't use the row: every fight settlement rewrites `players`, so a query
+ * reading it re-runs every settlement even if its own data never changed.
+ *
+ * Characters without a `playerOwners` row (created before that table, until
+ * backfillPlayerOwners has run) fall back to the player row.
+ */
+export async function requirePlayerOwner(
+  ctx: DatabaseCtx,
+  playerId: Id<"players">
+): Promise<void> {
   const subject = await requireAuthSubject(ctx);
-  const player = await ctx.db.get(playerId);
-  if (!player) {
-    throw new Error("Player not found");
+  const owner = await ctx.db
+    .query("playerOwners")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+    .first();
+  if (!owner) {
+    await requirePlayer(ctx, playerId);
+    return;
   }
-  if (player.authSubject === undefined) {
-    throw new Error(
-      "Character is not claimed. Create or claim it first."
-    );
-  }
-  if (player.authSubject !== subject) {
+  if (owner.authSubject !== subject) {
     throw new Error(
       "This character belongs to a different signed-in session."
     );
   }
-  return player;
+}
+
+/** Record who owns a character. Call wherever `authSubject` is set. */
+export async function setPlayerOwner(
+  ctx: MutationCtx,
+  playerId: Id<"players">,
+  authSubject: string
+): Promise<void> {
+  const owner = await ctx.db
+    .query("playerOwners")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+    .first();
+  if (owner) {
+    if (owner.authSubject !== authSubject) {
+      await ctx.db.patch(owner._id, { authSubject });
+    }
+    return;
+  }
+  await ctx.db.insert("playerOwners", { playerId, authSubject });
 }

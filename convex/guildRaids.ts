@@ -1,10 +1,11 @@
+import { readRebirthRewardBonuses } from "./rebirth";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { readPlayerCombatProfile } from "./combat";
 import {
   abilityCastsLog,
@@ -634,6 +635,7 @@ async function settleRaidXp(
     ]);
     const guildGoldMult = 1 + (guildBonuses.goldBonusPercent ?? 0) / 100;
     const guildXpMult = 1 + (guildBonuses.xpBonusPercent ?? 0) / 100;
+    const rebirthRewards = await readRebirthRewardBonuses(ctx, player.rebirthCount);
     const gold = Math.max(
       0,
       Math.floor(
@@ -641,6 +643,7 @@ async function settleRaidXp(
           tuning.rewardGoldMult *
           events.goldMultiplier *
           passives.goldMultiplier *
+          rebirthRewards.goldMultiplier *
           guildGoldMult
       )
     );
@@ -652,6 +655,7 @@ async function settleRaidXp(
           events.experienceMultiplier *
           boosts.xpMultiplier *
           passives.xpMultiplier *
+          rebirthRewards.xpMultiplier *
           guildXpMult
       )
     );
@@ -734,7 +738,7 @@ export const startRaid = mutation({
     tier: v.number(),
   },
   handler: async (ctx, { playerId, tier }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const tuning = await readRaidTuning(ctx);
     const now = Date.now();
     requireRaidDay(tuning, now);
@@ -815,7 +819,7 @@ export const createRaidParty = mutation({
     tier: v.number(),
   },
   handler: async (ctx, { playerId, tier }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const tuning = await readRaidTuning(ctx);
     const now = Date.now();
     requireRaidDay(tuning, now);
@@ -874,7 +878,7 @@ export const joinRaid = mutation({
     raidId: v.id("guildRaids"),
   },
   handler: async (ctx, { playerId, raidId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const tuning = await readRaidTuning(ctx);
     requireRaidDay(tuning, Date.now());
     const membership = await getMembership(ctx, playerId);
@@ -914,7 +918,7 @@ export const beginRaid = mutation({
     raidId: v.id("guildRaids"),
   },
   handler: async (ctx, { playerId, raidId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const tuning = await readRaidTuning(ctx);
     const now = Date.now();
     requireRaidDay(tuning, now);
@@ -987,7 +991,7 @@ export const beginRaid = mutation({
         magicalDefense: Math.max(0, profile.combatStats.magicalDefense),
         ward: Math.max(0, profile.ward[dragon.element] ?? 0),
         alive: true,
-        attack: Math.max(1, profile.combatStats.attack),
+        attack: Math.max(1, profile.combatStats.roundAttack),
         critChance: Math.max(0, profile.combatStats.critChance),
         critMultiplier: Math.max(1, profile.combatStats.critDamageMultiplier),
         ...(abilityState.runtimes.length > 0 ? { abilityState } : {}),
@@ -1025,7 +1029,7 @@ export const tickRaid = mutation({
     raidId: v.id("guildRaids"),
   },
   handler: async (ctx, { playerId, raidId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const raid = await ctx.db.get(raidId);
     if (!raid) throw new Error("Raid not found");
     const membership = await getMembership(ctx, playerId);
@@ -1139,7 +1143,7 @@ export const tickRaid = mutation({
           p.ward ??
           Math.max(0, profile.ward[bossElementForTier(raid.tier)] ?? 0),
         alive: p.alive ?? true,
-        attack: p.attack ?? Math.max(1, profile.combatStats.attack),
+        attack: p.attack ?? Math.max(1, profile.combatStats.roundAttack),
         critChance: p.critChance ?? Math.max(0, profile.combatStats.critChance),
         critMultiplier:
           p.critMultiplier ??
@@ -1417,7 +1421,7 @@ export const getGuildRaids = query({
     weekStart: v.optional(v.number()),
   },
   handler: async (ctx, { playerId, status, weekStart }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const membership = await ctx.db
       .query("guildMembers")
       .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
@@ -1471,7 +1475,7 @@ export const getGuildRaids = query({
 export const getRaidStatus = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const tuning = await readRaidTuning(ctx);
     const now = Date.now();
     return {
@@ -1504,7 +1508,7 @@ export const getRaidLeaderboard = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, { playerId, weekStart, limit }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const week = weekStart ?? saturdayWeekStart(Date.now());
     const capped =
       typeof limit === "number" && Number.isSafeInteger(limit)

@@ -55,11 +55,7 @@ async function seedUpgrades(ctx: MutationCtx) {
   }> = [
     { upgradeId: "str_boost_1",      name: "Strength Training I", category: "stat-boost", cost: 100, description: "+5 STR", effectType: "stat-boost", effectStat: "str", effectAmount: 5, minTier: 1 },
     { upgradeId: "dex_boost_1",      name: "Agility Training I",  category: "stat-boost", cost: 100, description: "+5 DEX", effectType: "stat-boost", effectStat: "dex", effectAmount: 5, minTier: 1 },
-    { upgradeId: "int_boost_1",      name: "Magical Aptitude I",  category: "stat-boost", cost: 100, description: "+5 INT", effectType: "stat-boost", effectStat: "int", effectAmount: 5, minTier: 1 },
-    { upgradeId: "luk_boost_1",      name: "Fortune's Favor I",   category: "stat-boost", cost: 100, description: "+5 LUK", effectType: "stat-boost", effectStat: "luk", effectAmount: 5, minTier: 1 },
     { upgradeId: "con_boost_1",      name: "Toughening I",        category: "stat-boost", cost: 100, description: "+5 CON", effectType: "stat-boost", effectStat: "con", effectAmount: 5, minTier: 1 },
-    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks at your attack speed", effectType: "enable-auto-attack",      minTier: 2, minLevel: 20 },
-    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start the next fight",        effectType: "enable-auto-start-fight", minTier: 2, minLevel: 25 },
   ];
   for (const u of upgrades) {
     await ctx.db.insert("upgrades", { ...u, createdAt: Date.now() });
@@ -88,7 +84,11 @@ async function seedGameBalance(ctx: MutationCtx) {
   if (existing) return;
 
   const entries: Array<{ key: string; value: unknown; description: string }> = [
-    { key: "tierScaleMultiplier",  value: 2,                            description: "Doubles monster stats per tier level" },
+    { key: "tierScaleMultiplier",  value: 1.4,                          description: "Monster stat multiplier per tier level" },
+    { key: "minFightDurationMs", value: 2000, description: "Shortest a won regular fight may take, including the walk to the next monster (milliseconds)" },
+    { key: "rewardTierGrowth", value: 1.15, description: "Reward multiplier per tier, on top of the linear per-tier reward" },
+    { key: "autoRestBelowPercent", value: 0.5, description: "Hunts stop to rest before a fight when HP is below this fraction of max (0 = never)" },
+    { key: "autoRestUntilPercent", value: 0.9, description: "Fraction of max HP a resting hunter recovers to before fighting again" },
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
     { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
@@ -101,8 +101,6 @@ async function seedGameBalance(ctx: MutationCtx) {
     { key: "skillLevelSpeedBonusPerLevel", value: 0.01, description: "Action speed bonus per skill level for that skill (fraction per level above 1: 0.01 = +1% speed per level)" },
     { key: "startingStats",        value: { str: 5, dex: 5, int: 5, luk: 5, con: 5 }, description: "Starting stats for new players" },
     { key: "inventorySlotCapacity", value: 50,                     description: "Maximum number of unequipped inventory stacks or item instances" },
-    { key: "statUpgradeCostMultiplier", value: 2, description: "Cost multiplier applied to each paid stat-upgrade level" },
-    { key: "statUpgradeLevelRequirements", value: [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377], description: "Character levels required for paid stat-upgrade levels" },
     { key: "bazaarTaxPercent", value: DEFAULT_BAZAAR_TAX_PERCENT, description: "Marketplace tax percent deducted from the seller's proceeds on every Bazaar trade (rounded down)" },
     { key: "bazaarOrderExpiryDays", value: DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS, description: "Days before an open Bazaar order expires and its escrow can be reclaimed" },
     { key: "bazaarMaxOpenOrders", value: DEFAULT_BAZAAR_MAX_OPEN_ORDERS, description: "Maximum number of active Bazaar orders a player may have open at once" },
@@ -168,14 +166,14 @@ async function seedTaskQueueConfig(ctx: MutationCtx) {
     },
     {
       key: "taskHeartbeatGraceMs",
-      value: 15 * 1000,
+      value: 90 * 1000,
       description:
         "Maximum heartbeat gap treated as online task time (milliseconds)",
     },
     {
       key: "autoBattleBatchLimit",
-      value: 5,
-      description: "Maximum auto-battle fights resolved per online heartbeat",
+      value: 50,
+      description: "Maximum auto-battle fights resolved per settlement",
     },
     {
       key: "autoBattleCreditCapMs",

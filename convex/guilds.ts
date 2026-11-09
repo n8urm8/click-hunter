@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { calculateCharacterLevel } from "./characterLevel";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 import { readBalanceMap } from "./balance";
@@ -50,7 +50,7 @@ export const GUILD_BALANCE_DEFAULTS = [
   // TODO(summon-cost): decide dragon summoning cost. Candidates: guild bank
   // gold, per-member boss keys, weekly free first summon with escalating cost.
   // Currently 0 (free) until economy tuning lands.
-  { key: "guildRaidSummonGoldCost", value: 0, description: "TODO: gold cost from the guild bank to summon a raid dragon (0 = free for now)" },
+  { key: "guildRaidSummonGoldCost", value: 100000, description: "Gold cost from the guild bank to summon a raid dragon" },
   // TODO(raid-rewards): current split is full solo-boss gold+XP to each
   // qualifying damager plus boss loot-table rolls to the guild stash on kill.
   // Revisit split vs damage-share and weekly lockouts after playtesting.
@@ -356,7 +356,7 @@ export const createGuild = mutation({
     description: v.string(),
   },
   handler: async (ctx, { playerId, name, tag, description }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     return await createGuildCore(ctx, playerId, { name, tag, description });
   },
 });
@@ -364,7 +364,7 @@ export const createGuild = mutation({
 export const disbandGuild = mutation({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     if (membership.role !== "master") {
       throw new Error("Only the guild master can disband the guild");
@@ -393,7 +393,7 @@ export const disbandGuild = mutation({
 export const leaveGuild = mutation({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     if (membership.role === "master") {
       const memberCount = await countMembers(ctx, guild._id);
@@ -418,7 +418,7 @@ export const invitePlayer = mutation({
     message: v.optional(v.string()),
   },
   handler: async (ctx, { playerId, targetPlayerId, message }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     requireRole(membership, "officer");
     if (playerId === targetPlayerId) {
@@ -592,7 +592,7 @@ export const acceptInvite = mutation({
     applicationId: v.id("guildApplications"),
   },
   handler: async (ctx, { playerId, applicationId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const application = await ctx.db.get(applicationId);
     if (!application) throw new Error("Application not found");
     if (application.playerId !== playerId) {
@@ -611,7 +611,7 @@ export const acceptApplication = mutation({
     applicationId: v.id("guildApplications"),
   },
   handler: async (ctx, { playerId, applicationId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     requireRole(membership, "officer");
     const application = await ctx.db.get(applicationId);
@@ -629,7 +629,7 @@ export const declineApplication = mutation({
     applicationId: v.id("guildApplications"),
   },
   handler: async (ctx, { playerId, applicationId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const application = await ctx.db.get(applicationId);
     if (!application) throw new Error("Application not found");
     if (application.status !== "pending") {
@@ -657,7 +657,7 @@ export const kickMember = mutation({
     targetPlayerId: v.id("players"),
   },
   handler: async (ctx, { playerId, targetPlayerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     requireRole(membership, "officer");
     if (playerId === targetPlayerId) {
@@ -687,7 +687,7 @@ export const promoteMember = mutation({
     targetPlayerId: v.id("players"),
   },
   handler: async (ctx, { playerId, targetPlayerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     if (membership.role !== "master") {
       throw new Error("Only the guild master can promote members");
@@ -725,7 +725,7 @@ export const demoteMember = mutation({
     targetPlayerId: v.id("players"),
   },
   handler: async (ctx, { playerId, targetPlayerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const { membership } = await requireMembership(ctx, playerId);
     if (membership.role !== "master") {
       throw new Error("Only the guild master can demote members");
@@ -760,7 +760,7 @@ export const depositGold = mutation({
     amount: v.number(),
   },
   handler: async (ctx, { playerId, amount }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     if (!Number.isSafeInteger(amount) || amount < 1) {
@@ -774,6 +774,7 @@ export const depositGold = mutation({
     await ctx.db.patch(guild._id, { gold: guild.gold + amount, updatedAt: now });
     await ctx.db.patch(membership._id, {
       contributionGold: membership.contributionGold + amount,
+      netGoldDeposited: (membership.netGoldDeposited ?? 0) + amount,
       lastActiveAt: now,
     });
     return await ctx.db.get(guild._id);
@@ -786,7 +787,7 @@ export const withdrawGold = mutation({
     amount: v.number(),
   },
   handler: async (ctx, { playerId, amount }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const { guild, membership } = await requireMembership(ctx, playerId);
     requireRole(membership, "officer");
@@ -799,9 +800,35 @@ export const withdrawGold = mutation({
     const now = Date.now();
     await ctx.db.patch(guild._id, { gold: guild.gold - amount, updatedAt: now });
     await ctx.db.patch(playerId, { gold: player.gold + amount, lastUpdated: now });
+    if (membership.netGoldDeposited) {
+      await ctx.db.patch(membership._id, {
+        netGoldDeposited: Math.max(0, membership.netGoldDeposited - amount),
+      });
+    }
     return await ctx.db.get(guild._id);
   },
 });
+
+/**
+ * Rebirth wipes a player's gold, so gold they parked in the guild bank since
+ * their last rebirth goes with it. Only their own net deposits are removed, so
+ * the guild loses nothing it had before they started sheltering.
+ */
+export async function forfeitShelteredGuildGold(
+  ctx: MutationCtx,
+  playerId: Id<"players">
+): Promise<void> {
+  const membership = await getMembership(ctx, playerId);
+  if (!membership?.netGoldDeposited) return;
+  const guild = await ctx.db.get(membership.guildId);
+  if (guild) {
+    await ctx.db.patch(guild._id, {
+      gold: Math.max(0, guild.gold - membership.netGoldDeposited),
+      updatedAt: Date.now(),
+    });
+  }
+  await ctx.db.patch(membership._id, { netGoldDeposited: 0 });
+}
 
 export async function addGuildXp(  ctx: MutationCtx,
   guildId: Id<"guilds">,
@@ -857,7 +884,7 @@ export async function accrueGuildXpFromEarned(
 export const getMyGuild = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const membership = await getMembership(ctx, playerId);
     if (!membership) return null;
     const guild = await ctx.db.get(membership.guildId);
@@ -876,7 +903,7 @@ export const getGuildById = query({
     guildId: v.id("guilds"),
   },
   handler: async (ctx, { playerId, guildId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const guild = await ctx.db.get(guildId);
     if (!guild) return null;
     const [bonus, members] = await Promise.all([
@@ -900,7 +927,7 @@ export const getGuildMembers = query({
     guildId: v.id("guilds"),
   },
   handler: async (ctx, { playerId, guildId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const members = await ctx.db
       .query("guildMembers")
       .withIndex("by_guildId", (q) => q.eq("guildId", guildId))
@@ -921,7 +948,7 @@ export const getPendingApplications = query({
     guildId: v.optional(v.id("guilds")),
   },
   handler: async (ctx, { playerId, guildId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     if (guildId) {
       const membership = await getMembership(ctx, playerId);
       if (!membership || membership.guildId !== guildId) {

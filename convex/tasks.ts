@@ -1,17 +1,19 @@
+import { readBalanceMap, readBalanceValue } from "./balance";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { requirePlayer } from "./playerAuth";
+import { requirePlayer, requirePlayerOwner } from "./playerAuth";
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
 import {
+  loadBattleContext,
   readPlayerCombatProfile,
-  settleRegularFight,
-  simulateRegularBattle,
+  rollEncounter,
+  type BattleContext,
 } from "./combat";
 import { resolveCurrentHp, readHpRegenBalance, writePlayerHp } from "./playerHp";
 import { tickEquippedConsumables } from "./consumableSlots";
-import type { LootSummary } from "./loot";
+import { settleAutoBattleBatch, type BatchFight, type LootSummary } from "./loot";
 import { getEquippedProfile } from "./items";
 import {
   combatZoneValidator,
@@ -29,9 +31,14 @@ import { readNextSkillModifierChangeAt } from "./skillBonuses";
 
 export const DEFAULT_TASK_QUEUE_CAPACITY = 5;
 export const DEFAULT_OFFLINE_TASK_WINDOW_MS = 4 * 60 * 60 * 1000;
-export const DEFAULT_TASK_HEARTBEAT_GRACE_MS = 15 * 1000;
-export const DEFAULT_AUTO_BATTLE_BATCH_LIMIT = 5;
+// Long enough to outlast browsers throttling background tabs to one timer a
+// minute, so a hidden tab keeps hunting.
+export const DEFAULT_TASK_HEARTBEAT_GRACE_MS = 90 * 1000;
+export const DEFAULT_AUTO_BATTLE_BATCH_LIMIT = 50;
 export const DEFAULT_AUTO_BATTLE_CREDIT_CAP_MS = 5 * 60 * 1000;
+/** Below this fraction of max HP, a hunter rests instead of starting a fight. */
+export const DEFAULT_AUTO_REST_BELOW_PERCENT = 0.5;
+export const DEFAULT_AUTO_REST_UNTIL_PERCENT = 0.9;
 export const DEFAULT_AUTO_BATTLE_RESPAWN_MS = 5 * 1000;
 
 const MAX_AUTO_BATTLE_TARGET_BATTLES = 10_000;
@@ -45,11 +52,7 @@ type PlayerTask = Doc<"playerTasks">;
 type BattleStat = Doc<"taskBattleStats">;
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
-  const row = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", key))
-    .first();
-  return row?.value;
+  return await readBalanceValue(ctx, key);
 }
 
 function readIntegerBalance(value: unknown, fallback: number, minimum: number) {
@@ -116,6 +119,19 @@ async function getAutoBattleRespawnMs(ctx: DatabaseCtx) {
     DEFAULT_AUTO_BATTLE_RESPAWN_MS,
     0
   );
+}
+
+async function readAutoRestSettings(ctx: DatabaseCtx) {
+  const values = await readBalanceMap(ctx, ["autoRestBelowPercent", "autoRestUntilPercent"]);
+  const fraction = (value: unknown, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+      ? value
+      : fallback;
+  const below = fraction(values.get("autoRestBelowPercent"), DEFAULT_AUTO_REST_BELOW_PERCENT);
+  return {
+    below,
+    until: Math.max(below, fraction(values.get("autoRestUntilPercent"), DEFAULT_AUTO_REST_UNTIL_PERCENT)),
+  };
 }
 
 async function getPlayer(ctx: DatabaseCtx, playerId: PlayerId) {
@@ -385,7 +401,7 @@ async function validateAutoBattleRequest(
 ) {
   // Battle automation is available to everyone, no unlock required.
   // Any tier up to the content cap can be battled at any character level.
-  await getPlayer(ctx, playerId);
+  await requirePlayerOwner(ctx, playerId);
   if (!Number.isSafeInteger(tier) || tier < 1) {
     throw new Error("Battle tier must be a positive integer");
   }
@@ -557,6 +573,7 @@ async function recordDefeatedMonster(
   result: {
     monsterType: string;
     monsterName: string;
+    count: number;
   },
   now: number
 ) {
@@ -570,7 +587,7 @@ async function recordDefeatedMonster(
   if (existing) {
     await ctx.db.patch(existing._id, {
       monsterName: result.monsterName,
-      defeatedCount: existing.defeatedCount + 1,
+      defeatedCount: existing.defeatedCount + result.count,
       updatedAt: now,
     });
     return;
@@ -581,7 +598,7 @@ async function recordDefeatedMonster(
     taskId: task._id,
     monsterType: result.monsterType,
     monsterName: result.monsterName,
-    defeatedCount: 1,
+    defeatedCount: result.count,
     createdAt: now,
     updatedAt: now,
   });
@@ -884,6 +901,12 @@ async function processAutoBattle(
   onlineSegments: ProgressSegment[]
 ) {
   const playerId = task.playerId;
+  // Auto-use equipped combat consumables whose buff expired, before the profile
+  // read so a buff that starts now counts for this batch.
+  const resting = task.respawnUntil !== undefined && now < task.respawnUntil;
+  if (!resting && task.tier !== undefined) {
+    await tickEquippedConsumables(ctx, playerId, { kind: "battle" }, now);
+  }
   // One HP/combat-profile read per settlement: it serves the respawn-wait path
   // below, the fight loop, and the encounter that gets rolled for the next one.
   const hpPlayer = await getPlayer(ctx, playerId);
@@ -922,6 +945,7 @@ async function processAutoBattle(
   let wins = 0;
   let losses = 0;
   const batchLimit = await getAutoBattleBatchLimit(ctx);
+  const autoRest = await readAutoRestSettings(ctx);
   const tier = task.tier;
 
   if (tier === undefined) {
@@ -930,9 +954,6 @@ async function processAutoBattle(
     });
     return await activateNextTask(ctx, playerId, now);
   }
-
-  // Auto-use equipped combat consumables whose buff expired (battle context).
-  await tickEquippedConsumables(ctx, playerId, { kind: "battle" }, now);
 
   // Resolve persistent HP without wall-clock healing while actively
   // fighting: recovery comes from in-fight CON healing (applied in each sim
@@ -954,6 +975,12 @@ async function processAutoBattle(
   let persistentMaxHp = hpState.maxHp;
 
   let completed = false;
+  let defeated = false;
+  // Fights resolve in memory against one loaded context, then settle together
+  // below. A batch of fifty costs the same reads as a batch of one.
+  let battle: BattleContext | null = null;
+  let abilityCooldowns = encounter?.abilityCooldowns;
+  const fights: BatchFight[] = [];
   for (let attempt = 0; attempt < batchLimit; attempt += 1) {
     if (
       task.battleMode === "count" &&
@@ -983,12 +1010,31 @@ async function processAutoBattle(
         }
         break;
       }
-      // Re-read per fight: settlement patches the player document, and the
-      // fresh snapshot is what the next encounter is rolled against.
-      const player = await getPlayer(ctx, playerId);
-      encounter = await simulateRegularBattle(ctx, player, tier, {
-        zone: task.zone,
+      // Rest rather than walk into a fight on low HP. Banked online time pays for
+      // the rest first; whatever's left waits out on the respawn clock, which
+      // the client already shows as recovering.
+      const regenPerSecond = hpProfile.conRegenPerSecond;
+      if (persistentHp < autoRest.below * persistentMaxHp && regenPerSecond > 0) {
+        const targetHp = autoRest.until * persistentMaxHp;
+        const restMs = ((targetHp - persistentHp) / regenPerSecond) * 1_000;
+        if (onlineCreditMs >= restMs) {
+          onlineCreditMs -= restMs;
+          persistentHp = targetHp;
+        } else {
+          persistentHp += (regenPerSecond * onlineCreditMs) / 1_000;
+          nextRespawnUntil = now + Math.ceil(restMs - onlineCreditMs);
+          onlineCreditMs = 0;
+          break;
+        }
+      }
+      battle ??= await loadBattleContext(ctx, hpPlayer, tier, {
+        ...(task.zone === undefined ? {} : { zone: task.zone }),
+        now,
+        profile: hpProfile,
+      });
+      encounter = rollEncounter(battle, {
         startingHp: persistentHp,
+        ...(abilityCooldowns === undefined ? {} : { abilityCooldowns }),
       });
       persistentMaxHp = encounter.playerMaxHealth;
     }
@@ -1013,56 +1059,22 @@ async function processAutoBattle(
     }
     completedBattles += 1;
     persistentHp = result.playerEndingHp ?? (result.won ? persistentHp : 0);
+    abilityCooldowns = result.abilityCooldowns;
     encounter = undefined;
+    fights.push({
+      monsterType: result.monsterType,
+      monsterName: result.monsterName,
+      won: result.won,
+      goldEarned: result.goldEarned ?? 0,
+      experienceEarned: result.experienceEarned ?? 0,
+      ...(result.abilityCasts === undefined ? {} : { abilityCasts: result.abilityCasts }),
+    });
     if (result.won) {
       wins += 1;
-      await recordDefeatedMonster(ctx, task, result, now);
     } else {
       losses += 1;
-    }
-
-    const settlement = await settleRegularFight(ctx, {
-      playerId,
-      monsterTier: result.monsterTier,
-      monsterType: result.monsterType,
-      won: result.won,
-      settlementKey: `${playerId}:${task._id}:${completedBattles}`,
-      ...(task.zone === undefined ? {} : { monsterZone: task.zone }),
-      goldEarned: result.goldEarned,
-      experienceEarned: result.experienceEarned,
-      ...(result.abilityCasts === undefined
-        ? {}
-        : { abilityCasts: result.abilityCasts }),
-    });
-    totalGoldEarned += settlement.goldEarned;
-    totalExperienceEarned += settlement.experienceEarned;
-    mergeLootSummary(lootSummary, settlement.loot);
-
-    if (!result.won) {
-      // Dying kicks you out of the hunt: persist 0 HP, bank everything earned
-      // so far, and close the task as failed so the UI returns to hunt
-      // selection instead of recovering into the next encounter.
-      await writePlayerHp(ctx, playerId, 0, persistentMaxHp, now);
-      const resolvedTask = {
-        ...task,
-        progressMs,
-        completedBattles,
-        onlineCreditMs,
-        totalGoldEarned,
-        totalExperienceEarned,
-        lootSummary,
-      };
-      await completeTask(ctx, {
-        ...resolvedTask,
-      }, "failed", now, {
-        reason: "Defeated",
-        battles: completedBattles,
-        wins,
-        losses,
-        goldEarned: totalGoldEarned,
-        experienceEarned: totalExperienceEarned,
-      });
-      return await activateNextTask(ctx, playerId, now);
+      defeated = true;
+      break;
     }
 
     if (
@@ -1081,6 +1093,54 @@ async function processAutoBattle(
       completed = true;
       break;
     }
+  }
+
+  if (fights.length > 0) {
+    const settlement = await settleAutoBattleBatch(ctx, {
+      player: hpPlayer,
+      settlementKey: `${playerId}:${task._id}:${completedBattles}`,
+      tier,
+      ...(task.zone === undefined ? {} : { monsterZone: task.zone }),
+      weaponDamageStat: hpProfile.weapon?.damageStat ?? null,
+      fights,
+    });
+    totalGoldEarned += settlement.goldEarned;
+    totalExperienceEarned += settlement.experienceEarned;
+    mergeLootSummary(lootSummary, settlement.loot);
+    const defeatedByType = new Map<string, { monsterType: string; monsterName: string; count: number }>();
+    for (const fight of fights) {
+      if (!fight.won) continue;
+      const row = defeatedByType.get(fight.monsterType);
+      if (row) row.count += 1;
+      else defeatedByType.set(fight.monsterType, { monsterType: fight.monsterType, monsterName: fight.monsterName, count: 1 });
+    }
+    for (const row of defeatedByType.values()) {
+      await recordDefeatedMonster(ctx, task, row, now);
+    }
+  }
+
+  if (defeated) {
+    // Dying kicks you out of the hunt: persist 0 HP, bank everything earned
+    // so far, and close the task as failed so the UI returns to hunt
+    // selection instead of recovering into the next encounter.
+    await writePlayerHp(ctx, playerId, 0, persistentMaxHp, now);
+    await completeTask(ctx, {
+      ...task,
+      progressMs,
+      completedBattles,
+      onlineCreditMs,
+      totalGoldEarned,
+      totalExperienceEarned,
+      lootSummary,
+    }, "failed", now, {
+      reason: "Defeated",
+      battles: completedBattles,
+      wins,
+      losses,
+      goldEarned: totalGoldEarned,
+      experienceEarned: totalExperienceEarned,
+    });
+    return await activateNextTask(ctx, playerId, now);
   }
 
   // Persist HP once per settlement (batch-safe). Mid-encounter, project
@@ -1105,7 +1165,11 @@ async function processAutoBattle(
     persistentHp = rested.currentHp;
     persistentMaxHp = rested.maxHp;
   }
-  await writePlayerHp(ctx, playerId, persistentHp, persistentMaxHp, now);
+  // A tick that settled nothing and left HP where it was has nothing to save, and
+  // writing anyway would re-run every query reading this player.
+  if (fightsSettled > 0 || persistentHp !== hpPlayer.currentHp) {
+    await writePlayerHp(ctx, playerId, persistentHp, persistentMaxHp, now);
+  }
 
   const encounterFields = encounter
     ? {
@@ -1298,10 +1362,23 @@ function getNextSettlementAt(
         : task.battleEncounter.durationMs
     ) - task.onlineCreditMs);
     // The encounter is already simulated and frozen on the task, so nothing
-    // needs to happen until it resolves. Presence heartbeats keep crediting
-    // the online clock while the client projects the fight locally, so the
-    // wait is the encounter itself rather than a repeated slice of it.
-    return task.updatedAt + remainingMs;
+    // needs the server until it resolves. Past that, fights bank online credit
+    // and settle together: this interval, not fight length, sets the write rate.
+    // A defeat settles on time because it ends the hunt, and a hunt with a target
+    // settles as soon as its remaining fights or time could be used up.
+    if (!task.battleEncounter.won) return task.updatedAt + remainingMs;
+    const encounterMs = Math.max(1, task.battleEncounter.durationMs);
+    const untilTargetMs =
+      task.battleMode === "count"
+        ? remainingMs +
+          Math.max(0, (task.targetBattles ?? 0) - task.completedBattles - 1) * encounterMs
+        : task.battleMode === "duration"
+          ? Math.max(0, (task.targetDurationMs ?? 0) - task.progressMs - task.onlineCreditMs)
+          : Infinity;
+    return task.updatedAt + Math.min(
+      untilTargetMs,
+      Math.max(remainingMs, settlementIntervalMs)
+    );
   }
   if (getDeferredProgressMs(task) > 0) return task.updatedAt;
   if (task.canProgressOffline && offlineWindowMs === 0) return null;
@@ -1449,7 +1526,7 @@ export const getQueue = query({
     includeBattleStats: v.optional(v.boolean()),
   },
   handler: async (ctx, { playerId, now, includeHistory, includeBattleStats }) => {
-    await getPlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     if (now !== undefined && !Number.isFinite(now)) {
       throw new Error("Queue timestamp must be finite");
     }
@@ -1465,7 +1542,7 @@ export const sync = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    await getPlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const now = Date.now();
     const active = await settleTaskQueue(ctx, playerId, now);
     const [settings, offlineWindowMs] = await Promise.all([
@@ -1504,7 +1581,7 @@ export const getActivePlan = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    await getPlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const now = Date.now();
     const [activeTask, nextQueued, offlineWindowMs, heartbeatGraceMs] =
       await Promise.all([
@@ -1555,7 +1632,7 @@ export const heartbeat = mutation({
     presenceOnly: v.optional(v.boolean()),
   },
   handler: async (ctx, { playerId, presenceOnly }) => {
-    await getPlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const now = Date.now();
     // Keep previously deployed clients progressing until they reload.
     if (!presenceOnly) {

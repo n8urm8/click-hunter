@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Click Hunter Audit: The Quest Log</title>
+<style>
+  :root {
+    --bg: #14111f;
+    --panel: #211c32;
+    --panel-2: #2b2540;
+    --line: #4a3f6b;
+    --ink: #f3ecdb;
+    --muted: #bdb4cc;
+    --gold: #f0c14b;
+    --critical: #ff8474;
+    --warn: #ffb35c;
+    --good: #66d9b5;
+    --info: #9cb8ff;
+    --track: #393152;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+  body {
+    margin: 0;
+    background:
+      linear-gradient(rgba(255,255,255,.018) 2px, transparent 2px) 0 0 / 32px 32px,
+      linear-gradient(90deg, rgba(255,255,255,.018) 2px, transparent 2px) 0 0 / 32px 32px,
+      var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 var(--sans);
+  }
+  a { color: var(--gold); }
+  code {
+    font: 0.84em var(--mono);
+    background: #15111f;
+    border: 1px solid var(--line);
+    padding: 1px 5px;
+    overflow-wrap: anywhere;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+  /* Nav */
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: #0f0c18;
+    border-bottom: 3px solid var(--line);
+  }
+  nav .wrap { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding-top: 8px; padding-bottom: 8px; }
+  nav a {
+    flex: none;
+    font: 700 13px var(--mono);
+    color: var(--ink);
+    text-decoration: none;
+    padding: 7px 10px;
+    border: 2px solid transparent;
+  }
+  nav a:hover, nav a:focus-visible { border-color: var(--gold); color: var(--gold); outline: none; }
+
+  /* Hero */
+  header { padding: 52px 0 28px; }
+  .eyebrow {
+    font: 700 13px var(--mono);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin: 0 0 8px;
+  }
+  h1 {
+    font: 800 clamp(34px, 7vw, 60px)/1.05 var(--mono);
+    letter-spacing: -.02em;
+    margin: 0 0 18px;
+    text-shadow: 4px 4px 0 #000;
+  }
+  h1 span { color: var(--gold); }
+  .hero-grid { display: grid; grid-template-columns: 1fr 210px; gap: 24px; align-items: start; }
+  .verdict { font-size: 20px; line-height: 1.5; margin: 0; max-width: 62ch; }
+
+  /* Bug toy */
+  .toy {
+    background: var(--panel);
+    border: 3px solid var(--line);
+    box-shadow: 5px 5px 0 #000;
+    padding: 12px;
+    text-align: center;
+    position: relative;
+  }
+  .toy button {
+    font-size: 48px; line-height: 1.2;
+    background: none; border: 0; cursor: pointer;
+    transition: transform .08s;
+  }
+  .toy button:active { transform: scale(.85); }
+  .toy p { font: 12px/1.4 var(--mono); color: var(--muted); margin: 6px 0 0; min-height: 34px; }
+  .toy-hp { height: 10px; background: var(--track); border: 2px solid #000; }
+  .toy-hp i { display: block; height: 100%; width: 100%; background: var(--critical); transition: width .15s; }
+  .float {
+    position: absolute; left: 50%; top: 30px;
+    font: 800 18px var(--mono); color: var(--gold);
+    text-shadow: 2px 2px 0 #000;
+    pointer-events: none;
+    animation: rise .7s ease-out forwards;
+  }
+  @keyframes rise { to { transform: translateY(-34px); opacity: 0; } }
+
+  /* Stat tiles */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 14px;
+    margin: 28px 0 8px;
+  }
+  .stat {
+    background: var(--panel);
+    border: 3px solid var(--line);
+    box-shadow: 4px 4px 0 #000;
+    padding: 14px;
+  }
+  .stat b { display: block; font: 800 30px/1.1 var(--mono); color: var(--gold); }
+  .stat span { display: block; font-size: 14px; color: var(--muted); line-height: 1.35; margin-top: 6px; }
+
+  /* Sections */
+  section { padding: 38px 0 6px; }
+  h2 {
+    font: 800 clamp(22px, 4vw, 30px)/1.2 var(--mono);
+    margin: 0;
+    text-shadow: 3px 3px 0 #000;
+  }
+  .sub { color: var(--muted); margin: 6px 0 20px; max-width: 70ch; }
+  h3 { font: 800 17px/1.3 var(--mono); margin: 0 0 6px; }
+  h3.block { color: var(--gold); margin: 30px 0 12px; font-size: 16px; }
+
+  .card {
+    background: var(--panel);
+    border: 3px solid var(--line);
+    box-shadow: 4px 4px 0 #000;
+    padding: 16px 18px;
+  }
+  .card p { margin: 0 0 8px; }
+  .card p:last-child { margin-bottom: 0; }
+  .cards { display: grid; gap: 14px; }
+  .cards.two { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .boss { border-left: 10px solid var(--critical); }
+  .where { font-size: 14px; color: var(--muted); }
+
+  .tag {
+    display: inline-block;
+    font: 700 11px var(--mono);
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border: 2px solid currentColor;
+    margin-bottom: 8px;
+    white-space: nowrap;
+  }
+  .tag.ran { color: var(--good); }
+  .tag.read { color: var(--info); }
+  .tag.untested { color: var(--warn); }
+
+  .scout { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .scout ul, .plain { margin: 0; padding-left: 20px; }
+  .scout li, .plain li { margin-bottom: 5px; }
+
+  /* Data tables with inline bars */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th {
+    text-align: left;
+    font: 700 12px var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--muted);
+    padding: 6px 12px 8px 0;
+    border-bottom: 2px solid var(--line);
+    white-space: nowrap;
+  }
+  td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
+  th.num { font-family: var(--mono); }
+  td.name { font-weight: 700; white-space: nowrap; }
+  td.barcell { width: 42%; min-width: 130px; }
+  .bar { height: 12px; background: var(--track); border-radius: 0 4px 4px 0; }
+  .bar i { display: block; height: 100%; background: var(--gold); border-radius: 0 4px 4px 0; }
+  tbody tr:hover .bar i { filter: brightness(1.2); }
+  .note { font-size: 14px; color: var(--muted); margin: 12px 0 0; }
+
+  /* Ladder */
+  .ladder { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; }
+  .rung { background: var(--panel-2); border: 2px solid var(--line); padding: 10px 12px; }
+  .rung b { display: block; font: 800 22px var(--mono); }
+  .rung span { font-size: 13px; color: var(--muted); line-height: 1.3; display: block; }
+  .rung.dead b { color: var(--critical); }
+
+  /* Fix order */
+  .xp-panel {
+    position: sticky; top: 56px; z-index: 5;
+    background: #0f0c18;
+    border: 3px solid var(--gold);
+    box-shadow: 4px 4px 0 #000;
+    padding: 10px 14px;
+    margin-bottom: 18px;
+  }
+  .xp-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font: 700 14px var(--mono); margin-bottom: 7px; }
+  .xp-head span:first-child { color: var(--gold); }
+  .xp-track { height: 14px; background: var(--track); border: 2px solid #000; }
+  .xp-track i { display: block; height: 100%; width: 0; background: var(--good); transition: width .25s; }
+  .act { position: relative; }
+  .act ul { list-style: none; margin: 8px 0 0; padding: 0; }
+  .act li { margin: 0; }
+  .act label {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 6px 4px; cursor: pointer;
+  }
+  .act label:hover { background: var(--panel-2); }
+  .act input { width: 18px; height: 18px; margin: 3px 0 0; accent-color: var(--good); flex: none; }
+  .act input:checked + span { color: var(--muted); text-decoration: line-through; }
+  .act-num { font: 700 12px var(--mono); color: var(--gold); letter-spacing: .08em; text-transform: uppercase; }
+  .reset {
+    font: 700 12px var(--mono); color: var(--muted);
+    background: none; border: 2px solid var(--line);
+    padding: 4px 9px; cursor: pointer; margin-top: 14px;
+  }
+  .reset:hover { color: var(--ink); border-color: var(--gold); }
+
+  footer { padding: 34px 0 60px; color: var(--muted); font-size: 14px; }
+
+  @media (max-width: 680px) {
+    .hero-grid { grid-template-columns: 1fr; }
+    .verdict { font-size: 18px; }
+    td.barcell { min-width: 56px; width: 26%; }
+    table.wide th:nth-child(2), table.wide td.barcell,
+    table.wide th:nth-child(5), table.wide td:nth-child(5) { display: none; }
+    table { font-size: 14px; }
+    th { white-space: normal; padding-right: 8px; font-size: 11px; }
+    td { padding-right: 8px; }
+    td.name { white-space: normal; }
+    table.wide td.name { white-space: nowrap; }
+    td.num, th.num { white-space: normal; }
+    table.perf th:nth-child(2), table.perf td.barcell,
+    table.perf th:nth-child(5), table.perf td:nth-child(5),
+    table.perf th:nth-child(6), table.perf td:nth-child(6) { display: none; }
+    table.perf code { font-size: .8em; padding: 1px 3px; overflow-wrap: normal; }
+    .card.table-wrap { padding: 14px 12px; }
+    .xp-panel { position: static; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .float { animation: none; display: none; }
+    * { transition: none !important; }
+  }
+  @media print {
+    nav, .toy, .reset { display: none; }
+    .xp-panel { position: static; }
+  }
+
+  /* Status markers */
+  .status {
+    display: inline-block;
+    font: 700 11px var(--mono);
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border: 2px solid currentColor;
+    margin: 0 6px 8px 0;
+    white-space: nowrap;
+  }
+  .status.done { color: var(--good); }
+  .status.part { color: var(--warn); }
+  .status.open { color: var(--critical); }
+  .boss.done { border-left-color: var(--good); }
+  .boss.part { border-left-color: var(--warn); }
+  .was { font-size: 14px; color: var(--muted); }
+  .was b { color: var(--muted); }
+  .done-list { columns: 2 280px; column-gap: 24px; list-style: none; margin: 0; padding: 0; }
+  .done-list li { break-inside: avoid; padding: 3px 0 3px 24px; position: relative; }
+  .done-list li::before { content: "✓"; position: absolute; left: 2px; color: var(--good); font-weight: 800; }
+  .act-why { font-size: 14px; color: var(--muted); margin: 0 0 4px; }
+  td.old { color: var(--muted); }
+  .bar.share i { background: var(--good); }
+</style>
+</head>
+<body>
+
+<nav aria-label="Sections">
+  <div class="wrap">
+    <a href="#quests">📜 Still To Do</a>
+    <a href="#done">🏆 Completed</a>
+    <a href="#bosses">💀 Bosses</a>
+    <a href="#doors">🔒 Locked Doors</a>
+    <a href="#balance">⚖️ Balance</a>
+    <a href="#fun">🎉 Fun</a>
+    <a href="#perf">⚡ Performance</a>
+    <a href="#loot">🎒 Side Loot</a>
+    <a href="#scout">🗺️ How It Was Checked</a>
+  </div>
+</nav>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Full game audit · 6 November 2026 · updated after the fixes</p>
+  <div class="hero-grid">
+    <div>
+      <h1>Click Hunter<br><span>Quest Log</span></h1>
+      <p class="verdict">Most of the audit is fixed and running on your self-hosted backend. Admin access is locked down, database reads are down 85–98% on the main calls, and the weapon gap shrank from 7.3x to 1.36x. Real accounts are the main blocker before opening to the public, and nothing is committed to git yet.</p>
+    </div>
+    <div class="toy" aria-live="polite">
+      <div class="toy-hp"><i id="bugHp"></i></div>
+      <button id="bug" type="button" aria-label="Click the bug">🐛</button>
+      <p id="bugMsg">Click Hunter still has little to click, so here's a bug.</p>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b>3 of 5</b><span>critical bosses beaten, 1 wounded; accounts were skipped by choice</span></div>
+    <div class="stat"><b>6 of 7</b><span>locked doors dealt with; the boss level gate is still open</span></div>
+    <div class="stat"><b>1.36×</b><span>best XP/hour gap between weapons, down from 7.3×</span></div>
+    <div class="stat"><b>46</b><span>documents read to settle one fight, down from 1,591</span></div>
+    <div class="stat"><b>306/306</b><span>tests pass, plus clean typecheck and build</span></div>
+  </div>
+</header>
+
+<section id="quests">
+  <h2>📜 Still To Do</h2>
+  <p class="sub">Everything left, most urgent first. Tick quests off as you go; your progress is saved in this browser.</p>
+
+  <div class="xp-panel">
+    <div class="xp-head"><span id="rank">Lv 1 · Bug Spotter</span><span id="count">0 / 0 quests</span></div>
+    <div class="xp-track"><i id="xp"></i></div>
+  </div>
+
+  <div class="cards">
+    <div class="card act">
+      <span class="act-num">Next up</span>
+      <h3>Finish this round</h3>
+      <p class="act-why">The fixes are deployed, but these loose ends remain.</p>
+      <ul>
+        <li><label><input type="checkbox" data-q="commit"><span><b>Commit the work.</b> About 70 files are uncommitted, so what's deployed is ahead of your repo.</span></label></li>
+        <li><label><input type="checkbox" data-q="reportui"><span><b>Click through chat reports with a second account.</b> The report menu and admin Reports tab have server tests but have never been clicked in a browser.</span></label></li>
+        <li><label><input type="checkbox" data-q="qatester"><span><b>Delete <code>QA Tester</code>.</b> This test character is still in the database and can appear on the XP leaderboard. Remove it in the dashboard at <code>localhost:6791</code>.</span></label></li>
+        <li><label><input type="checkbox" data-q="bossgate"><span><b>Decide on the boss level gate.</b> <code>bossUnlockLevelPerTier</code> still does nothing, because <code>getBossUnlockLevelPerTier</code> is never called (<code>convex/bossData.ts:86</code>). Either enforce it or delete the setting. My last update left this one out.</span></label></li>
+        <li><label><input type="checkbox" data-q="hiddentab"><span><b>Test a hunt in a hidden tab for 10+ minutes.</b> The new 45-second heartbeat and 90-second grace window should keep it going, but it hasn't been tried in real Chrome.</span></label></li>
+      </ul>
+    </div>
+    <div class="card act">
+      <span class="act-num">Before going public</span>
+      <h3>Protect players</h3>
+      <p class="act-why">You skipped accounts for now, so these are the remaining launch blockers.</p>
+      <ul>
+        <li><label><input type="checkbox" data-q="accounts"><span><b>Add real, recoverable accounts.</b> Sign-in is still anonymous only (<code>convex/auth.ts:5</code>), so losing a browser session loses the character.</span></label></li>
+        <li><label><input type="checkbox" data-q="moderation"><span><b>Add mute and ban actions.</b> <b>Mark actioned</b> on a report only records your decision; it doesn't do anything to the player.</span></label></li>
+        <li><label><input type="checkbox" data-q="alts"><span><b>Close the alt-account gold dodge.</b> Guild deposits are now forfeited on rebirth, but gold can still be moved to an alt first.</span></label></li>
+      </ul>
+    </div>
+    <div class="card act">
+      <span class="act-num">Game design</span>
+      <h3>Make it more fun</h3>
+      <p class="act-why">These need your judgment on how the game should feel.</p>
+      <ul>
+        <li><label><input type="checkbox" data-q="click"><span><b>Add a reason to click.</b> Hunts still run themselves. Ideas: a timed boss strike or a choice of abilities.</span></label></li>
+        <li><label><input type="checkbox" data-q="sinks"><span><b>Add bigger gold sinks.</b> Enchanting and raid summons now cost gold, but income is around 1M/hour at tier 3 hard, against 10,000 × level per enchant.</span></label></li>
+        <li><label><input type="checkbox" data-q="enchant"><span><b>Rethink enchanting.</b> It costs less essence, but each level still gives +2 flat and needs essence of that same tier, so the 1,000 cap can't be reached.</span></label></li>
+        <li><label><input type="checkbox" data-q="goals"><span><b>Add more goals.</b> Achievements and boards work, but there are only 6 achievements.</span></label></li>
+        <li><label><input type="checkbox" data-q="zones"><span><b>Check that easy zones are still worth visiting.</b> Hard now pays about 3x easy at tier 3, a reversal of the old problem.</span></label></li>
+      </ul>
+    </div>
+    <div class="card act">
+      <span class="act-num">Re-measure</span>
+      <h3>Confirm the balance</h3>
+      <p class="act-why">These numbers predate the final weapon tuning, or were never run.</p>
+      <ul>
+        <li><label><input type="checkbox" data-q="pacing"><span><b>Re-run long-term pacing.</b> Mace and bow time to 99, crafting, gathering, the second ability slot and rebirth tiers all need fresh numbers.</span></label></li>
+        <li><label><input type="checkbox" data-q="pvp"><span><b>Simulate PvP bouts.</b> PvP now uses a damage figure with the speed compensation removed, but no bouts between weapons have been run.</span></label></li>
+        <li><label><input type="checkbox" data-q="playtest"><span><b>Play past the first hour.</b> I've only played one short hunt in the browser, so 30-second batches and fight replays need a longer feel check.</span></label></li>
+      </ul>
+    </div>
+    <div class="card act">
+      <span class="act-num">Cleanup</span>
+      <h3>Smaller savings and tidying</h3>
+      <ul>
+        <li><label><input type="checkbox" data-q="catalog"><span><b>Slim <code>getSkillCatalog</code>.</b> It still reads about 1,850 documents and 500 KB when the skills page opens, now the most expensive call measured.</span></label></li>
+        <li><label><input type="checkbox" data-q="png"><span><b>Compress the background image.</b> <code>magical-forest.png</code> is 746 KB, more than all the initial JS gzipped.</span></label></li>
+        <li><label><input type="checkbox" data-q="css"><span><b>Minify the CSS.</b> The built stylesheet is 115 KB and still unminified (18 KB gzipped, so this is a small win).</span></label></li>
+        <li><label><input type="checkbox" data-q="memo"><span><b>Reduce game shell re-renders.</b> No component uses <code>memo</code> yet.</span></label></li>
+        <li><label><input type="checkbox" data-q="dead"><span><b>Delete the remaining dead code.</b> <code>attemptAttack</code> and its unused hook, plus <code>getMonster</code>, <code>pickRandomMonster</code>, <code>getScaledMonster</code> and <code>pickAndScaleMonster</code> in <code>convex/seed.ts</code>.</span></label></li>
+        <li><label><input type="checkbox" data-q="docs"><span><b>Tidy the repo.</b> <code>README.md</code> is still the React Router template, and <code>dist/</code> is ignored but still tracked (28 files).</span></label></li>
+      </ul>
+    </div>
+  </div>
+  <button class="reset" id="reset" type="button">Reset my ticks</button>
+</section>
+
+<section id="done">
+  <h2>🏆 Completed Quests</h2>
+  <p class="sub">Done and deployed. The migrations have run, and a backup from just before them is at <code>.backups/pre-migration-2026-11-06.zip</code>.</p>
+  <div class="card">
+    <ul class="done-list">
+      <li>New characters are plain players, not admins</li>
+      <li>Wisdom now scales ability power</li>
+      <li>Live events still apply after 100 past events</li>
+      <li>Rebirth forfeits guild gold deposits and is blocked by open buy orders</li>
+      <li>Stat shop removed</li>
+      <li>Balance reads cached per transaction, with one snapshot document</li>
+      <li>Leaderboards refresh on a schedule</li>
+      <li>Achievements unlock automatically on the server</li>
+      <li>2-second minimum fight, and cooldowns carry across fights</li>
+      <li>Ability books drop at 0.2% per win</li>
+      <li>Ability descriptions match what abilities do</li>
+      <li>Heals restore a percentage of max HP</li>
+      <li>Five rebirth milestone rewards apply</li>
+      <li>Rewards are tied to the monster</li>
+      <li>Tier multiplier lowered to 1.4, and existing bosses rescaled</li>
+      <li>Weapon gap narrowed from 7.3x to 1.36x</li>
+      <li>Auto-rest and a gentler first hunt</li>
+      <li>Fights settle in 30-second batches</li>
+      <li>Ownership checks moved off the player document</li>
+      <li>History tables pruned daily</li>
+      <li>Chat pruned to 3 days, hourly</li>
+      <li>Report player, saving 10 messages either side</li>
+      <li>Admin Reports tab</li>
+      <li>Routes split, and the admin panel loads only when opened</li>
+    </ul>
+  </div>
+</section>
+
+<section id="bosses">
+  <h2>💀 Raid Bosses</h2>
+  <p class="sub">The five critical issues from the audit, and where each one stands.</p>
+  <div class="cards">
+    <article class="card boss done">
+      <span class="status done">✓ Beaten</span><span class="tag ran">✓ Ran it</span>
+      <h3>Every new account is an admin</h3>
+      <p>New characters now get the player role, and a test character got “Admin access required” at <code>/admin</code>. Only <code>daggers&lt;3</code> and <code>Seed Admin</code> are admins. Grant admin with the internal <code>admin:setPlayerRole</code> function, explained in <code>docs/self-hosting.md</code>.</p>
+      <p class="was"><b>Was:</b> a brand-new account could wipe another player's items.</p>
+    </article>
+    <article class="card boss">
+      <span class="status open">✗ Still standing</span><span class="tag read">👁 Read code</span>
+      <h3>Accounts are anonymous only</h3>
+      <p>Skipped at your request. Hundreds of hours of progress still depend on one browser session, with no way to recover it.</p>
+      <p class="where"><code>convex/auth.ts:5</code></p>
+    </article>
+    <article class="card boss done">
+      <span class="status done">✓ Beaten</span><span class="tag ran">✓ Tests pass</span>
+      <h3>Wisdom never reaches combat</h3>
+      <p><code>player.wis</code> now rises with wisdom XP, and it feeds the ability power multiplier.</p>
+      <p class="was"><b>Was:</b> at wisdom level 71, the combat multiplier was still 1.</p>
+    </article>
+    <article class="card boss done">
+      <span class="status done">✓ Beaten</span><span class="tag ran">✓ Tests pass</span>
+      <h3>Events break after 100 past events</h3>
+      <p>The query now uses the <code>by_endTime</code> index, so it reads only events that haven't ended.</p>
+      <p class="was"><b>Was:</b> a live 2x gold event dropped to 1x.</p>
+    </article>
+    <article class="card boss part">
+      <span class="status part">◐ Wounded</span><span class="tag ran">✓ Tests pass</span>
+      <h3>Rebirth's gold wipe can be dodged</h3>
+      <p>Rebirth now forfeits the gold you've deposited in your guild bank since your last rebirth, minus withdrawals, and open buy orders block it. Moving gold to an alt account still works.</p>
+      <p class="was"><b>Was:</b> officers could deposit gold first and withdraw it afterward.</p>
+    </article>
+  </div>
+</section>
+
+<section id="doors">
+  <h2>🔒 Locked Doors</h2>
+  <p class="sub">Content that was built but not connected.</p>
+  <div class="cards two">
+    <div class="card"><span class="status done">✓ Open</span><h3>🏆 Leaderboards</h3><p>A cron copies the top 50 for each board every 30 minutes and writes only what changed.</p></div>
+    <div class="card"><span class="status done">✓ Open</span><h3>🎖️ Achievements</h3><p>All six unlock from server state, so clients can't claim them.</p></div>
+    <div class="card"><span class="status done">✓ Open</span><h3>📖 Abilities</h3><p>Books drop at 0.2% per regular win. Reading one teaches the ability, or trains it if you already know it.</p></div>
+    <div class="card"><span class="status done">✓ Removed</span><h3>🛒 Stat shop</h3><p>Gone, as you asked. Three upgrade rows stay because hidden spots use them as stat rewards.</p></div>
+    <div class="card"><span class="status done">✓ Open</span><h3>🔁 Rebirth rewards</h3><p>The five milestones apply and show on the rebirth page: +10% gold, +15% XP, +20% gold, +5% all stats and +10% crit.</p></div>
+    <div class="card"><span class="status done">✓ Open</span><h3>📝 Ability text</h3><p>Stuns, poison and chain hits were never implemented, so they came out of the descriptions. Heals now restore a percentage of max HP.</p></div>
+    <div class="card"><span class="status open">✗ Still locked</span><h3>🚪 Boss level gate</h3><p>The setting still has no effect. Its reader exists, but nothing calls it.</p><p class="where"><code>convex/bossData.ts:86</code></p></div>
+  </div>
+</section>
+
+<section id="balance">
+  <h2>⚖️ Balance Sheet</h2>
+  <p class="sub">These simulations use small samples, so treat the numbers as rough sizes rather than exact values.</p>
+
+  <h3 class="block">Weapon tier list: best XP per hour at level 99, tier 8 gear</h3>
+  <div class="card table-wrap">
+    <table class="wide">
+      <thead>
+        <tr><th>Weapon</th><th aria-label="XP per hour bar"></th><th class="num">XP/hour</th><th class="num">Before</th><th class="num">Dmg/sec</th><th class="num">Max tier</th><th class="num">Hours to 99</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="name">🏹 Bow</td><td class="barcell"><div class="bar"><i style="width:100%"></i></div></td><td class="num">1.01M</td><td class="num old">1.19M</td><td class="num">203</td><td class="num">11</td><td class="num">not run</td></tr>
+        <tr><td class="name">🗡️ Dagger</td><td class="barcell"><div class="bar"><i style="width:91.3%"></i></div></td><td class="num">922k</td><td class="num old">1.26M</td><td class="num">189</td><td class="num">11</td><td class="num">401</td></tr>
+        <tr><td class="name">⚔️ Sword</td><td class="barcell"><div class="bar"><i style="width:84.6%"></i></div></td><td class="num">854k</td><td class="num old">289k</td><td class="num">167</td><td class="num">12</td><td class="num">494</td></tr>
+        <tr><td class="name">🔨 Mace</td><td class="barcell"><div class="bar"><i style="width:73.8%"></i></div></td><td class="num">745k</td><td class="num old">172k</td><td class="num">176</td><td class="num">12</td><td class="num">not run</td></tr>
+        <tr><td class="name">🪄 Staff</td><td class="barcell"><div class="bar"><i style="width:73.6%"></i></div></td><td class="num">743k</td><td class="num old">364k</td><td class="num">160</td><td class="num">12</td><td class="num">536</td></tr>
+      </tbody>
+    </table>
+    <p class="note">Each weapon now scales attack speed with its own stat, and slow weapons hit harder to balance their speed. DEX no longer speeds up swords, maces or staves. All five topped out at tier 6 before.</p>
+  </div>
+
+  <h3 class="block">Other balance measures</h3>
+  <div class="card table-wrap">
+    <table>
+      <thead><tr><th>Measure</th><th class="num">Before</th><th class="num">After</th></tr></thead>
+      <tbody>
+        <tr><td>Best-to-worst weapon XP gap</td><td class="num old">7.3×</td><td class="num">1.36×</td></tr>
+        <tr><td>Hours to 99: dagger / sword / staff</td><td class="num old">255 / 1,006 / 857</td><td class="num">401 / 494 / 536</td></tr>
+        <tr><td>Highest sustainable tier at level 99</td><td class="num old">6</td><td class="num">11–12</td></tr>
+        <tr><td>Best XP tier at level 99 <span class="where">*</span></td><td class="num old">2–4</td><td class="num">8–9</td></tr>
+        <tr><td>Tier 3 gold/hour, hard vs easy <span class="where">*</span></td><td class="num old">614k vs 1.78M</td><td class="num">1.06M vs 346k</td></tr>
+        <tr><td>Tier 20 reachable at <span class="where">*</span></td><td class="num old">never won</td><td class="num">~200 rebirth bonuses per stat</td></tr>
+      </tbody>
+    </table>
+    <p class="note">* Measured before the final weapon tuning, so these need a re-run.</p>
+  </div>
+
+  <h3 class="block">Balance traps from the audit</h3>
+  <div class="cards two">
+    <div class="card">
+      <span class="status done">✓ Fixed</span>
+      <h3>💰 Hard zones pay worse</h3>
+      <p>Rewards now scale with the monster. Hard earns about 3x easy at tier 3, so easy zones may now need a look.</p>
+    </div>
+    <div class="card">
+      <span class="status done">✓ Fixed</span>
+      <h3>📉 Most tiers are out of reach</h3>
+      <p>Monsters now grow 1.4x per tier instead of doubling, and existing bosses were rescaled by the migration.</p>
+    </div>
+    <div class="card">
+      <span class="status done">✓ Fixed</span>
+      <h3>🐇 Exploit waiting to spawn</h3>
+      <p>Won fights take at least 2 seconds, and cooldowns carry between fights, so Backstab can't kill Rats in 1 ms.</p>
+    </div>
+    <div class="card">
+      <span class="status part">◐ Partly</span>
+      <h3>✨ Enchanting is weak</h3>
+      <p>Attempts cost 25 essence (down from 100) plus 10,000 gold × level. Each level is still only +2 flat, and it still needs essence of that tier, so the 1,000 cap stays out of reach.</p>
+    </div>
+    <div class="card">
+      <span class="status part">◐ Partly</span>
+      <h3>🪙 Gold has few uses</h3>
+      <p>Enchanting and 100,000-gold raid summons now use gold, but they're small next to hourly income.</p>
+    </div>
+    <div class="card">
+      <span class="status part">◐ Partly</span>
+      <h3>🥊 PvP ignored attack speed</h3>
+      <p>PvP and raids now use a damage figure with the speed compensation removed, so slow weapons don't gain from it. No bouts have been simulated.</p>
+    </div>
+  </div>
+</section>
+
+<section id="fun">
+  <h2>🎉 Fun Meter</h2>
+  <p class="sub">What players will feel. Only one short hunt has been played in a browser, so most of this still comes from code and simulations.</p>
+  <div class="cards two">
+    <div class="card">
+      <span class="status done">✓ Fixed</span>
+      <h3>🪦 Rough first hunt</h3>
+      <p>Hunters rest below 50% HP and fight again at 90%, minimum HP went from 30 to 60, and base regen doubled. All five starters finished 30 minutes at tier 1 easy in 25 of 25 runs, though dagger and bow rest a lot.</p>
+    </div>
+    <div class="card">
+      <span class="status part">◐ Partly</span>
+      <h3>🎯 Few goals to chase</h3>
+      <p>Leaderboards, achievements, ability books and rebirth milestones now work. Six achievements won't last long, though.</p>
+    </div>
+    <div class="card">
+      <span class="status part">◐ Untested</span>
+      <h3>💤 Battles may stall in background tabs</h3>
+      <p>The grace window grew from 15 to 90 seconds and heartbeats run every 45, which should survive Chrome slowing hidden tabs to once a minute. Closing a tab can earn up to 90 seconds of hunting.</p>
+    </div>
+    <div class="card">
+      <span class="status open">✗ Still open</span>
+      <h3>🖱️ Nothing to click</h3>
+      <p>Regular hunts still run themselves, so there are few decisions once one starts.</p>
+    </div>
+  </div>
+</section>
+
+<section id="perf">
+  <h2>⚡ Performance Stats</h2>
+  <p class="sub">Measured reads per call in the test harness. The bar shows the new document count as a share of the old one, so shorter is better.</p>
+
+  <div class="card table-wrap">
+    <table class="perf">
+      <thead><tr><th>Call</th><th aria-label="New reads as a share of old reads"></th><th class="num">Docs before</th><th class="num">Docs after</th><th class="num">KB before</th><th class="num">KB after</th></tr></thead>
+      <tbody>
+        <tr><td class="name"><code>sync</code>, one fight</td><td class="barcell"><div class="bar share"><i style="width:2.9%"></i></div></td><td class="num old">1,591</td><td class="num">46</td><td class="num old">330</td><td class="num">22</td></tr>
+        <tr><td class="name"><code>sync</code>, a batch</td><td class="barcell"><div class="bar share"><i style="width:1.5%"></i></div></td><td class="num old">4,395</td><td class="num">67</td><td class="num old">912</td><td class="num">29</td></tr>
+        <tr><td class="name"><code>getHpStatus</code></td><td class="barcell"><div class="bar share"><i style="width:3.5%"></i></div></td><td class="num old">428</td><td class="num">15</td><td class="num old">88</td><td class="num">10</td></tr>
+        <tr><td class="name"><code>getCurrentPlayer</code></td><td class="barcell"><div class="bar share"><i style="width:14.4%"></i></div></td><td class="num old">160</td><td class="num">23</td><td class="num old">35</td><td class="num">12</td></tr>
+        <tr><td class="name"><code>getPlayerInventory</code></td><td class="barcell"><div class="bar share"><i style="width:14.9%"></i></div></td><td class="num old">161</td><td class="num">24</td><td class="num old">34</td><td class="num">11</td></tr>
+        <tr><td class="name"><code>getQueue</code></td><td class="barcell"><div class="bar share"><i style="width:4.2%"></i></div></td><td class="num old">142</td><td class="num">6</td><td class="num old">29</td><td class="num">6</td></tr>
+        <tr><td class="name"><code>getActivePlan</code></td><td class="barcell"><div class="bar share"><i style="width:3.5%"></i></div></td><td class="num old">141</td><td class="num">5</td><td class="num old">29</td><td class="num">5</td></tr>
+        <tr><td class="name"><code>getSkillCatalog</code></td><td class="barcell"><div class="bar share"><i style="width:99.2%"></i></div></td><td class="num old">1,864</td><td class="num">~1,850</td><td class="num old">506</td><td class="num">~500</td></tr>
+      </tbody>
+    </table>
+    <p class="note">The old batch covered 5 fights; the new one covers up to 50. Syncing every 30 seconds works out to an estimated 58 KB of sync reads per minute for one player, down from an estimated 33 MB. That excludes other live queries.</p>
+  </div>
+
+  <h3 class="block">The audit's biggest wins</h3>
+  <div class="cards two">
+    <div class="card">
+      <span class="status done">✓ Fixed</span>
+      <h3>1. Repeated balance scans</h3>
+      <p>Each transaction reads a key at most once. Callers needing many keys read one snapshot document instead of 138 rows.</p>
+    </div>
+    <div class="card">
+      <span class="status done">✓ Fixed</span>
+      <h3>2. One sync per fight</h3>
+      <p>Fights now settle in batches every 30 seconds, and the client replays them. Heartbeats went from every 10 seconds to every 45.</p>
+    </div>
+    <div class="card">
+      <span class="status part">◐ Mostly</span>
+      <h3>3. Every player write refreshing everything</h3>
+      <p>Ownership checks use a separate <code>playerOwners</code> table, so most live queries no longer re-run on every write. The game shell's re-renders weren't addressed.</p>
+    </div>
+    <div class="card">
+      <span class="status done">✓ Fixed</span>
+      <h3>4. History growing forever</h3>
+      <p>A daily cron prunes fight history and task history at 30 days, and loot awards and battle stats at 14.</p>
+    </div>
+    <div class="card">
+      <span class="status part">◐ Mostly</span>
+      <h3>5. Initial download</h3>
+      <p>Initial JS fell from about 985 KB to 667 KB (288 KB to 210 KB gzipped). The 25-query prefetch is gone, and the admin panel loads on its own. The 746 KB image and unminified CSS remain.</p>
+    </div>
+  </div>
+</section>
+
+<section id="loot">
+  <h2>🎒 Side Loot</h2>
+  <p class="sub">The smaller items from the audit.</p>
+  <div class="card">
+    <ul class="plain">
+      <li><span class="status done">✓ Fixed</span><code>refreshEventStatuses</code> is now internal, so players can't call it.</li>
+      <li><span class="status done">✓ Fixed</span><code>unlockAchievement</code> is now server-only, and names must be 1–32 characters.</li>
+      <li><span class="status done">✓ Fixed</span>Achievement lookups now use a proper index range.</li>
+      <li><span class="status part">◐ Partly</span><code>GameRoot</code> and <code>UpgradeList</code> are deleted, but <code>attemptAttack</code> and the old monster queries remain.</li>
+      <li><span class="status open">✗ Open</span><code>README.md</code> is still the template, and <code>ROADMAP.md</code> still has stale notes on <code>dist/</code> and uncommitted work.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="scout">
+  <h2>🗺️ How It Was Checked</h2>
+  <p class="sub">How far to trust everything above.</p>
+  <div class="scout">
+    <div class="card">
+      <h3>Explored</h3>
+      <ul class="plain">
+        <li>306 tests, typecheck and production build, all passing</li>
+        <li>A real hunt in the browser: fights, loot and XP all updated, with no console errors</li>
+        <li>Migration results read back from the live database</li>
+        <li>Document reads measured in the test harness</li>
+        <li>Each open item on this page rechecked against the code</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Fog of war</h3>
+      <ul class="plain">
+        <li>Report menu and admin Reports tab never clicked in a browser</li>
+        <li>No real hidden-tab test, and no play beyond one short hunt</li>
+        <li>Balance numbers come from small samples</li>
+        <li>Older migrations in <code>migrate:all</code> weren't re-run</li>
+        <li><code>.env</code> files weren't read</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Status markers</h3>
+      <p><span class="status done">✓ Fixed</span> Done and deployed.</p>
+      <p><span class="status part">◐ Partly</span> Improved, or not fully verified.</p>
+      <p><span class="status open">✗ Open</span> Not done yet.</p>
+      <p><span class="tag ran">✓ Ran it</span> Confirmed by running the code.</p>
+      <p><span class="tag read">👁 Read code</span> Found by reading the code.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  File references point to where each issue stood on 6 November 2026 and may drift as the code changes.
+</footer>
+
+</div>
+
+<script>
+  // Quest tracker: completed quests count toward the bar alongside your ticks.
+  (function () {
+    var KEY = 'click-hunter-audit-remaining-quests';
+    var RANKS = ['Bug Spotter', 'Gate Guard', 'Patch Knight', 'Balance Sage', 'Scale Slayer', 'Tier 20 Legend'];
+    var COMPLETED = document.querySelectorAll('.done-list li').length;
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('input[data-q]'));
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) {}
+
+    function render() {
+      var total = COMPLETED + boxes.length;
+      var done = COMPLETED + boxes.filter(function (b) { return b.checked; }).length;
+      var level = Math.floor((done / total) * (RANKS.length - 1));
+      document.getElementById('xp').style.width = (done / total * 100) + '%';
+      document.getElementById('count').textContent = done + ' / ' + total + ' quests';
+      document.getElementById('rank').textContent = 'Lv ' + (level + 1) + ' · ' + RANKS[level];
+    }
+    function save() {
+      var state = {};
+      boxes.forEach(function (b) { state[b.dataset.q] = b.checked; });
+      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+    }
+    boxes.forEach(function (b) {
+      b.checked = !!saved[b.dataset.q];
+      b.addEventListener('change', function () { save(); render(); });
+    });
+    document.getElementById('reset').addEventListener('click', function () {
+      boxes.forEach(function (b) { b.checked = false; });
+      save(); render();
+    });
+    render();
+  })();
+
+  // The one clickable monster
+  (function () {
+    var MAX = 8, hp = MAX, kills = 0;
+    var bug = document.getElementById('bug');
+    var bar = document.getElementById('bugHp');
+    var msg = document.getElementById('bugMsg');
+    var box = bug.parentNode;
+    bug.addEventListener('click', function () {
+      var f = document.createElement('span');
+      f.className = 'float';
+      f.textContent = '-1';
+      f.setAttribute('aria-hidden', 'true');
+      box.appendChild(f);
+      setTimeout(function () { f.remove(); }, 700);
+      hp -= 1;
+      if (hp <= 0) {
+        kills += 1;
+        hp = MAX;
+        msg.textContent = 'Bug squashed! ' + kills + ' down. Another one respawns from the backlog.';
+      } else {
+        var n = MAX - hp;
+        msg.textContent = 'That’s ' + n + ' more manual click' + (n === 1 ? '' : 's') + ' than a hunt needs.';
+      }
+      bar.style.width = (hp / MAX * 100) + '%';
+    });
+  })();
+</script>
+</body>
+</html>

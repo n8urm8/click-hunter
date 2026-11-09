@@ -22,4 +22,36 @@ crons.cron(
   {}
 );
 
+// Picks up balance edits made outside the admin panel. Two reads when idle.
+crons.interval(
+  "refresh balance snapshot",
+  { minutes: 5 },
+  internal.maintenance.refreshBalanceSnapshot,
+  {}
+);
+
+// Copies top players into the board tables, writing only rows that moved.
+crons.interval(
+  "refresh leaderboards",
+  { minutes: 30 },
+  internal.leaderboards.refreshLeaderboards,
+  {}
+);
+
+crons.interval(
+  "prune history tables",
+  { hours: 24 },
+  internal.maintenance.pruneHistory,
+  {}
+);
+
+// Chat keeps three days. Hourly so it's never much over, and an empty run reads
+// nothing. Reports keep their own copy of the messages around them.
+crons.interval(
+  "prune chat messages",
+  { hours: 1 },
+  internal.chat.pruneMessages,
+  {}
+);
+
 export default crons;

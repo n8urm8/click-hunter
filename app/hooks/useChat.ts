@@ -45,6 +45,10 @@ export function usePrivateChats(playerId: Id<"players"> | null | undefined) {
   });
 }
 
+export function useReportMessage() {
+  return useMutation(api.chat.reportMessage);
+}
+
 export function useMarkPrivateChatRead() {
   return useMutation(api.chat.markPrivateChatRead);
 }

@@ -1,3 +1,4 @@
+import { readBalanceValue } from "./balance";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import {
@@ -73,12 +74,7 @@ export type SkillModifierTimeline = {
 };
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
-  return (
-    await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", key))
-      .first()
-  )?.value;
+  return await readBalanceValue(ctx, key);
 }
 
 function readMultiplier(value: unknown) {

@@ -1,8 +1,9 @@
+import { rollAbilityBooks } from "./abilityBooks";
 import { mutation } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requirePlayer } from "./playerAuth";
+import { requirePlayer, requirePlayerOwner } from "./playerAuth";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 import { consumeItems } from "./items";
 import { grantItemToInventory } from "./items";
@@ -12,7 +13,7 @@ import {
   readSkillXpBase,
   SKILL_XP_BALANCE_DEFAULT,
 } from "./skillProgression";
-import { readBalanceMap } from "./balance";
+import { readBalanceMap, readBalanceValue } from "./balance";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 
@@ -23,7 +24,9 @@ export const INFUSION_BALANCE_DEFAULTS = [
   { key: "essenceDropChance", value: 0.1, description: "Chance per won regular/boss fight to drop 1x tier-tagged essence" },
   { key: "t1KeyDropChance", value: 0.02, description: "Chance per won regular fight to drop 1x boss-key-tier-1" },
   { key: "bossKeyEssenceQty", value: 100, description: "Essence of tier N required to infuse boss-key-tier-N" },
-  { key: "enchantEssenceQty", value: 100, description: "Essence of tier (currentEnchant+1) required per enchant attempt" },
+  { key: "enchantGoldPerLevel", value: 10000, description: "Gold spent per enchant attempt, multiplied by the level being attempted" },
+  { key: "abilityBookDropChance", value: 0.002, description: "Chance per regular monster win to drop a random ability book for that tier" },
+  { key: "enchantEssenceQty", value: 25, description: "Essence of tier (currentEnchant+1) required per enchant attempt" },
   { key: "enchantDamagePerLevel", value: 2, description: "Flat baseDamage added per enchant level (weapons)" },
   { key: "enchantDefensePerLevel", value: 2, description: "Flat baseDefense added per enchant level (armor)" },
   { key: "enchantLevelCap", value: 1000, description: "Maximum enchant level per equipment instance" },
@@ -76,8 +79,13 @@ export async function readInfusionBalance(ctx: DatabaseCtx) {
       1,
       Math.max(0, readFloat(get("t1KeyDropChance", 0.02), 0.02))
     ),
+    abilityBookDropChance: Math.min(
+      1,
+      Math.max(0, readFloat(get("abilityBookDropChance", 0.002), 0.002))
+    ),
+    enchantGoldPerLevel: Math.max(0, readFloat(get("enchantGoldPerLevel", 10_000), 10_000)),
     bossKeyEssenceQty: readInt(get("bossKeyEssenceQty", 100), 100, 1),
-    enchantEssenceQty: readInt(get("enchantEssenceQty", 100), 100, 1),
+    enchantEssenceQty: readInt(get("enchantEssenceQty", 25), 25, 1),
     enchantDamagePerLevel: Math.max(
       0,
       readFloat(get("enchantDamagePerLevel", 2), 2)
@@ -266,9 +274,8 @@ export const enchantEquipment = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
-    const player = await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
-    void player;
 
     const owned = await ctx.db.get(playerItemId);
     if (!owned || owned.playerId !== playerId || owned.quantity !== 1) {
@@ -296,10 +303,20 @@ export const enchantEquipment = mutation({
       throw new Error("That equipment is at maximum enchant level");
     }
 
+    // Read after settling: the settlement above may have just paid gold.
+    const payer = await ctx.db.get(playerId);
+    if (!payer) throw new Error("Player not found");
+    const goldCost = Math.ceil(balance.enchantGoldPerLevel * next);
+    if (payer.gold < goldCost) {
+      throw new Error(`Enchanting to +${next} costs ${goldCost} gold`);
+    }
     const essence = await ensureEssenceItem(ctx, next);
     await consumeItems(ctx, playerId, [
       { itemId: essence._id, quantity: balance.enchantEssenceQty },
     ]);
+    if (goldCost > 0) {
+      await ctx.db.patch(playerId, { gold: payer.gold - goldCost, lastUpdated: now });
+    }
 
     const skillRow = await ensureInfusionSkillRow(ctx, playerId, now);
     const skill = await ctx.db
@@ -321,12 +338,7 @@ export const enchantEquipment = mutation({
       );
     }
     const xpBase = readSkillXpBase(
-      (
-        await ctx.db
-          .query("gameBalance")
-          .withIndex("by_key", (q) => q.eq("key", SKILL_XP_BALANCE_DEFAULT.key))
-          .first()
-      )?.value
+      await readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key)
     );
     const { level, experience } = applySkillExperience(
       skillRow.level,
@@ -451,6 +463,42 @@ export async function grantInfusionDrops(
   return out;
 }
 
+/**
+ * Roll essence, T1 key, and ability book drops for a batch of monster wins. Only
+ * touches item rows for drops that land.
+ */
+export async function rollBatchBonusDrops(
+  ctx: MutationCtx,
+  tier: number,
+  wins: number
+): Promise<Array<{ itemId: Id<"items">; quantity: number; purpose: "augmentation" | "boss-catalyst" }>> {
+  if (wins < 1 || !Number.isSafeInteger(tier) || tier < 1) return [];
+  const balance = await readInfusionBalance(ctx);
+  let essences = 0;
+  let keys = 0;
+  let books = 0;
+  for (let index = 0; index < wins; index += 1) {
+    if (Math.random() < balance.essenceDropChance) essences += 1;
+    if (Math.random() < balance.t1KeyDropChance) keys += 1;
+    if (Math.random() < balance.abilityBookDropChance) books += 1;
+  }
+  const drops: Array<{ itemId: Id<"items">; quantity: number; purpose: "augmentation" | "boss-catalyst" }> = [];
+  if (essences > 0) {
+    const essence = await ensureEssenceItem(ctx, tier);
+    drops.push({ itemId: essence._id, quantity: essences, purpose: "augmentation" });
+  }
+  if (keys > 0) {
+    const key = await ensureBossKeyItem(ctx, 1);
+    drops.push({ itemId: key._id, quantity: keys, purpose: "boss-catalyst" });
+  }
+  if (books > 0) {
+    for (const book of await rollAbilityBooks(ctx, tier, books)) {
+      drops.push({ itemId: book.itemId, quantity: book.quantity, purpose: "augmentation" });
+    }
+  }
+  return drops;
+}
+
 export async function consumeBossKey(
   ctx: MutationCtx,
   playerId: Id<"players">,
@@ -488,12 +536,7 @@ export async function resolveInfusionCraft(
     ? args.baseExperienceReward
     : Math.floor(args.baseExperienceReward * balance.infusionFailXpPercent);
   const xpBase = readSkillXpBase(
-    (
-      await ctx.db
-        .query("gameBalance")
-        .withIndex("by_key", (q) => q.eq("key", SKILL_XP_BALANCE_DEFAULT.key))
-        .first()
-    )?.value
+    await readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key)
   );
   const { level, experience } = applySkillExperience(
     skillRow.level,

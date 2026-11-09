@@ -1,4 +1,5 @@
-import { mutation, query, type MutationCtx } from "./_generated/server";
+import { rebuildBalanceSnapshot } from "./balance";
+import { mutation, query, type MutationCtx, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./adminAuth";
@@ -712,6 +713,26 @@ export const updatePlayer = mutation({
   },
 });
 
+/**
+ * Grant or revoke admin from the CLI, which has no player session to check:
+ * npx convex run --env-file docker/.env.selfhosted admin:setPlayerRole '{"name":"Ash","role":"admin"}'
+ */
+export const setPlayerRole = internalMutation({
+  args: {
+    name: v.string(),
+    role: v.union(v.literal("admin"), v.literal("player")),
+  },
+  handler: async (ctx, { name, role }) => {
+    const players = await ctx.db.query("players").take(5_000);
+    const matches = players.filter((player) => player.name === name);
+    if (matches.length !== 1) {
+      throw new Error(`Expected one player named ${name}, found ${matches.length}`);
+    }
+    await ctx.db.patch(matches[0]._id, { role, lastUpdated: Date.now() });
+    return { playerId: matches[0]._id, name, role };
+  },
+});
+
 export const updateGameBalance = mutation({
   args: {
     playerId: v.id("players"),
@@ -798,6 +819,7 @@ export const updateGameBalance = mutation({
       lastUpdated: Date.now(),
     });
 
+    await rebuildBalanceSnapshot(ctx);
     return await ctx.db.get(balance._id);
   },
 });

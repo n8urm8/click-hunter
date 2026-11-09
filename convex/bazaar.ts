@@ -20,8 +20,9 @@
  *   active orders at a time.
  */
 
+import { readBalanceValue } from "./balance";
 import { mutation, query } from "./_generated/server";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { v } from "convex/values";
 import { components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
@@ -98,36 +99,27 @@ function readIntInRange(
 export async function readBazaarConfig(
   ctx: QueryCtx | MutationCtx
 ): Promise<BazaarConfig> {
-  const [taxRow, expiryRow, maxOrdersRow] = await Promise.all([
-    ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", "bazaarTaxPercent"))
-      .first(),
-    ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", "bazaarOrderExpiryDays"))
-      .first(),
-    ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", "bazaarMaxOpenOrders"))
-      .first(),
+  const [taxValue, expiryValue, maxOrdersValue] = await Promise.all([
+    readBalanceValue(ctx, "bazaarTaxPercent"),
+    readBalanceValue(ctx, "bazaarOrderExpiryDays"),
+    readBalanceValue(ctx, "bazaarMaxOpenOrders"),
   ]);
   return {
     taxPercent: readIntInRange(
-      taxRow?.value,
+      taxValue,
       0,
       100,
       DEFAULT_BAZAAR_TAX_PERCENT
     ),
     expiryMs:
       readIntInRange(
-        expiryRow?.value,
+        expiryValue,
         1,
         365,
         DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS
       ) * DAY_MS,
     maxOpenOrders: readIntInRange(
-      maxOrdersRow?.value,
+      maxOrdersValue,
       1,
       100,
       DEFAULT_BAZAAR_MAX_OPEN_ORDERS
@@ -746,7 +738,7 @@ export const placeSellOrder = mutation({
     unitPrice: v.number(),
   },
   handler: async (ctx, { playerId, playerItemId, quantity, unitPrice }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await checkBazaarRateLimit(ctx, playerId, "write");
     await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
@@ -818,7 +810,7 @@ export const placeBuyOrder = mutation({
     unitPrice: v.number(),
   },
   handler: async (ctx, { playerId, itemId, quantity, unitPrice }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await checkBazaarRateLimit(ctx, playerId, "write");
     await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
@@ -893,7 +885,7 @@ export const fulfillOrder = mutation({
     playerItemId: v.optional(v.id("playerItems")),
   },
   handler: async (ctx, { orderId, playerId, quantity, playerItemId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await checkBazaarRateLimit(ctx, playerId, "write");
     await settleTasksBeforeInteraction(ctx, playerId);
     const now = Date.now();
@@ -1059,7 +1051,7 @@ export const cancelOrder = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { orderId, playerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await checkBazaarRateLimit(ctx, playerId, "cancel");
     const now = Date.now();
     const order = await ctx.db.get(orderId);
@@ -1252,7 +1244,7 @@ export const getOpenOrders = query({
 export const getMyOrders = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const now = Date.now();
     const orders = await ctx.db
       .query("marketOrders")
@@ -1298,3 +1290,18 @@ export const getMyOrders = query({
     return { orders: rows, activeCount };
   },
 });
+
+
+/** A player's open buy order, whose escrowed gold a rebirth would otherwise miss. */
+export async function findOpenBuyOrder(
+  ctx: QueryCtx | MutationCtx,
+  playerId: Id<"players">
+) {
+  const openOrders = await ctx.db
+    .query("marketOrders")
+    .withIndex("by_playerId_and_status", (q) =>
+      q.eq("playerId", playerId).eq("status", "open")
+    )
+    .take(200);
+  return openOrders.find((order) => order.side === "buy") ?? null;
+}

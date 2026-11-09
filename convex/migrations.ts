@@ -4,6 +4,11 @@
  */
 
 import { internalMutation } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { v } from "convex/values";
+import { readBalanceValue, rebuildBalanceSnapshot } from "./balance";
+import { awardMetAchievements } from "./achievements";
+import { setPlayerOwner } from "./playerAuth";
 import {
   DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
   ensureBossForTier,
@@ -18,6 +23,8 @@ import {
   DEFAULT_OFFLINE_TASK_WINDOW_MS,
   DEFAULT_TASK_HEARTBEAT_GRACE_MS,
   DEFAULT_TASK_QUEUE_CAPACITY,
+  DEFAULT_AUTO_REST_BELOW_PERCENT,
+  DEFAULT_AUTO_REST_UNTIL_PERCENT,
 } from "./tasks";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
@@ -29,24 +36,28 @@ import {
   STAFF_BASE_DAMAGE_PER_TIER,
   STARTER_STAFF_BASE_DAMAGE,
 } from "./forestCraftingSeed";
-import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
+import { INFUSION_BALANCE_DEFAULTS, seedInfusionBalance } from "./infusion";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
   DEFAULT_ITEM_RARITIES,
 } from "./itemTypes";
-import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
+import { readSkillXpBase, SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
 import {
   DEFAULT_BAZAAR_MAX_OPEN_ORDERS,
   DEFAULT_BAZAAR_ORDER_EXPIRY_DAYS,
   DEFAULT_BAZAAR_TAX_PERCENT,
 } from "./bazaar";
-import { DEFAULT_MONSTER_POWER_MULTIPLIER } from "./combat";
+import {
+  DEFAULT_MIN_FIGHT_DURATION_MS,
+  DEFAULT_MONSTER_POWER_MULTIPLIER,
+  DEFAULT_REWARD_TIER_GROWTH,
+} from "./combat";
 import { PVP_ARENA_BALANCE_DEFAULTS } from "./arena";
 import { RANKED_BALANCE_DEFAULTS } from "./ranked";
 import { SIM_LIVE_BALANCE_DEFAULTS } from "./simLive";
 import type { WeaponType } from "./itemTypes";
 import { readStarterAbilityIds } from "./players";
-import { readWisdomBalance } from "./wisdom";
+import { calculateWisdomLevel, readWisdomBalance } from "./wisdom";
 
 /**
  * Migration: add item rarity definitions and assign existing items to Common.
@@ -515,31 +526,6 @@ export const backfillMaxTierReached = internalMutation({
       const maxTierReached = player.currentTier ?? 1;
 
       await ctx.db.patch(player._id, { maxTierReached });
-      updated++;
-    }
-
-    return { updated, total: players.length };
-  },
-});
-
-/**
- * Migration: assign the temporary admin role used by the development panel.
- *
- * All current accounts are intentionally promoted while the game still uses
- * anonymous IDs. Replace this with an authenticated role migration later.
- *
- * Run: npx convex run migrations:backfillAdminRoles
- */
-export const backfillAdminRoles = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const players = await ctx.db.query("players").collect();
-    let updated = 0;
-
-    for (const player of players) {
-      if (player.role === "admin") continue;
-
-      await ctx.db.patch(player._id, { role: "admin", lastUpdated: Date.now() });
       updated++;
     }
 
@@ -1221,5 +1207,156 @@ export const backfillStartingStatsWisdom = internalMutation({
       }
     }
     return { updated: false };
+  },
+});
+
+
+/**
+ * Migration for the batch-settlement and rebalance update. Idempotent.
+ *
+ * Tuning rows change only if they still hold the old default, so values an admin
+ * has set by hand are left alone. Finishes by rebuilding the balance snapshot.
+ *
+ * Run: npx convex run migrations:applyPerformanceAndBalanceUpdate
+ */
+export const applyPerformanceAndBalanceUpdate = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const retuned: Array<{ key: string; from: unknown; to: unknown }> = [
+      { key: "taskHeartbeatGraceMs", from: 15_000, to: DEFAULT_TASK_HEARTBEAT_GRACE_MS },
+      { key: "taskPresenceIntervalMs", from: 10_000, to: 45_000 },
+      { key: "autoBattleBatchLimit", from: 5, to: DEFAULT_AUTO_BATTLE_BATCH_LIMIT },
+      { key: "tierScaleMultiplier", from: 2, to: 1.4 },
+      { key: "enchantEssenceQty", from: 100, to: 25 },
+      { key: "guildRaidSummonGoldCost", from: 0, to: 100_000 },
+      { key: "combatDexSpeedCoeff", from: 0.02, to: DEX_SPEED_COEFF_DEFAULT },
+      { key: "combatDexSpeedCoeff", from: 0.008, to: DEX_SPEED_COEFF_DEFAULT },
+      { key: "combatConRegenBasePercent", from: 0.005, to: 0.01 },
+      { key: "monsterMagDefIntCoeff", from: 0.8, to: 0.5 },
+      { key: "minPlayerHp", from: 30, to: 60 },
+    ];
+    for (const entry of retuned) {
+      const row = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (row && row.value === entry.from) {
+        await ctx.db.patch(row._id, { value: entry.to, lastUpdated: now });
+      }
+    }
+    const added = [
+      { key: "minFightDurationMs", value: DEFAULT_MIN_FIGHT_DURATION_MS, description: "Shortest a won regular fight may take, including the walk to the next monster (milliseconds)" },
+      { key: "rewardTierGrowth", value: DEFAULT_REWARD_TIER_GROWTH, description: "Reward multiplier per tier, on top of the linear per-tier reward" },
+      { key: "autoRestBelowPercent", value: DEFAULT_AUTO_REST_BELOW_PERCENT, description: "Hunts stop to rest before a fight when HP is below this fraction of max (0 = never)" },
+      { key: "autoRestUntilPercent", value: DEFAULT_AUTO_REST_UNTIL_PERCENT, description: "Fraction of max HP a resting hunter recovers to before fighting again" },
+      ...COMBAT_BALANCE_DEFAULTS.filter((entry) => entry.key === "weaponSpeedDamageExponent"),
+    ];
+    for (const entry of added) {
+      const row = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key))
+        .first();
+      if (!row) await ctx.db.insert("gameBalance", { ...entry, lastUpdated: now });
+    }
+    await seedInfusionBalance(ctx);
+    const speedRow = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "combatDexSpeedCoeff"))
+      .first();
+    const speedDefault = COMBAT_BALANCE_DEFAULTS.find((entry) => entry.key === "combatDexSpeedCoeff");
+    if (speedRow && speedDefault && speedRow.description !== speedDefault.description) {
+      await ctx.db.patch(speedRow._id, { description: speedDefault.description, lastUpdated: now });
+    }
+
+    // Stat shop removal.
+    for (const key of ["statUpgradeCostMultiplier", "statUpgradeLevelRequirements"]) {
+      const row = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", key))
+        .first();
+      if (row) await ctx.db.delete(row._id);
+    }
+    const spots = await ctx.db.query("hiddenSpots").take(200);
+    const spotRewards = new Set(spots.map((spot) => spot.rewardUpgradeId));
+    let removedUpgrades = 0;
+    for (const upgrade of await ctx.db.query("upgrades").take(200)) {
+      if (!spotRewards.has(upgrade.upgradeId)) {
+        await ctx.db.delete(upgrade._id);
+        removedUpgrades += 1;
+      }
+    }
+
+    // Boss rows bake in the tier multiplier when created, so rescale them.
+    const previousScale = 2;
+    const currentScale = await getTierScaleMultiplier(ctx);
+    let rescaledBosses = 0;
+    if (currentScale !== previousScale) {
+      for (const boss of await ctx.db.query("bosses").take(500)) {
+        if (!boss.statsTierScaled || boss.statsTierMultiplier === currentScale) continue;
+        const factor =
+          getTierScale(boss.tier, currentScale) /
+          getTierScale(boss.tier, boss.statsTierMultiplier ?? previousScale);
+        await ctx.db.patch(boss._id, {
+          str: Math.max(1, Math.round(boss.str * factor)),
+          dex: Math.max(1, Math.round(boss.dex * factor)),
+          int: Math.max(1, Math.round(boss.int * factor)),
+          luk: Math.max(1, Math.round(boss.luk * factor)),
+          con: Math.max(1, Math.round(boss.con * factor)),
+          statsTierMultiplier: currentScale,
+        });
+        rescaledBosses += 1;
+      }
+    }
+
+    await rebuildBalanceSnapshot(ctx);
+    await ctx.scheduler.runAfter(0, internal.migrations.backfillPlayerRecords, {});
+    return { removedUpgrades, rescaledBosses };
+  },
+});
+
+/**
+ * Per-player half of the update, in pages: ownership rows, wisdom level from its
+ * XP, achievements already earned, and purchase counts from the removed shop.
+ */
+export const backfillPlayerRecords = internalMutation({
+  args: { cursor: v.optional(v.string()) },
+  handler: async (ctx, { cursor }) => {
+    const xpBase = readSkillXpBase(await readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key));
+    const page = await ctx.db
+      .query("players")
+      .paginate({ numItems: 100, cursor: cursor ?? null });
+    for (const player of page.page) {
+      if (player.authSubject !== undefined) {
+        await setPlayerOwner(ctx, player._id, player.authSubject);
+      }
+      const wisdomXp = player.statXp?.wis ?? 0;
+      if (wisdomXp > 0) {
+        const level = calculateWisdomLevel(wisdomXp, xpBase);
+        if (level !== player.wis) {
+          await ctx.db.patch(player._id, { wis: level });
+        }
+      }
+      await awardMetAchievements(ctx, player._id, {
+        maxTierReached: player.maxTierReached ?? player.currentTier,
+        totalExperience: player.totalExperience,
+        rebirthCount: player.rebirthCount,
+      });
+      const upgrades = await ctx.db
+        .query("playerUpgrades")
+        .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
+        .take(50);
+      for (const upgrade of upgrades) {
+        if (upgrade.purchaseCount !== undefined) {
+          await ctx.db.patch(upgrade._id, { purchaseCount: undefined });
+        }
+      }
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.migrations.backfillPlayerRecords, {
+        cursor: page.continueCursor,
+      });
+    }
+    return null;
   },
 });

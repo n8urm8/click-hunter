@@ -162,15 +162,20 @@ function BattleStatus({
   const isActive = task.status === "active";
   const clockMs = useTaskClock(isActive, 250, true);
   const encounter = task.battleEncounter;
-  const encounterProgressMs = Math.min(
-    encounter?.durationMs ?? 0,
-    task.onlineCreditMs + (isActive
-      ? Math.max(0, clockMs - Math.max(task.updatedAt, task.respawnUntil ?? 0))
-      : 0)
-  );
+  const encounterElapsedMs = task.onlineCreditMs + (isActive
+    ? Math.max(0, clockMs - Math.max(task.updatedAt, task.respawnUntil ?? 0))
+    : 0);
+  // Fights bank between settlements, so the server can be several fights behind
+  // the clock. Keep a winning encounter replaying until the next batch arrives;
+  // only a defeat stops, because it ends the hunt.
+  const encounterProgressMs = !encounter || encounter.durationMs <= 0
+    ? 0
+    : encounter.won && encounterElapsedMs > encounter.durationMs
+      ? encounterElapsedMs % encounter.durationMs
+      : Math.min(encounter.durationMs, encounterElapsedMs);
   const projectedProgressMs = Math.min(
     task.targetDurationMs ?? Infinity,
-    task.progressMs + encounterProgressMs
+    task.progressMs + encounterElapsedMs
   );
   const progressLabel =
     task.battleMode === "count"
@@ -516,22 +521,21 @@ export function FightArea({ player }: FightAreaProps) {
     ...convexQuery(api.seed.getAllMonsters, {}),
     ...convexQueryCacheOptions,
   });
-  const balanceQuery = useQuery({
-    ...convexQuery(api.seed.getAllGameBalance, {}),
+  const maxTierQuery = useQuery({
+    ...convexQuery(api.seed.getGameBalance, { key: "maxTier" }),
+    ...convexQueryCacheOptions,
+  });
+  const respawnTimeQuery = useQuery({
+    ...convexQuery(api.seed.getGameBalance, { key: "respawnTimeMs" }),
     ...convexQueryCacheOptions,
   });
   const monsters = monstersQuery.data;
-  const balanceRows = balanceQuery.data;
-
-  // Build a lookup from balance key -> value
-  const balance = Object.fromEntries(
-    (balanceRows ?? []).map((b) => [b.key, b.value])
-  );
+  const maxTierValue = maxTierQuery.data?.value;
   const maxTier =
-    typeof balance.maxTier === "number" &&
-      Number.isSafeInteger(balance.maxTier) &&
-      balance.maxTier >= 1
-      ? balance.maxTier
+    typeof maxTierValue === "number" &&
+      Number.isSafeInteger(maxTierValue) &&
+      maxTierValue >= 1
+      ? maxTierValue
       : 20;
 
   // Tier and hunting zone live in the URL (/combat?tier=3&zone=easy) so every
@@ -606,12 +610,12 @@ export function FightArea({ player }: FightAreaProps) {
     return () => window.clearInterval(timer);
   }, [setRespawnTimer]);
 
-  // Build a lookup from balance key -> value
+  const respawnTimeValue = respawnTimeQuery.data?.value;
   const respawnTimeMs =
-    typeof balance.respawnTimeMs === "number" &&
-      Number.isSafeInteger(balance.respawnTimeMs) &&
-      balance.respawnTimeMs >= 0
-      ? balance.respawnTimeMs
+    typeof respawnTimeValue === "number" &&
+      Number.isSafeInteger(respawnTimeValue) &&
+      respawnTimeValue >= 0
+      ? respawnTimeValue
       : 5_000;
   const isTaskQueueFull =
     taskQueueData !== undefined &&
@@ -623,8 +627,8 @@ export function FightArea({ player }: FightAreaProps) {
 
   if (
     !currentFight &&
-    (monsters === undefined || balanceRows === undefined) &&
-    (monstersQuery.isPending || balanceQuery.isPending)
+    (monsters === undefined || maxTierQuery.data === undefined) &&
+    (monstersQuery.isPending || maxTierQuery.isPending)
   ) {
     return renderScreen(
       <div className="flex min-h-32 items-center justify-center">
@@ -638,7 +642,7 @@ export function FightArea({ player }: FightAreaProps) {
   if (
     !currentFight &&
     ((monstersQuery.isError && !monsters) ||
-      (balanceQuery.isError && !balanceRows))
+      (maxTierQuery.isError && maxTierQuery.data === undefined))
   ) {
     return renderScreen(
       <div className="flex min-h-32 items-center justify-center">

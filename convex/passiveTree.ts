@@ -1,3 +1,4 @@
+import { readBalanceValue } from "./balance";
 import { mutation, query } from "./_generated/server";
 import { requirePlayer, requirePlayerRead } from "./playerAuth";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -66,12 +67,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
-  return (
-    await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", key))
-      .first()
-  )?.value;
+  return await readBalanceValue(ctx, key);
 }
 
 function readPointInterval(value: unknown) {
@@ -99,12 +95,9 @@ export type PassivePointSchedule =
 export async function getPassivePointSchedule(
   ctx: DatabaseCtx
 ): Promise<PassivePointSchedule> {
-  const stepRow = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", PASSIVE_POINT_GAP_STEP_DEFAULT.key))
-    .first();
-  if (stepRow !== null) {
-    return { mode: "triangular", step: readPointGapStep(stepRow.value) };
+  const stepValue = await readBalanceValue(ctx, PASSIVE_POINT_GAP_STEP_DEFAULT.key);
+  if (stepValue !== undefined) {
+    return { mode: "triangular", step: readPointGapStep(stepValue) };
   }
   // Legacy databases seeded before triangular pacing keep flat intervals.
   return {

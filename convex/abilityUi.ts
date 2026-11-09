@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 import {
   canUseAbilityWithWeapon,
@@ -54,7 +54,7 @@ interface AbilityEntry {
 export const getAbilityPanel = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
 
     const [wisdom, wisdomBalance, learnedRows, equippedRows, weapon, books] =
       await Promise.all([
@@ -145,7 +145,7 @@ export const equipAbility = mutation({
     slot: v.number(),
   },
   handler: async (ctx, { playerId, abilityId, slot }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     if (!Number.isSafeInteger(slot)) {
       throw new Error("Invalid ability slot");
@@ -173,7 +173,7 @@ export const unequipAbility = mutation({
     slot: v.number(),
   },
   handler: async (ctx, { playerId, slot }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     if (!Number.isSafeInteger(slot) || slot < 0) {
       throw new Error("Invalid ability slot");
@@ -191,7 +191,7 @@ export const useAbilityBook = mutation({
     quantity: v.optional(v.number()),
   },
   handler: async (ctx, { playerId, playerItemId, quantity }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const granted = await consumeAbilityBook(
       ctx,

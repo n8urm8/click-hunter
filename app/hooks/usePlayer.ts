@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMutation as useConvexMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { convexQueryCacheOptions } from "../lib/queryCache";
+import { useTaskClock } from "./useTaskClock";
 import type { DerivedStats } from "../lib/statCalculations";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
 
@@ -108,8 +109,7 @@ export function useSetAutoStartFight() {
 }
 
 /**
- * Hook for getting player upgrades (legacy hidden-spot/automation rows;
- * the NPC stat shop is removed — new unlocks live in the passive tree).
+ * Hook for getting upgrades a player has claimed from hidden spots.
  */
 export function usePlayerUpgrades(playerId: Id<"players"> | null) {
   return useQuery({
@@ -146,16 +146,34 @@ export function useRecordFight() {
 
 /**
  * Hook for the persistent HP bar (CON regen + boost regen included).
+ *
+ * The query re-runs only when a fight, equipment, or boost changes. Out-of-combat
+ * regen is ticked here from the last result, so the bar moves without re-reading
+ * the combat profile on a timer.
  */
 export function useHpStatus(playerId: Id<"players"> | null) {
-  return useQuery({
+  const query = useQuery({
     ...convexQuery(
       api.combat.getHpStatus,
       playerId ? { playerId } : "skip"
     ),
     ...convexQueryCacheOptions,
-    refetchInterval: 5000,
   });
+  const hp = query.data;
+  const regenerating = Boolean(hp && !hp.inCombat && hp.currentHp < hp.maxHp);
+  const clockMs = useTaskClock(regenerating, 1_000);
+  if (!hp || !regenerating) return query;
+  const elapsedSeconds = Math.max(0, clockMs - hp.asOf) / 1_000;
+  return {
+    ...query,
+    data: {
+      ...hp,
+      currentHp: Math.min(
+        hp.maxHp,
+        Math.ceil(hp.currentHp + hp.conRegenPerSecond * elapsedSeconds)
+      ),
+    },
+  };
 }
 
 /**

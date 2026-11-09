@@ -1,5 +1,6 @@
+import { readBalanceValue } from "./balance";
 import { query } from "./_generated/server";
-import { requirePlayerRead } from "./playerAuth";
+import { requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
@@ -69,12 +70,7 @@ async function getPlayer(ctx: DatabaseCtx, playerId: PlayerId) {
 }
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
-  return (
-    await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", key))
-      .first()
-  )?.value;
+  return await readBalanceValue(ctx, key);
 }
 
 async function getSkillDefinition(ctx: DatabaseCtx, skillId: string) {
@@ -1974,6 +1970,8 @@ export async function refundSkillTaskReservation(
   return refunded;
 }
 
+const MAX_CATALOG_RECIPE_ROWS = 10_000;
+
 async function getSkillCatalogData(ctx: DatabaseCtx) {
   const [definitions, tiers, activities, recipes, augmentations] =
     await Promise.all([
@@ -2011,12 +2009,26 @@ async function getSkillCatalogData(ctx: DatabaseCtx) {
     enabledSkillIds.has(augmentation.skillId) &&
     enabledSkillTiers.has(`${augmentation.skillId}:${augmentation.tier}`)
   );
+  // One read per table instead of two per recipe: ~1,000 queries down to a few.
+  const [allIngredients, allOutputs] = await Promise.all([
+    ctx.db.query("recipeIngredients").take(MAX_CATALOG_RECIPE_ROWS),
+    ctx.db.query("recipeOutputs").take(MAX_CATALOG_RECIPE_ROWS),
+  ]);
+  const groupByRecipe = <T extends { recipeId: string }>(rows: T[]) => {
+    const grouped = new Map<string, T[]>();
+    for (const row of rows) {
+      const list = grouped.get(row.recipeId);
+      if (list) list.push(row);
+      else grouped.set(row.recipeId, [row]);
+    }
+    return grouped;
+  };
+  const ingredientsByRecipe = groupByRecipe(allIngredients);
+  const outputsByRecipe = groupByRecipe(allOutputs);
   const recipeDetails = await Promise.all(
     visibleRecipes.map(async (recipe) => {
-      const [ingredients, outputs] = await Promise.all([
-        getRecipeIngredients(ctx, recipe.recipeId),
-        getRecipeOutputs(ctx, recipe.recipeId),
-      ]);
+      const ingredients = ingredientsByRecipe.get(recipe.recipeId) ?? [];
+      const outputs = outputsByRecipe.get(recipe.recipeId) ?? [];
       return {
         ...recipe,
         ingredients: await Promise.all(
@@ -2076,6 +2088,7 @@ async function getSkillCatalogData(ctx: DatabaseCtx) {
       failXpPercent: infusionBalance.infusionFailXpPercent,
       keyEssenceQty: infusionBalance.bossKeyEssenceQty,
       enchantEssenceQty: infusionBalance.enchantEssenceQty,
+      enchantGoldPerLevel: infusionBalance.enchantGoldPerLevel,
       damagePerLevel: infusionBalance.enchantDamagePerLevel,
       defensePerLevel: infusionBalance.enchantDefensePerLevel,
       enchantLevelCap: infusionBalance.enchantLevelCap,
@@ -2101,7 +2114,7 @@ export const getPlayerSkills = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     return await getPlayerSkillRows(ctx, playerId);
   },
 });
@@ -2111,7 +2124,7 @@ export const getSkillPanel = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const [catalog, playerSkills] = await Promise.all([
       getSkillCatalogData(ctx),
       getPlayerSkillRows(ctx, playerId),

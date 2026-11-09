@@ -80,11 +80,7 @@ async function populateUpgrades(ctx: MutationCtx) {
   }> = [
     { upgradeId: "str_boost_1",      name: "Strength Training I", category: "stat-boost", cost: 100, description: "+5 STR", effectType: "stat-boost", effectStat: "str", effectAmount: 5, minTier: 1 },
     { upgradeId: "dex_boost_1",      name: "Agility Training I",  category: "stat-boost", cost: 100, description: "+5 DEX", effectType: "stat-boost", effectStat: "dex", effectAmount: 5, minTier: 1 },
-    { upgradeId: "int_boost_1",      name: "Magical Aptitude I",  category: "stat-boost", cost: 100, description: "+5 INT", effectType: "stat-boost", effectStat: "int", effectAmount: 5, minTier: 1 },
-    { upgradeId: "luk_boost_1",      name: "Fortune's Favor I",   category: "stat-boost", cost: 100, description: "+5 LUK", effectType: "stat-boost", effectStat: "luk", effectAmount: 5, minTier: 1 },
     { upgradeId: "con_boost_1",      name: "Toughening I",        category: "stat-boost", cost: 100, description: "+5 CON", effectType: "stat-boost", effectStat: "con", effectAmount: 5, minTier: 1 },
-    { upgradeId: "auto_attack",      name: "Automated Striking",  category: "auto",       cost: 500, description: "Enable automatic attacks at your attack speed", effectType: "enable-auto-attack",      minTier: 2, minLevel: 20 },
-    { upgradeId: "auto_start_fight", name: "Battle Automation",   category: "auto",       cost: 750, description: "Automatically start the next fight",        effectType: "enable-auto-start-fight", minTier: 2, minLevel: 25 },
   ];
   for (const upgrade of upgrades) {
     const existing = await ctx.db.query("upgrades").withIndex("by_upgradeId", (q) => q.eq("upgradeId", upgrade.upgradeId)).first();
@@ -115,7 +111,11 @@ async function populateItemRarities(ctx: MutationCtx) {
 
 async function populateGameBalance(ctx: MutationCtx) {
   const entries: Array<{ key: string; value: unknown; description: string }> = [
-    { key: "tierScaleMultiplier",  value: 2,                            description: "Doubles monster stats per tier level" },
+    { key: "tierScaleMultiplier",  value: 1.4,                          description: "Monster stat multiplier per tier level" },
+    { key: "minFightDurationMs", value: 2000, description: "Shortest a won regular fight may take, including the walk to the next monster (milliseconds)" },
+    { key: "rewardTierGrowth", value: 1.15, description: "Reward multiplier per tier, on top of the linear per-tier reward" },
+    { key: "autoRestBelowPercent", value: 0.5, description: "Hunts stop to rest before a fight when HP is below this fraction of max (0 = never)" },
+    { key: "autoRestUntilPercent", value: 0.9, description: "Fraction of max HP a resting hunter recovers to before fighting again" },
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
     { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
@@ -141,12 +141,10 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "abilityBookXpPerBookTier", value: 1.0, description: "Linear XP multiplier per book tier" },
     { key: "startingStats",        value: { str: 1, dex: 1, int: 1, luk: 1, con: 1, wis: 1 }, description: "Starting stats for new players (includes wisdom)" },
     { key: "inventorySlotCapacity", value: 50,                     description: "Maximum number of unequipped inventory stacks or item instances" },
-    { key: "statUpgradeCostMultiplier", value: 2, description: "Cost multiplier applied to each paid stat-upgrade level" },
-    { key: "statUpgradeLevelRequirements", value: [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377], description: "Character levels required for paid stat-upgrade levels" },
     { key: "taskQueueCapacity", value: 5, description: "Maximum number of active and queued tasks per player" },
     { key: "offlineTaskWindowMs", value: 4 * 60 * 60 * 1000, description: "Maximum offline progress window for offline-capable tasks (milliseconds)" },
-    { key: "taskHeartbeatGraceMs", value: 15 * 1000, description: "Maximum heartbeat gap treated as online task time (milliseconds)" },
-    { key: "autoBattleBatchLimit", value: 5, description: "Maximum auto-battle fights resolved per online heartbeat" },
+    { key: "taskHeartbeatGraceMs", value: 90 * 1000, description: "Maximum heartbeat gap treated as online task time (milliseconds)" },
+    { key: "autoBattleBatchLimit", value: 50, description: "Maximum auto-battle fights resolved per settlement" },
     { key: "autoBattleCreditCapMs", value: 5 * 60 * 1000, description: "Maximum online auto-battle time banked between heartbeats (milliseconds)" },
     { key: "respawnTimeMs", value: 5 * 1000, description: "Recovery time after a defeated battle before the next encounter (milliseconds)" },
     { key: "autoBattleRewards", value: { goldPerTier: 100, goldVariance: 50, experiencePerTier: 50, experienceVariance: 25 }, description: "Server-side regular auto-battle reward formula" },
@@ -203,7 +201,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "whirlwind",
       name: "Whirlwind",
-      description: "Spin attack hitting all enemies in range. Scales with STR.",
+      description: "Spinning strike dealing heavy physical damage.",
       type: "attack",
       target: "enemy",
       weaponType: "sword",
@@ -216,7 +214,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "executioner_strike",
       name: "Executioner's Strike",
-      description: "Single-target strike dealing bonus damage below 30% enemy HP.",
+      description: "A massive overhead blow dealing very high physical damage.",
       type: "attack",
       target: "enemy",
       weaponType: "sword",
@@ -230,7 +228,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "backstab",
       name: "Backstab",
-      description: "High crit chance attack. Bonus damage when striking from stealth.",
+      description: "Quick strike dealing physical damage on a short cooldown.",
       type: "attack",
       target: "enemy",
       weaponType: "dagger",
@@ -244,7 +242,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "shadow_dance",
       name: "Shadow Dance",
-      description: "Rapid 4-hit combo. Each hit applies stacking poison DoT.",
+      description: "Rapid strike dealing physical damage.",
       type: "attack",
       target: "enemy",
       weaponType: "dagger",
@@ -259,7 +257,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "smite",
       name: "Smite",
-      description: "Heavy blow with chance to stun enemy for 1 round. Scales with STR.",
+      description: "Heavy blow dealing strong physical damage.",
       type: "attack",
       target: "enemy",
       weaponType: "mace",
@@ -273,7 +271,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "crushing_judgment",
       name: "Crushing Judgment",
-      description: "Deals damage and permanently reduces enemy defense for the fight.",
+      description: "Crushing strike dealing very high physical damage.",
       type: "attack",
       target: "enemy",
       weaponType: "mace",
@@ -288,7 +286,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "piercing_shot",
       name: "Piercing Shot",
-      description: "Ignores 50% of enemy defense. Scales with DEX.",
+      description: "Precise shot dealing physical damage on a short cooldown.",
       type: "attack",
       target: "enemy",
       weaponType: "bow",
@@ -301,7 +299,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "rain_of_arrows",
       name: "Rain of Arrows",
-      description: "Volley hitting 3 times. Greater version of Piercing Shot.",
+      description: "A volley of arrows dealing physical damage.",
       type: "attack",
       target: "enemy",
       weaponType: "bow",
@@ -315,7 +313,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "fireball",
       name: "Fireball",
-      description: "Ranged fire damage. +25% with fire staff, -15% with water staff.",
+      description: "Ranged fire damage. +25% with a fire staff, -15% with a water staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -329,7 +327,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "scorching_ray",
       name: "Scorching Ray",
-      description: "Concentrated fire beam, 3 hits over 2s. Each hit applies Burn. +25% fire, -15% water.",
+      description: "Concentrated beam of fire damage. +25% with a fire staff, -15% with a water staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -344,7 +342,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "ice_shard",
       name: "Ice Shard",
-      description: "Water damage + applies Chill (reduces enemy attack speed 20%). +25% water, -15% fire.",
+      description: "Water damage on a short cooldown. +25% with a water staff, -15% with a fire staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -358,7 +356,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "glacial_spike",
       name: "Glacial Spike",
-      description: "Heavy ice projectile. On Chill target: consumes Chill for 2x damage + Freeze (stun 1 round). +25% water, -15% fire.",
+      description: "Heavy ice projectile dealing high water damage. +25% with a water staff, -15% with a fire staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -373,7 +371,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "lightning_bolt",
       name: "Lightning Bolt",
-      description: "Wind damage with 25% chain chance to 2nd target. +25% wind, -15% earth.",
+      description: "Wind damage on a short cooldown. +25% with a wind staff, -15% with an earth staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -387,7 +385,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "storm_call",
       name: "Storm Call",
-      description: "Summons lightning storm: 4 random strikes over 3s. Each chains independently. +25% wind, -15% earth.",
+      description: "Calls down a lightning strike for wind damage. +25% with a wind staff, -15% with an earth staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -402,7 +400,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "stone_spikes",
       name: "Stone Spikes",
-      description: "Earth damage + applies Bleed. +25% earth, -15% wind.",
+      description: "Earth damage. +25% with an earth staff, -15% with a wind staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -416,7 +414,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "seismic_slam",
       name: "Seismic Slam",
-      description: "Ground slam AoE. Enemies hit gain Petrify (defense -30%, cannot act 1 round). +25% earth, -15% wind.",
+      description: "Ground slam dealing high earth damage. +25% with an earth staff, -15% with a wind staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -431,7 +429,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "holy_light",
       name: "Holy Light",
-      description: "Light damage + heals self for 40% of damage dealt. Bonus vs undead/dark. +25% light, -15% dark.",
+      description: "Light damage. +25% with a light staff, -15% with a dark staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -445,7 +443,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "radiant_judgment",
       name: "Radiant Judgment",
-      description: "High light damage, applies Blind (miss chance 30% for 2 rounds), heals 25% max HP. +25% light, -15% dark.",
+      description: "Very high light damage on a long cooldown. +25% with a light staff, -15% with a dark staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -460,7 +458,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "shadow_bolt",
       name: "Shadow Bolt",
-      description: "Dark damage, applies Curse (reduces enemy defense 15%). +25% dark, -15% light.",
+      description: "Dark damage. +25% with a dark staff, -15% with a light staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -474,7 +472,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "void_tendrils",
       name: "Void Tendrils",
-      description: "3 shadow lashes, each steals 10% damage as HP. Applies Dread (enemy damage -15%). +25% dark, -15% light.",
+      description: "Lashes of shadow dealing dark damage. +25% with a dark staff, -15% with a light staff.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -504,7 +502,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "arcane_explosion",
       name: "Arcane Explosion",
-      description: "Non-elemental AoE centered on target. Scales with INT only. No elemental interaction.",
+      description: "Non-elemental burst dealing high damage, whatever your staff's element.",
       type: "attack",
       target: "enemy",
       weaponType: "staff",
@@ -519,7 +517,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "healing_touch",
       name: "Healing Touch",
-      description: "Restore HP = 15% max HP + INT×2. 12s cooldown.",
+      description: "Restores 15% of max HP, more with ability level and wisdom. Waits until the heal won't be wasted. 12s cooldown.",
       type: "heal",
       target: "self",
       weaponType: "any",
@@ -533,7 +531,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "greater_heal",
       name: "Greater Heal",
-      description: "Restore HP = 35% max HP + INT×5. 20s cooldown.",
+      description: "Restores 35% of max HP, more with ability level and wisdom. Waits until the heal won't be wasted. 20s cooldown.",
       type: "heal",
       target: "self",
       weaponType: "any",
@@ -548,7 +546,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "battle_cry",
       name: "Battle Cry",
-      description: "+15% damage, +10% crit chance for 20s. 30s cooldown.",
+      description: "+15% damage for 20s, more with ability level and wisdom. 30s cooldown.",
       type: "buff_offense",
       target: "self",
       weaponType: "any",
@@ -565,7 +563,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "berserker_rage",
       name: "Berserker Rage",
-      description: "+30% damage, +20% attack speed, -20% defense for 15s. 45s cooldown.",
+      description: "+30% damage for 15s, more with ability level and wisdom. 45s cooldown.",
       type: "buff_offense",
       target: "self",
       weaponType: "any",
@@ -583,7 +581,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "iron_will",
       name: "Iron Will",
-      description: "+40% defense, +25% magical defense for 25s. 30s cooldown.",
+      description: "Reduces damage taken by 40% for 25s, more with ability level and wisdom. 30s cooldown.",
       type: "buff_defense",
       target: "self",
       weaponType: "any",
@@ -600,7 +598,7 @@ async function populateAbilities(ctx: MutationCtx) {
     {
       abilityId: "warding_light",
       name: "Warding Light",
-      description: "+30% all defense, gain elemental wards (all elements +20) for 20s. 40s cooldown.",
+      description: "Reduces damage taken by 30% for 20s, more with ability level and wisdom. 40s cooldown.",
       type: "buff_defense",
       target: "self",
       weaponType: "any",

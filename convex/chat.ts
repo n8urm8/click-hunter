@@ -1,9 +1,11 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { requireAdmin } from "./adminAuth";
 import { requirePlayerRead as requireChannelOwner } from "./playerAuth";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {});
@@ -13,6 +15,8 @@ const MAX_CHAT_MESSAGE_LENGTH = 280;
 const MAX_RECENT_MESSAGES = 50;
 const MAX_PRIVATE_CHATS = 50;
 const MAX_PRIVATE_MESSAGES_TO_SCAN = 200;
+const CHAT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+const CHAT_PRUNE_BATCH_SIZE = 500;
 
 type SupportedChannelType = "world" | "private" | "guild" | "arena";
 
@@ -347,5 +351,206 @@ export const sendMessage = mutation({
     });
 
     return await ctx.db.get(messageId);
+  },
+});
+
+
+// ─── Reports ──────────────────────────────────────────────────────────────────
+
+const REPORT_CONTEXT_MESSAGES = 10;
+const MAX_REPORT_DETAILS_LENGTH = 500;
+const MAX_REPORTS_LISTED = 100;
+
+/**
+ * Whether a player could see this message. Reports copy messages into a store
+ * admins read, so a player must not be able to pull in a channel they aren't in.
+ */
+async function canSeeMessage(
+  ctx: QueryCtx | MutationCtx,
+  playerId: Id<"players">,
+  message: Doc<"chatMessages">
+) {
+  if (message.channelType === "world") return true;
+  if (message.channelType === "private") {
+    return message.senderId === playerId || message.recipientId === playerId;
+  }
+  if (message.channelType === "guild") {
+    const membership = await ctx.db
+      .query("guildMembers")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .first();
+    return String(membership?.guildId) === message.channelId;
+  }
+  if (message.channelType === "arena") {
+    if (message.channelId === ARENA_CHANNEL_ID) return true;
+    const lobbyId = ctx.db.normalizeId(
+      "arenaLobbies",
+      message.channelId.slice(LOBBY_CHANNEL_PREFIX.length)
+    );
+    if (!lobbyId) return false;
+    const lobby = await ctx.db.get(lobbyId);
+    if (lobby?.fighter1Id === playerId || lobby?.fighter2Id === playerId) return true;
+    const spectator = await ctx.db
+      .query("arenaSpectators")
+      .withIndex("by_lobby_and_player", (q) =>
+        q.eq("lobbyId", lobbyId).eq("playerId", playerId)
+      )
+      .first();
+    return spectator !== null;
+  }
+  return false;
+}
+
+/**
+ * Report the sender of a chat message. Saves a copy of the messages around it, so
+ * an admin can read the conversation after the originals are pruned.
+ */
+export const reportMessage = mutation({
+  args: {
+    playerId: v.id("players"),
+    messageId: v.id("chatMessages"),
+    reason: v.union(
+      v.literal("harassment"),
+      v.literal("spam"),
+      v.literal("cheating"),
+      v.literal("other")
+    ),
+    details: v.optional(v.string()),
+  },
+  handler: async (ctx, { playerId, messageId, reason, details }) => {
+    const reporter = await requireChannelOwner(ctx, playerId);
+    const message = await ctx.db.get(messageId);
+    if (!message || !(await canSeeMessage(ctx, playerId, message))) {
+      throw new Error("Message not found");
+    }
+    if (!message.senderId) {
+      throw new Error("That message has no player to report");
+    }
+    if (message.senderId === playerId) {
+      throw new Error("You cannot report yourself");
+    }
+    const trimmedDetails = details?.trim();
+    if (trimmedDetails && trimmedDetails.length > MAX_REPORT_DETAILS_LENGTH) {
+      throw new Error(`Details cannot be longer than ${MAX_REPORT_DETAILS_LENGTH} characters`);
+    }
+    const existing = await ctx.db
+      .query("chatReports")
+      .withIndex("by_reporterId_and_messageId", (q) =>
+        q.eq("reporterId", playerId).eq("messageId", messageId)
+      )
+      .first();
+    if (existing) return { reportId: existing._id, duplicate: true };
+    const limit = await rateLimiter.limit(ctx, "chatReport", {
+      key: playerId,
+      config: { kind: "token bucket", rate: 5, period: 60 * 60 * 1000, capacity: 5 },
+    });
+    if (!limit.ok) {
+      throw new Error("You have sent a lot of reports. Try again later.");
+    }
+
+    const [before, after] = await Promise.all([
+      ctx.db
+        .query("chatMessages")
+        .withIndex("by_channel_createdAt", (q) =>
+          q
+            .eq("channelType", message.channelType)
+            .eq("channelId", message.channelId)
+            .lt("createdAt", message.createdAt)
+        )
+        .order("desc")
+        .take(REPORT_CONTEXT_MESSAGES),
+      ctx.db
+        .query("chatMessages")
+        .withIndex("by_channel_createdAt", (q) =>
+          q
+            .eq("channelType", message.channelType)
+            .eq("channelId", message.channelId)
+            .gte("createdAt", message.createdAt)
+        )
+        .order("asc")
+        .take(REPORT_CONTEXT_MESSAGES + 1),
+    ]);
+    const context = [...before.reverse(), ...after].map((row) => ({
+      messageId: row._id,
+      ...(row.senderId === undefined ? {} : { senderId: row.senderId }),
+      senderName: row.senderName,
+      content: row.content,
+      createdAt: row.createdAt,
+    }));
+
+    const reportId = await ctx.db.insert("chatReports", {
+      reporterId: playerId,
+      reporterName: reporter.name,
+      reportedPlayerId: message.senderId,
+      reportedPlayerName: message.senderName,
+      messageId,
+      channelType: message.channelType,
+      channelId: message.channelId,
+      reason,
+      ...(trimmedDetails ? { details: trimmedDetails } : {}),
+      context,
+      status: "open",
+      createdAt: Date.now(),
+    });
+    return { reportId, duplicate: false };
+  },
+});
+
+export const listReports = query({
+  args: {
+    playerId: v.id("players"),
+    status: v.union(
+      v.literal("open"),
+      v.literal("actioned"),
+      v.literal("dismissed")
+    ),
+  },
+  handler: async (ctx, { playerId, status }) => {
+    await requireAdmin(ctx, playerId);
+    return await ctx.db
+      .query("chatReports")
+      .withIndex("by_status_and_createdAt", (q) => q.eq("status", status))
+      .order("desc")
+      .take(MAX_REPORTS_LISTED);
+  },
+});
+
+export const resolveReport = mutation({
+  args: {
+    playerId: v.id("players"),
+    reportId: v.id("chatReports"),
+    status: v.union(v.literal("actioned"), v.literal("dismissed")),
+  },
+  handler: async (ctx, { playerId, reportId, status }) => {
+    await requireAdmin(ctx, playerId);
+    if (!(await ctx.db.get(reportId))) throw new Error("Report not found");
+    await ctx.db.patch(reportId, {
+      status,
+      resolvedBy: playerId,
+      resolvedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Delete chat older than the retention window, oldest first. Reports keep their
+ * own copies, so they are unaffected.
+ */
+export const pruneMessages = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const cutoff = Date.now() - CHAT_RETENTION_MS;
+    const expired = await ctx.db
+      .query("chatMessages")
+      .withIndex("by_creation_time", (q) => q.lt("_creationTime", cutoff))
+      .take(CHAT_PRUNE_BATCH_SIZE);
+    for (const message of expired) {
+      await ctx.db.delete(message._id);
+    }
+    if (expired.length === CHAT_PRUNE_BATCH_SIZE) {
+      await ctx.scheduler.runAfter(1_000, internal.chat.pruneMessages, {});
+    }
+    return null;
   },
 });

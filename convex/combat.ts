@@ -1,7 +1,6 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { readBalanceMap } from "./balance";
 import type { Doc, Id } from "./_generated/dataModel";
-import { calculateCharacterLevel } from "./characterLevel";
 import {
   computeAttackSpeed,
   getActiveCombatBoosts,
@@ -14,17 +13,17 @@ import {
 import { getPassiveBonuses } from "./passiveTree";
 import {
   getRebirthStatBonuses,
+  readRebirthRewardBonuses,
   readRebirthStatBonusPercent,
   rebirthStatMultiplier,
 } from "./rebirth";
-import { getActiveEventMultipliers, settleCombatFight } from "./loot";
+import { getActiveEventMultipliers } from "./loot";
 import { getGuildBonusesForPlayer } from "./guilds";
 import { conRegenPerSecond, readHpRegenBalance, resolveCurrentHp } from "./playerHp";
 import type { PvpEquipmentBundle } from "./pvpLoadout";
 import {
   abilityCastsLog,
   abilityWeaponFrom,
-  awardAbilityWisdomXp,
   buildAbilityCombatState,
   castDueAbilities,
   damageWithBuffs,
@@ -59,6 +58,12 @@ export const DEFAULT_AUTO_BATTLE_REWARDS = {
  * tune it live.
  */
 export const DEFAULT_MONSTER_POWER_MULTIPLIER = 1;
+
+/** Shortest a won regular fight may take, including the walk to the next one. */
+export const DEFAULT_MIN_FIGHT_DURATION_MS = 2_000;
+
+/** Reward multiplier per tier on top of the linear per-tier reward. */
+export const DEFAULT_REWARD_TIER_GROWTH = 1.15;
 
 type AutoBattleRewards = typeof DEFAULT_AUTO_BATTLE_REWARDS;
 
@@ -140,6 +145,12 @@ function readMinimumAttackMs(value: unknown) {
     : 800;
 }
 
+function readRewardTierGrowth(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1
+    ? value
+    : DEFAULT_REWARD_TIER_GROWTH;
+}
+
 function readMonsterPowerMultiplier(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
@@ -189,6 +200,10 @@ export interface AutoBattleResult {
   // Ability casts performed during the encounter, for idempotent wisdom XP
   // award at settlement.
   abilityCasts?: Array<{ abilityId: string; level: number; casts: number }>;
+  // Ability readiness left over when this fight ends, carried into the next.
+  abilityCooldowns?: Array<{ abilityId: string; remainingMs: number }>;
+  // Time actually spent fighting, when shorter than durationMs (the walk).
+  combatMs?: number;
   goldEarned?: number;
   experienceEarned?: number;
   durationMs: number;
@@ -206,6 +221,8 @@ export interface AutoBattleResult {
 export type CombatProfileSource =
   | { kind: "live" }
   | { kind: "resolved"; equipment: ResolvedEquipment };
+
+export type PlayerCombatProfile = Awaited<ReturnType<typeof readPlayerCombatProfile>>;
 
 export async function readPlayerCombatProfile(
   ctx: QueryCtx | MutationCtx,
@@ -261,7 +278,9 @@ export async function readPlayerCombatProfile(
     rebirthCounts.wis;
   const rebirthBonusPercent =
     bankedTotal > 0 ? await readRebirthStatBonusPercent(ctx) : 0;
-  const guildStatMultiplier = 1 + (guildBonuses.statBonusPercent ?? 0) / 100;
+  const rebirthRewards = await readRebirthRewardBonuses(ctx, player.rebirthCount);
+  const guildStatMultiplier =
+    (1 + (guildBonuses.statBonusPercent ?? 0) / 100) * rebirthRewards.statMultiplier;
   const effectiveStats = {
     str: (player.str + bonuses.str + passives.stats.str + (boosts?.statBonus.str ?? 0)) * rebirthStatMultiplier(rebirthCounts.str, rebirthBonusPercent) * guildStatMultiplier,
     dex: (player.dex + bonuses.dex + passives.stats.dex + (boosts?.statBonus.dex ?? 0)) * rebirthStatMultiplier(rebirthCounts.dex, rebirthBonusPercent) * guildStatMultiplier,
@@ -276,16 +295,25 @@ export async function readPlayerCombatProfile(
       ? effectiveStats.int
       : effectiveStats.str;
   const baseAttack = (weapon?.baseDamage ?? 2) + scalingStat * balance.statAttackCoeff;
+  // Real-time fights multiply damage by attack speed, so a slow weapon's hits land
+  // harder to keep its damage per second in line with a fast one.
+  const weaponSpeedDamage = weapon && weapon.attackSpeed > 0
+    ? Math.pow(1 / weapon.attackSpeed, balance.weaponSpeedDamageExponent)
+    : 1;
   const damageMultiplier = (1 + passives.damagePercent) *
-    (1 + (weapon?.element ? (passives.elements[weapon.element] ?? 0) : 0));
+    (1 + (weapon?.element ? (passives.elements[weapon.element] ?? 0) : 0)) *
+    weaponSpeedDamage;
   const combatStats = {
     health: Math.max(1, Math.max(balance.minPlayerHp, effectiveStats.con * 10) * (1 + passives.healthPercent)),
     attack: Math.max(1, baseAttack * damageMultiplier),
+    // Attack for round-based fights (arena, ranked, raids), where everyone swings
+    // once a round, so speed compensation would only reward slow weapons.
+    roundAttack: Math.max(1, (baseAttack * damageMultiplier) / weaponSpeedDamage),
     defense: Math.max(0, (armor.defense + effectiveStats.con * balance.physDefConCoeff) * (1 + passives.defensePercent)),
     magicalDefense: Math.max(0, effectiveStats.int * balance.magDefIntCoeff * (1 + passives.defensePercent)),
-    attackSpeed: computeAttackSpeed(weapon?.attackSpeed ?? 1, effectiveStats.dex, armor.speedPenalty, balance) *
+    attackSpeed: computeAttackSpeed(weapon?.attackSpeed ?? 1, scalingStat, armor.speedPenalty, balance) *
       (1 + passives.attackSpeedPercent),
-    critChance: Math.min(1, Math.max(0, effectiveStats.luk * balance.lukCritChancePerPoint + passives.critChance)) * 100,
+    critChance: Math.min(1, Math.max(0, effectiveStats.luk * balance.lukCritChancePerPoint + passives.critChance + rebirthRewards.critChance)) * 100,
     critDamageMultiplier: balance.critDamageMultiplier,
     attackSpeedMultiplier: balance.attackSpeedMultiplier,
     damageType: weapon?.damageType ?? "physical",
@@ -302,7 +330,7 @@ export async function readPlayerCombatProfile(
       regenBalance
     );
   }
-  return { bonuses, weapon, armor, ward, passives, balance, boosts, effectiveStats, baseAttack, damageMultiplier, combatStats, conRegenPerSecond: conRegen };
+  return { bonuses, weapon, armor, ward, passives, guildBonuses, rebirthRewards, balance, boosts, effectiveStats, baseAttack, damageMultiplier, combatStats, conRegenPerSecond: conRegen };
 }
 
 /**
@@ -312,7 +340,7 @@ export async function readPlayerCombatProfile(
  * heals can be gated on missing HP. Abilities cast as soon as they are off
  * cooldown; heals only cast when they will not overheal.
  */
-async function simulateAbilityBattle(input: {
+function simulateAbilityBattle(input: {
   state: AbilityCombatState;
   monster: { element?: string; defense: number; magicalDefense: number };
   monsterHealth: number;
@@ -323,13 +351,13 @@ async function simulateAbilityBattle(input: {
   monsterIntervalMs: number;
   monsterDamagePerHit: number;
   regenPerSecond: number;
-}): Promise<{
+}): {
   won: boolean;
   durationMs: number;
   playerEndingHp: number;
   playerDamagePerSecond: number;
   abilityCasts: Array<{ abilityId: string; level: number; casts: number }>;
-}> {
+} {
   const {
     state,
     monster,
@@ -440,21 +468,63 @@ async function simulateAbilityBattle(input: {
   };
 }
 
+/** Everything a regular fight needs from the database, loaded once per batch. */
+export type BattleContext = {
+  pool: Monster[];
+  tier: number;
+  tierMultiplier: number;
+  tierMsReduction: number;
+  minimumAttackMs: number;
+  monsterPower: number;
+  minFightMs: number;
+  rewards: AutoBattleRewards;
+  medianGoldDrop: number;
+  medianExperienceReward: number;
+  rewardTierGrowth: number;
+  eventMultipliers: { goldMultiplier: number; experienceMultiplier: number };
+  profile: PlayerCombatProfile;
+  abilityState: AbilityCombatState | null;
+};
+
+type AbilityCooldown = { abilityId: string; remainingMs: number };
+
+function median(values: number[]) {
+  if (values.length === 0) return 1;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
 /**
- * Resolve one regular fight without accepting client-calculated combat or rewards.
+ * How much a monster pays relative to the roster's median. Square-rooted so a
+ * hard monster's extra fight time and danger are repaid without its raw drop
+ * value (20x a rat's) making easy zones pointless.
  */
-export async function simulateRegularBattle(
-  ctx: MutationCtx,
+export function monsterRewardScale(monsterValue: number, medianValue: number) {
+  if (!(monsterValue > 0) || !(medianValue > 0)) return 1;
+  return Math.sqrt(monsterValue / medianValue);
+}
+
+/**
+ * Load what a run of regular fights needs. Separate from rolling so a settlement
+ * batch pays these reads once, however many fights it resolves.
+ */
+export async function loadBattleContext(
+  ctx: QueryCtx | MutationCtx,
   player: Player,
   tier: number,
   options: {
     /** Zone to hunt in. Omit to hunt the full monster pool. */
     zone?: CombatZone;
-    /** HP the fight starts from. Omit to start at full. */
-    startingHp?: number;
+    now?: number;
+    /** A profile the caller already read at `now`. */
+    profile?: PlayerCombatProfile;
   } = {}
-): Promise<AutoBattleResult> {
-  const { zone, startingHp: playerStartingHp } = options;
+): Promise<BattleContext> {
+  const { zone } = options;
+  const now = options.now ?? Date.now();
   // Bounded catalog read: monster pool is small content (~9 rows); take()
   // keeps a hard cap so future content growth can't turn encounter rolls
   // into an unbounded scan.
@@ -463,40 +533,83 @@ export async function simulateRegularBattle(
     throw new Error("Regular monsters are not configured");
   }
   // Tasks queued before zones existed carry no zone and hunt the full pool.
-  const pool =
-    zone !== undefined && monstersInZone(allMonsters, zone).length > 0
-      ? monstersInZone(allMonsters, zone)
-      : allMonsters;
+  const zoned = zone === undefined ? [] : monstersInZone(allMonsters, zone);
+  const pool = zoned.length > 0 ? zoned : allMonsters;
 
-  const balanceMap = await readBalanceMap(ctx, [
-    "tierScaleMultiplier",
-    "tierScaleMsReduction",
-    "minAttackMs",
-    "autoBattleRewards",
-    "monsterPowerMultiplier",
-  ]);
-  const tierMultiplierValue = balanceMap.get("tierScaleMultiplier");
-  const tierMsReductionValue = balanceMap.get("tierScaleMsReduction");
-  const minimumAttackMsValue = balanceMap.get("minAttackMs");
-  const rewardsValue = balanceMap.get("autoBattleRewards");
-  const monsterPowerValue = balanceMap.get("monsterPowerMultiplier");
-  const monsterPower = readMonsterPowerMultiplier(monsterPowerValue);
-
-  const monster = scaleMonster(
-    pickWeightedMonster(pool),
-    tier,
-    readTierMultiplier(tierMultiplierValue),
-    readTierMsReduction(tierMsReductionValue),
-    readMinimumAttackMs(minimumAttackMsValue)
-  );
-  const rewards = readAutoBattleRewards(rewardsValue);
-  const now = Date.now();
-  const [eventMultipliers, guildBonuses] = await Promise.all([
+  const [balanceMap, eventMultipliers, profile, equippedAbility] = await Promise.all([
+    readBalanceMap(ctx, [
+      "tierScaleMultiplier",
+      "tierScaleMsReduction",
+      "minAttackMs",
+      "autoBattleRewards",
+      "monsterPowerMultiplier",
+      "minFightDurationMs",
+      "rewardTierGrowth",
+    ]),
     getActiveEventMultipliers(ctx, now),
-    getGuildBonusesForPlayer(ctx, player._id),
+    options.profile ?? readPlayerCombatProfile(ctx, player, { now }),
+    // The cheap take(1) keeps the closed-form path (and its exact timing) for
+    // the common case of a player with no abilities equipped.
+    ctx.db
+      .query("playerEquippedAbilities")
+      .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
+      .first(),
   ]);
-  const profile = await readPlayerCombatProfile(ctx, player, { now });
-  const { balance, passives, combatStats } = profile;
+  const abilityState = equippedAbility
+    ? await buildAbilityCombatState(
+        ctx,
+        player._id,
+        abilityWeaponFrom(profile.weapon),
+        { unit: "ms" }
+      )
+    : null;
+
+  return {
+    pool,
+    tier,
+    tierMultiplier: readTierMultiplier(balanceMap.get("tierScaleMultiplier")),
+    tierMsReduction: readTierMsReduction(balanceMap.get("tierScaleMsReduction")),
+    minimumAttackMs: readMinimumAttackMs(balanceMap.get("minAttackMs")),
+    monsterPower: readMonsterPowerMultiplier(balanceMap.get("monsterPowerMultiplier")),
+    minFightMs: readNonNegativeNumber(
+      balanceMap.get("minFightDurationMs"),
+      DEFAULT_MIN_FIGHT_DURATION_MS
+    ),
+    rewards: readAutoBattleRewards(balanceMap.get("autoBattleRewards")),
+    medianGoldDrop: median(allMonsters.map((monster) => monster.goldDrop)),
+    medianExperienceReward: median(allMonsters.map((monster) => monster.experienceReward)),
+    rewardTierGrowth: readRewardTierGrowth(balanceMap.get("rewardTierGrowth")),
+    eventMultipliers,
+    profile,
+    abilityState:
+      abilityState && abilityState.runtimes.length > 0 ? abilityState : null,
+  };
+}
+
+/**
+ * Resolve one regular fight from a loaded context. Reads and writes nothing.
+ *
+ * Fights are floored at `minFightMs`: the gap is the walk to the next monster.
+ * The floor keeps the settlement load bounded and stops an opening nuke from
+ * turning kills-per-second into the only stat that matters.
+ *
+ * `abilityCooldowns` carries ability readiness over from the previous fight, so
+ * a long cooldown can't be dodged by the fight ending. A fresh hunt starts with
+ * everything ready.
+ */
+export function rollEncounter(
+  battle: BattleContext,
+  options: { startingHp?: number; abilityCooldowns?: AbilityCooldown[] } = {}
+): AutoBattleResult {
+  const { profile, tier, monsterPower, rewards, eventMultipliers } = battle;
+  const { balance, passives, combatStats, guildBonuses, rebirthRewards } = profile;
+  const monster = scaleMonster(
+    pickWeightedMonster(battle.pool),
+    tier,
+    battle.tierMultiplier,
+    battle.tierMsReduction,
+    battle.minimumAttackMs
+  );
   const isMagical = combatStats.damageType === "magical";
   const monsterMagDef = Math.max(
     0,
@@ -510,9 +623,9 @@ export async function simulateRegularBattle(
   const playerHealth = combatStats.health;
   const playerMaxHp = Math.max(1, Math.ceil(playerHealth));
   const startingHp =
-    playerStartingHp === undefined
+    options.startingHp === undefined
       ? playerMaxHp
-      : Math.min(playerMaxHp, Math.max(0, playerStartingHp));
+      : Math.min(playerMaxHp, Math.max(0, options.startingHp));
   const critChance = combatStats.critChance / 100;
   const monsterHealth = Math.max(
     1,
@@ -592,52 +705,58 @@ export async function simulateRegularBattle(
     )
     : 0;
 
-  // Equipped abilities add their own cooldown timeline. The cheap take(1)
-  // keeps the closed-form path (and its exact timing) for the common case of
-  // a player with no abilities equipped.
   let won = closedFormWon;
-  let durationMs = closedFormDurationMs;
+  let combatMs = closedFormDurationMs;
   let playerEndingHp = closedFormPlayerEndingHp;
   let playerDamagePerSecond = closedFormPlayerDamagePerSecond;
   let abilityCasts: Array<{ abilityId: string; level: number; casts: number }> = [];
-  const hasEquippedAbilities =
-    (
-      await ctx.db
-        .query("playerEquippedAbilities")
-        .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
-        .take(1)
-    ).length > 0;
-  if (hasEquippedAbilities) {
-    const abilityState = await buildAbilityCombatState(
-      ctx,
-      player._id,
-      abilityWeaponFrom(profile.weapon),
-      { unit: "ms" }
+  let abilityCooldowns: AbilityCooldown[] | undefined;
+  if (battle.abilityState) {
+    const carried = new Map(
+      (options.abilityCooldowns ?? []).map((entry) => [entry.abilityId, entry.remainingMs])
     );
-    if (abilityState.runtimes.length > 0) {
-      const outcome = await simulateAbilityBattle({
-        state: abilityState,
-        monster: {
-          element: monster.element,
-          defense: 0,
-          magicalDefense: monsterMagDef,
-        },
-        monsterHealth,
-        playerStartingHp: startingHp,
-        playerMaxHp,
-        playerIntervalMs,
-        playerDamagePerHit,
-        monsterIntervalMs,
-        monsterDamagePerHit: monsterGrossDamagePerHit,
-        regenPerSecond: totalRegenPerSecond,
-      });
-      won = outcome.won;
-      durationMs = outcome.durationMs;
-      playerEndingHp = outcome.playerEndingHp;
-      playerDamagePerSecond = outcome.playerDamagePerSecond;
-      abilityCasts = outcome.abilityCasts;
-    }
+    const abilityState: AbilityCombatState = {
+      ...battle.abilityState,
+      buffs: [],
+      runtimes: battle.abilityState.runtimes.map((runtime) => ({
+        ...runtime,
+        casts: 0,
+        nextAt: carried.get(runtime.spec.abilityId) ?? 0,
+      })),
+    };
+    const outcome = simulateAbilityBattle({
+      state: abilityState,
+      monster: {
+        element: monster.element,
+        defense: 0,
+        magicalDefense: monsterMagDef,
+      },
+      monsterHealth,
+      playerStartingHp: startingHp,
+      playerMaxHp,
+      playerIntervalMs,
+      playerDamagePerHit,
+      monsterIntervalMs,
+      monsterDamagePerHit: monsterGrossDamagePerHit,
+      regenPerSecond: totalRegenPerSecond,
+    });
+    won = outcome.won;
+    combatMs = outcome.durationMs;
+    playerEndingHp = outcome.playerEndingHp;
+    playerDamagePerSecond = outcome.playerDamagePerSecond;
+    abilityCasts = outcome.abilityCasts;
+    const durationAfterFloor = won ? Math.max(combatMs, battle.minFightMs) : combatMs;
+    abilityCooldowns = abilityState.runtimes.map((runtime) => ({
+      abilityId: runtime.spec.abilityId,
+      remainingMs: Math.max(0, Math.ceil(runtime.nextAt - durationAfterFloor)),
+    }));
   }
+  // Only wins take the walk: a defeat ends the hunt the moment it lands.
+  const durationMs = won ? Math.max(combatMs, battle.minFightMs) : combatMs;
+  const tierRewardGrowth = Math.pow(battle.rewardTierGrowth, tier - 1);
+  const goldScale = monsterRewardScale(monster.goldDrop, battle.medianGoldDrop) * tierRewardGrowth;
+  const experienceScale =
+    monsterRewardScale(monster.experienceReward, battle.medianExperienceReward) * tierRewardGrowth;
 
   return {
     won,
@@ -658,14 +777,17 @@ export async function simulateRegularBattle(
       monsterDamagePerHit: monsterGrossDamagePerHit,
     },
     ...(abilityCasts.length > 0 ? { abilityCasts } : {}),
+    ...(abilityCooldowns ? { abilityCooldowns } : {}),
     goldEarned: won
       ? Math.max(
           0,
           Math.floor(
             (tier * rewards.goldPerTier +
               Math.random() * (rewards.goldVariance + 1)) *
+              goldScale *
               eventMultipliers.goldMultiplier *
               passives.goldMultiplier *
+              rebirthRewards.goldMultiplier *
               (1 + (guildBonuses.goldBonusPercent ?? 0) / 100)
           )
         )
@@ -676,64 +798,42 @@ export async function simulateRegularBattle(
           Math.floor(
             (tier * rewards.experiencePerTier +
               Math.random() * (rewards.experienceVariance + 1)) *
+              experienceScale *
               eventMultipliers.experienceMultiplier *
               (profile.boosts?.xpMultiplier ?? 1) *
               passives.xpMultiplier *
+              rebirthRewards.xpMultiplier *
               (1 + (guildBonuses.xpBonusPercent ?? 0) / 100)
           )
         )
       : 0,
+    ...(durationMs > combatMs ? { combatMs } : {}),
     durationMs,
   };
 }
 
 /**
- * Apply a server-resolved regular fight result to the player's progression.
+ * Resolve one regular fight without accepting client-calculated combat or rewards.
  */
-export async function settleRegularFight(
-  ctx: MutationCtx,
-  args: {
-    playerId: PlayerId;
-    monsterTier: number;
-    monsterType: string;
-    won: boolean;
-    settlementKey: string;
-    monsterZone?: CombatZone;
-    goldEarned?: number;
-    experienceEarned?: number;
-    abilityCasts?: Array<{ abilityId: string; level: number; casts: number }>;
-  }
-) {
-  const settlement = await settleCombatFight(ctx, {
-    playerId: args.playerId,
-    settlementKey: args.settlementKey,
-    sourceType: "monster",
-    sourceId: args.monsterType,
-    tier: args.monsterTier,
-    won: args.won,
-    ...(args.monsterZone === undefined
-      ? {}
-      : { monsterZone: args.monsterZone }),
-    rewardOverride:
-      args.won &&
-      args.goldEarned !== undefined &&
-      args.experienceEarned !== undefined
-      ? {
-          goldEarned: args.goldEarned,
-          experienceEarned: args.experienceEarned,
-        }
-      : undefined,
+export async function simulateRegularBattle(
+  ctx: QueryCtx | MutationCtx,
+  player: Player,
+  tier: number,
+  options: {
+    /** Zone to hunt in. Omit to hunt the full monster pool. */
+    zone?: CombatZone;
+    /** HP the fight starts from. Omit to start at full. */
+    startingHp?: number;
+    abilityCooldowns?: AbilityCooldown[];
+  } = {}
+): Promise<AutoBattleResult> {
+  const battle = await loadBattleContext(ctx, player, tier, {
+    ...(options.zone === undefined ? {} : { zone: options.zone }),
   });
-  // Wisdom XP is awarded once per settled fight. Fights are deduped by
-  // settlementKey, so re-delivery cannot double-award.
-  if (!settlement.duplicate && args.abilityCasts && args.abilityCasts.length > 0) {
-    await awardAbilityWisdomXp(ctx, args.playerId, args.abilityCasts);
-  }
-  const player = await ctx.db.get(args.playerId);
-  return {
-    ...settlement,
-    playerLevel: player ? await calculateCharacterLevel(ctx, player) : 0,
-  };
+  return rollEncounter(battle, {
+    ...(options.startingHp === undefined ? {} : { startingHp: options.startingHp }),
+    ...(options.abilityCooldowns === undefined ? {} : { abilityCooldowns: options.abilityCooldowns }),
+  });
 }
 
 /**
@@ -747,22 +847,24 @@ export const getHpStatus = query({
   handler: async (ctx, { playerId }) => {
     const player = await requirePlayerRead(ctx, playerId);
     const now = Date.now();
-    const profile = await readPlayerCombatProfile(ctx, player, { now });
-    const maxHp = Math.max(1, Math.ceil(profile.combatStats.health));
-    const regenBalance = await readHpRegenBalance(ctx);
-    const inCombat =
-      (await ctx.db
+    const [profile, regenBalance, activeTask, bossSession] = await Promise.all([
+      readPlayerCombatProfile(ctx, player, { now }),
+      readHpRegenBalance(ctx),
+      ctx.db
         .query("playerTasks")
         .withIndex("by_playerId_and_status", (q) =>
           q.eq("playerId", playerId).eq("status", "active")
         )
-        .first())?.taskType === "battle" ||
-      (await ctx.db
+        .first(),
+      ctx.db
         .query("bossSessions")
         .withIndex("by_playerId_and_status", (q) =>
           q.eq("playerId", playerId).eq("status", "open")
         )
-        .first()) !== null;
+        .first(),
+    ]);
+    const maxHp = Math.max(1, Math.ceil(profile.combatStats.health));
+    const inCombat = activeTask?.taskType === "battle" || bossSession !== null;
     const state = resolveCurrentHp(
       player,
       maxHp,
@@ -774,6 +876,9 @@ export const getHpStatus = query({
     const boostRegen = profile.boosts?.regenPerSecond ?? 0;
     return {
       currentHp: Math.ceil(state.currentHp),
+      // The client ticks regen forward from this instant instead of re-running
+      // this query on a timer, so the query only runs when something changed.
+      asOf: now,
       maxHp: state.maxHp,
       inCombat,
       conRegenPerSecond: conRegenPerSecond(maxHp, profile.effectiveStats.con, regenBalance),

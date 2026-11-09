@@ -44,6 +44,7 @@ import type * as items from "../items.js";
 import type * as leaderboards from "../leaderboards.js";
 import type * as leatherwork from "../leatherwork.js";
 import type * as loot from "../loot.js";
+import type * as maintenance from "../maintenance.js";
 import type * as migrations from "../migrations.js";
 import type * as passiveTree from "../passiveTree.js";
 import type * as playerAuth from "../playerAuth.js";
@@ -111,6 +112,7 @@ declare const fullApi: ApiFromModules<{
   leaderboards: typeof leaderboards;
   leatherwork: typeof leatherwork;
   loot: typeof loot;
+  maintenance: typeof maintenance;
   migrations: typeof migrations;
   passiveTree: typeof passiveTree;
   playerAuth: typeof playerAuth;

@@ -1,3 +1,4 @@
+import { readBalanceValue } from "./balance";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { consumeItems, grantItemToInventory } from "./items";
@@ -52,11 +53,8 @@ async function getBookXpValue(
   // Fallback: compute from book tier
   const meta = parseAbilityBookItemId(item.itemId);
   if (meta) {
-    const baseXpRow = await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", "abilityBookBaseXp"))
-      .first();
-    const base = typeof baseXpRow?.value === "number" ? baseXpRow.value : 100;
+    const baseXp = await readBalanceValue(ctx, "abilityBookBaseXp");
+    const base = typeof baseXp === "number" ? baseXp : 100;
     return base * meta.bookTier;
   }
   return 100;
@@ -163,12 +161,9 @@ export async function consumeAbilityBook(
 
   // Apply XP using the same skill XP curve
   const { applySkillExperience } = await import("./skillProgression");
-  const xpBaseValue = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", "skillXpPerLevel"))
-    .first();
+  const xpBaseValue = await readBalanceValue(ctx, "skillXpPerLevel");
   const { readSkillXpBase } = await import("./skillProgression");
-  const xpBase = readSkillXpBase(xpBaseValue?.value);
+  const xpBase = readSkillXpBase(xpBaseValue);
 
   const { level, experience } = applySkillExperience(
     playerAbility.level,
@@ -250,10 +245,73 @@ export function getBookTierForBossTier(bossTier: number): number {
  * Calculate XP for a book of a given tier.
  */
 export async function calculateBookXp(ctx: DatabaseCtx, bookTier: number): Promise<number> {
-  const baseXpRow = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", "abilityBookBaseXp"))
-    .first();
-  const base = typeof baseXpRow?.value === "number" ? baseXpRow.value : 100;
+  const baseXp = await readBalanceValue(ctx, "abilityBookBaseXp");
+  const base = typeof baseXp === "number" ? baseXp : 100;
   return base * bookTier;
+}
+
+/**
+ * Item slug for a book. `parseAbilityBookItemId` reads this format back.
+ */
+export function abilityBookItemSlug(abilityId: string, bookTier: number) {
+  return `ability_book_${abilityId}_${bookTier}`;
+}
+
+/** Find or create the item row for a book. Created lazily, like essence items. */
+export async function ensureAbilityBookItem(
+  ctx: MutationCtx,
+  ability: Pick<Doc<"abilities">, "abilityId" | "name">,
+  bookTier: number
+) {
+  const slug = abilityBookItemSlug(ability.abilityId, bookTier);
+  const existing = await ctx.db
+    .query("items")
+    .withIndex("by_itemId", (q) => q.eq("itemId", slug))
+    .first();
+  if (existing) return existing;
+  const now = Date.now();
+  const itemId = await ctx.db.insert("items", {
+    itemId: slug,
+    name: `${ability.name} Tome ${bookTier}`,
+    category: "abilityBook",
+    description: `Read to learn ${ability.name}, or to train it if already known.`,
+    stackable: true,
+    maxStackSize: 999,
+    allowedEquipmentSlots: [],
+    effectType: ABILITY_BOOK_EFFECT_TYPE,
+    effectAmount: (await calculateBookXp(ctx, bookTier)),
+    createdAt: now,
+    updatedAt: now,
+  });
+  const created = await ctx.db.get(itemId);
+  if (!created) throw new Error("Failed to create ability book");
+  return created;
+}
+
+/**
+ * Pick `count` random enabled abilities and return their book items for a combat
+ * tier. Only read when a book actually drops.
+ */
+export async function rollAbilityBooks(
+  ctx: MutationCtx,
+  tier: number,
+  count: number
+): Promise<Array<{ itemId: Id<"items">; quantity: number }>> {
+  const abilities = await ctx.db
+    .query("abilities")
+    .withIndex("by_enabled", (q) => q.eq("enabled", true))
+    .take(200);
+  if (abilities.length === 0) return [];
+  const counts = new Map<number, number>();
+  for (let index = 0; index < count; index += 1) {
+    const picked = Math.floor(Math.random() * abilities.length);
+    counts.set(picked, (counts.get(picked) ?? 0) + 1);
+  }
+  const bookTier = getBookTierForBossTier(tier);
+  const books: Array<{ itemId: Id<"items">; quantity: number }> = [];
+  for (const [picked, quantity] of counts) {
+    const item = await ensureAbilityBookItem(ctx, abilities[picked], bookTier);
+    books.push({ itemId: item._id, quantity });
+  }
+  return books;
 }

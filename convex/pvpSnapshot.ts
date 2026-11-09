@@ -41,7 +41,7 @@ export async function snapshotFighter(
   const weaponElement = profile.weapon?.element ?? undefined;
   return {
     maxHp: Math.max(1, Math.ceil(profile.combatStats.health)),
-    attack: Math.max(1, profile.combatStats.attack),
+    attack: Math.max(1, profile.combatStats.roundAttack),
     defense: Math.max(0, profile.combatStats.defense),
     magicalDefense: Math.max(0, profile.combatStats.magicalDefense),
     critChance: Math.min(100, Math.max(0, profile.combatStats.critChance)),

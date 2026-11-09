@@ -1,4 +1,4 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { requireAdmin } from "./adminAuth";
 import {
@@ -124,12 +124,12 @@ export const getActiveMultipliers = query({
   args: {},
   async handler(ctx) {
     const now = Date.now();
-    const candidates = await ctx.db
+    const unfinished = await ctx.db
       .query("gameEvents")
-      .withIndex("by_startTime", (q) => q.lte("startTime", now))
+      .withIndex("by_endTime", (q) => q.gt("endTime", now))
       .take(100);
 
-    const active = candidates.filter((e) => e.endTime > now);
+    const active = unfinished.filter((e) => e.startTime <= now);
 
     let goldMultiplier = 1;
     let xpMultiplier = 1;
@@ -149,7 +149,7 @@ export const getActiveMultipliers = query({
 /**
  * Check and update event status (for cron or manual calls)
  */
-export const refreshEventStatuses = mutation({
+export const refreshEventStatuses = internalMutation({
   args: {},
   async handler(ctx) {
     const now = Date.now();

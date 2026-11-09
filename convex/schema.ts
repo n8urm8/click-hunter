@@ -284,13 +284,24 @@ export default defineSchema({
   })
     .index("by_anonymousId", ["anonymousId"])
     .index("by_authSubject", ["authSubject"])
-    .index("by_createdAt", ["createdAt"]),
+    .index("by_createdAt", ["createdAt"])
+    .index("by_totalExperience", ["totalExperience"])
+    .index("by_maxTierReached", ["maxTierReached"])
+    .index("by_rebirthCount", ["rebirthCount"]),
+
+  // Who owns each character, split from `players` so an ownership check does
+  // not subscribe a query to a row every fight settlement rewrites.
+  playerOwners: defineTable({
+    playerId: v.id("players"),
+    authSubject: v.string(),
+  }).index("by_playerId", ["playerId"]),
 
   playerUpgrades: defineTable({
     playerId: v.id("players"),
     upgradeId: v.string(),
     quantity: v.number(),
-    // Paid stat purchases only; hidden-spot rewards leave this at zero.
+    // Deprecated: written by the removed stat shop. Kept optional so existing
+    // rows stay valid until removeStatShop has cleared them.
     purchaseCount: v.optional(v.number()),
     purchasedAt: v.number(),
   }).index("by_playerId", ["playerId"]),
@@ -773,6 +784,9 @@ export default defineSchema({
     monsterZone: v.optional(combatZoneValidator),
     goldEarned: v.number(),
     experienceEarned: v.number(),
+    // Fights this row settles. Auto-battle writes one row per settlement batch;
+    // absent means a single fight.
+    fightCount: v.optional(v.number()),
     timestamp: v.number(),
   })
     .index("by_playerId", ["playerId"])
@@ -815,6 +829,8 @@ export default defineSchema({
     con: v.number(),
     // Optional migration marker for bosses created before tier-scaled stats.
     statsTierScaled: v.optional(v.boolean()),
+    // Tier multiplier baked into these stats. Absent means the original 2.
+    statsTierMultiplier: v.optional(v.number()),
     rewardMultiplier: v.number(),
     createdAt: v.number(),
   })
@@ -844,7 +860,16 @@ export default defineSchema({
     value: v.any(), // number, array, object, etc.
     description: v.string(),
     lastUpdated: v.number(),
-  }).index("by_key", ["key"]),
+  })
+    .index("by_key", ["key"])
+    .index("by_lastUpdated", ["lastUpdated"]),
+
+  // One document holding every gameBalance value, so a transaction that needs
+  // many keys reads one small row instead of the whole table. See balance.ts.
+  balanceSnapshots: defineTable({
+    values: v.any(),
+    sourceUpdatedAt: v.number(),
+  }),
 
   hiddenSpots: defineTable({
     spotId: v.string(),
@@ -908,6 +933,7 @@ export default defineSchema({
   })
     .index("by_isActive", ["isActive"])
     .index("by_startTime", ["startTime"])
+    .index("by_endTime", ["endTime"])
     .index("by_eventId", ["eventId"]),
 
   // Leaderboards
@@ -950,6 +976,44 @@ export default defineSchema({
     .index("by_senderId_createdAt", ["senderId", "createdAt"])
     .index("by_recipientId_createdAt", ["recipientId", "createdAt"])
     .index("by_seedId", ["seedId"]),
+
+  // Player reports. `context` is a copy of the surrounding messages, because the
+  // originals are pruned after a few days and a report must outlive them.
+  chatReports: defineTable({
+    reporterId: v.id("players"),
+    reporterName: v.string(),
+    reportedPlayerId: v.id("players"),
+    reportedPlayerName: v.string(),
+    messageId: v.id("chatMessages"),
+    channelType: v.string(),
+    channelId: v.string(),
+    reason: v.union(
+      v.literal("harassment"),
+      v.literal("spam"),
+      v.literal("cheating"),
+      v.literal("other")
+    ),
+    details: v.optional(v.string()),
+    context: v.array(
+      v.object({
+        messageId: v.id("chatMessages"),
+        senderId: v.optional(v.id("players")),
+        senderName: v.string(),
+        content: v.string(),
+        createdAt: v.number(),
+      })
+    ),
+    status: v.union(
+      v.literal("open"),
+      v.literal("actioned"),
+      v.literal("dismissed")
+    ),
+    resolvedBy: v.optional(v.id("players")),
+    resolvedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_status_and_createdAt", ["status", "createdAt"])
+    .index("by_reporterId_and_messageId", ["reporterId", "messageId"]),
 
   chatReadReceipts: defineTable({
     playerId: v.id("players"),
@@ -1126,6 +1190,9 @@ export default defineSchema({
     joinedAt: v.number(),
     contributionXp: v.number(),
     contributionGold: v.number(),
+    // Gold deposited minus gold withdrawn since this member's last rebirth.
+    // Rebirth wipes this much from the bank so it can't shelter gold.
+    netGoldDeposited: v.optional(v.number()),
     lastActiveAt: v.number(),
   })
     .index("by_guildId", ["guildId"])

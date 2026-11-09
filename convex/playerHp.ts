@@ -5,9 +5,9 @@ import type { Doc } from "./_generated/dataModel";
 export const HP_REGEN_BALANCE_DEFAULTS = [
   {
     key: "combatConRegenBasePercent",
-    value: 0.005,
+    value: 0.01,
     description:
-      "Base HP regen as a fraction of max HP per second (0.005 = 0.5%/s before CON scaling)",
+      "Base HP regen as a fraction of max HP per second (0.01 = 1%/s before CON scaling)",
   },
   {
     key: "combatConRegenPerPoint",

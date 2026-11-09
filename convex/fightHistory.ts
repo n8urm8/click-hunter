@@ -6,8 +6,8 @@ type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
 
 /**
- * Fight history is the record that a fight settled. Every settlement writes
- * one row, and that row's `settlementKey` is the dedupe key which keeps a
+ * Fight history is the record that fights settled. Every settlement writes
+ * one row (auto-battle writes one per batch, with `fightCount`), and that row's `settlementKey` is the dedupe key which keeps a
  * re-delivered settlement from paying twice.
  *
  * This module owns both halves of that contract: it derives the key
@@ -45,6 +45,8 @@ export interface FightHistoryEntry {
   monsterZone?: CombatZone;
   goldEarned: number;
   experienceEarned: number;
+  /** Fights this row settles. Omit for a single fight. */
+  fightCount?: number;
   timestamp?: number;
 }
 
@@ -78,6 +80,7 @@ export async function recordFightHistory(
       : { monsterZone: entry.monsterZone }),
     goldEarned: entry.goldEarned,
     experienceEarned: entry.experienceEarned,
+    ...(entry.fightCount === undefined ? {} : { fightCount: entry.fightCount }),
     timestamp: entry.timestamp ?? Date.now(),
   });
 }

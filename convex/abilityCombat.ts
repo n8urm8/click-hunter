@@ -255,8 +255,12 @@ export function castDueAbilities(input: AbilityCastInput): AbilityCastOutcome {
         wisdomMultiplier: state.wisdomMultiplier,
         weapon,
       });
+      // A heal's power is a percentage of max HP, so it stays useful as HP grows.
+      const healAmount = Math.round(
+        (input.playerMaxHp * Math.min(100, result.value)) / 100
+      );
       if (spec.target === "ally" && allyHeal) {
-        const restored = Math.max(0, allyHeal(result.value));
+        const restored = Math.max(0, allyHeal(healAmount));
         healing += restored;
         runtime.casts += 1;
         runtime.nextAt = at + runtime.cooldown;
@@ -264,13 +268,13 @@ export function castDueAbilities(input: AbilityCastInput): AbilityCastOutcome {
         continue;
       }
       const missingHp = input.playerMaxHp - playerHp;
-      if (missingHp < result.value) {
+      if (missingHp < healAmount) {
         // Never waste a heal: retry on the next swing/round cadence.
         runtime.nextAt = retryAt;
         continue;
       }
-      playerHp = Math.min(input.playerMaxHp, playerHp + result.value);
-      healing += result.value;
+      playerHp = Math.min(input.playerMaxHp, playerHp + healAmount);
+      healing += healAmount;
       runtime.casts += 1;
       runtime.nextAt = at + runtime.cooldown;
       casts += 1;

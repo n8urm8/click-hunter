@@ -9,9 +9,9 @@ import type { Doc } from "./_generated/dataModel";
  * holds roughly a third of the pool from easiest to hardest. With the
  * default 9-monster roster that is exactly 3 / 3 / 3.
  *
- * Zones are a pure selection filter: tier scaling, rewards, loot, and tier
- * progression are unchanged. Harder monsters already pay more via their own
- * goldDrop / experienceReward, so no zone reward multiplier is needed.
+ * Zones are a pure selection filter: tier scaling, loot, and tier progression
+ * are unchanged. Harder monsters pay more through their own goldDrop and
+ * experienceReward (see monsterRewardScale), so no zone multiplier is needed.
  *
  * NOTE: `app/lib/combatZones.ts` mirrors this split for the client. Keep the
  * two in sync if the partitioning rule ever changes.

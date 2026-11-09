@@ -1,6 +1,6 @@
 import { internalMutation, mutation, query } from "./_generated/server";
-import { readBalanceMap } from "./balance";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { readBalanceMap, readBalanceValue } from "./balance";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -450,26 +450,28 @@ export const PLAYER_ATTACK_SPEED_BALANCE_DEFAULT = {
 } as const;
 
 /**
- * Attacks per second gained per point of dex above 10. Named so the seeded
- * default and the rebalance migration in migrations.ts stay in sync.
+ * Fraction of weapon speed gained per point of the weapon's scaling stat above
+ * 10. The balance key still says "Dex" because it predates every weapon getting
+ * this: renaming it would orphan tuned rows.
  */
-export const DEX_SPEED_COEFF_DEFAULT = 0.02;
+export const DEX_SPEED_COEFF_DEFAULT = 0.005;
 
 export const COMBAT_BALANCE_DEFAULTS = [
   { key: "combatStatAttackCoeff", value: 1.2, description: "Attack gained per point of a weapon's scaling stat" },
-  { key: "combatDexSpeedCoeff", value: DEX_SPEED_COEFF_DEFAULT, description: "Attacks per second gained per dex above 10" },
+  { key: "combatDexSpeedCoeff", value: DEX_SPEED_COEFF_DEFAULT, description: "Fraction of weapon speed gained per point of the weapon's scaling stat above 10 (0.005 = +0.5%)" },
   { key: "combatMinAttackSpeed", value: 0.5, description: "Minimum attacks per second" },
   { key: "combatPhysDefConCoeff", value: 0.8, description: "Physical defense gained per con" },
   { key: "combatMagDefIntCoeff", value: 0.8, description: "Magical defense gained per int" },
   { key: "monsterMagicCoeff", value: 1.2, description: "Magical attack gained per point of monster int" },
-  { key: "monsterMagDefIntCoeff", value: 0.8, description: "Monster magical defense gained per monster int" },
+  { key: "monsterMagDefIntCoeff", value: 0.5, description: "Monster magical defense gained per monster int" },
   { key: "lukCritChancePerPoint", value: 0.001, description: "Crit chance gained per luk (0.001 = 0.1%)" },
   { key: "critDamageMultiplier", value: 1.5, description: "Damage multiplier on crit" },
-  { key: "minPlayerHp", value: 30, description: "Minimum player health regardless of con" },
+  { key: "minPlayerHp", value: 60, description: "Minimum player health regardless of con" },
   { key: "combatRegenCapPerSecond", value: 10, description: "Maximum heal-over-time HP per second" },
   { key: "combatStatBonusCap", value: 100, description: "Maximum combined timed stat bonus per stat" },
   { key: "combatXpMultiplierCap", value: 10, description: "Maximum combined combat XP multiplier" },
   PLAYER_ATTACK_SPEED_BALANCE_DEFAULT,
+  { key: "weaponSpeedDamageExponent", value: 1, description: "How much a slow weapon's hits make up for its speed: damage is multiplied by (1 / weapon speed) ^ this (0 = no compensation, 1 = equal base damage per second)" },
 ] as const;
 
 async function getCombatBalanceNumber(
@@ -477,11 +479,7 @@ async function getCombatBalanceNumber(
   key: string,
   fallback: number
 ) {
-  const row = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", key))
-    .first();
-  const value = row?.value;
+  const value = await readBalanceValue(ctx, key);
   return typeof value === "number" && Number.isFinite(value) &&
     (key === "combatAttackSpeedMultiplier" ? value > 0 : value >= 0)
     ? value
@@ -516,6 +514,7 @@ export async function readCombatBalance(ctx: DatabaseCtx) {
     statBonusCap: entries[11],
     xpMultiplierCap: entries[12],
     attackSpeedMultiplier: entries[13],
+    weaponSpeedDamageExponent: entries[14],
   };
 }
 
@@ -525,7 +524,7 @@ export const useSkillBoost = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
@@ -614,7 +613,7 @@ export const useCombatBoost = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
@@ -774,11 +773,7 @@ export async function computeWeaponStats(
       : 0;
   let damagePerLevel = 2;
   if (enchantLevel > 0) {
-    const row = await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", "enchantDamagePerLevel"))
-      .first();
-    const value = row?.value;
+    const value = await readBalanceValue(ctx, "enchantDamagePerLevel");
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
       damagePerLevel = value;
     }
@@ -843,11 +838,14 @@ export async function getEquippedProfile(
   armor: { defense: number; speedPenalty: number };
   ward: Record<ElementKind, number>;
 }> {
-  const rows = await ctx.db
+  // Range over set slots only: unequipped rows sort before any string, so a
+  // full inventory costs nothing here and loot grants don't invalidate readers.
+  const equipped = await ctx.db
     .query("playerItems")
-    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
-    .take(200);
-  const equipped = rows.filter((entry) => entry.equippedSlot !== undefined);
+    .withIndex("by_playerId_and_equippedSlot", (q) =>
+      q.eq("playerId", playerId).gt("equippedSlot", undefined)
+    )
+    .take(32);
   return computeEquipmentStats(ctx, playerId, equipped);
 }
 
@@ -886,11 +884,7 @@ export async function computeEquipmentStats(
   );
   let defensePerLevel = 2;
   if (equipped.some((row) => (row.enchantLevel ?? 0) > 0)) {
-    const row = await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", "enchantDefensePerLevel"))
-      .first();
-    const value = row?.value;
+    const value = await readBalanceValue(ctx, "enchantDefensePerLevel");
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
       defensePerLevel = value;
     }
@@ -955,15 +949,22 @@ export async function computeEquipmentStats(
   return { bonuses, armor: { defense, speedPenalty }, ward };
 }
 
+/**
+ * Bonuses scale the weapon's own speed instead of adding a flat amount, and
+ * come from the stat the weapon already scales with. Together with
+ * weaponSpeedDamageExponent, that leaves speed as a choice of how damage is
+ * delivered rather than how much: a flat bonus or a DEX-only one would hand
+ * fast weapons a second multiplier on their main stat.
+ */
 export function computeAttackSpeed(
   weaponSpeed: number,
-  dex: number,
+  scalingStat: number,
   armorPenalty: number,
   balance: { dexSpeedCoeff: number; minAttackSpeed: number; attackSpeedMultiplier: number }
 ) {
   return Math.max(
     balance.minAttackSpeed,
-    weaponSpeed + Math.max(0, dex - 10) * balance.dexSpeedCoeff - armorPenalty
+    weaponSpeed * (1 + Math.max(0, scalingStat - 10) * balance.dexSpeedCoeff - armorPenalty)
   ) * balance.attackSpeedMultiplier;
 }
 
@@ -1019,11 +1020,7 @@ export async function getInventorySlotCapacity(
   ctx: DatabaseCtx,
   playerId?: Id<"players">
 ) {
-  const row = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", "inventorySlotCapacity"))
-    .first();
-  const value = row?.value;
+  const value = await readBalanceValue(ctx, "inventorySlotCapacity");
 
   const base =
     typeof value === "number" &&
@@ -1051,7 +1048,7 @@ export const getPlayerInventory = query({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const capacity = await getInventorySlotCapacity(ctx, playerId);
     const rows = await getOwnedItemRows(ctx, playerId, capacity);
     const [rarities, pendingRewards, attackSpeedMultiplier, allAugments] = await Promise.all([
@@ -1165,7 +1162,27 @@ type InventoryGrantArgs = {
     settlementKey: string;
   };
   rejectIfFull?: boolean;
+  /** Inventory already read this transaction; kept current by each grant. */
+  inventory?: InventoryForGrants;
 };
+
+export type InventoryForGrants = {
+  capacity: number;
+  rows: Doc<"playerItems">[];
+};
+
+/**
+ * Read a player's inventory once for several grants in one transaction. Pass the
+ * result to each grantItemToInventory call, which keeps it current.
+ */
+export async function readInventoryForGrants(
+  ctx: MutationCtx,
+  playerId: Id<"players">
+): Promise<InventoryForGrants> {
+  const capacity = await getInventorySlotCapacity(ctx, playerId);
+  const rows = await getOwnedItemRows(ctx, playerId, capacity);
+  return { capacity, rows: [...rows] };
+}
 
 export async function grantItemToInventory(
   ctx: MutationCtx,
@@ -1175,6 +1192,7 @@ export async function grantItemToInventory(
     quantity,
     overflowSource,
     rejectIfFull = true,
+    inventory,
   }: InventoryGrantArgs
 ) {
   if (!Number.isSafeInteger(quantity) || quantity < 1) {
@@ -1186,8 +1204,7 @@ export async function grantItemToInventory(
     throw new Error("Item definition not found");
   }
 
-  const capacity = await getInventorySlotCapacity(ctx, playerId);
-  const rows = await getOwnedItemRows(ctx, playerId, capacity);
+  const { capacity, rows } = inventory ?? await readInventoryForGrants(ctx, playerId);
   let usedSlots = rows.filter((row) => row.equippedSlot === undefined).length;
   let remaining = quantity;
   const now = Date.now();
@@ -1205,19 +1222,22 @@ export async function grantItemToInventory(
         quantity: stack.quantity + added,
         updatedAt: now,
       });
+      stack.quantity += added;
       remaining -= added;
       if (remaining === 0) break;
     }
 
     while (remaining > 0 && usedSlots < capacity) {
       const stackQuantity = Math.min(item.maxStackSize, remaining);
-      await ctx.db.insert("playerItems", {
+      const fields = {
         playerId,
         itemId,
         quantity: stackQuantity,
         acquiredAt: now,
         updatedAt: now,
-      });
+      };
+      const rowId = await ctx.db.insert("playerItems", fields);
+      rows.push({ ...fields, _id: rowId, _creationTime: now });
       remaining -= stackQuantity;
       usedSlots++;
     }
@@ -1225,13 +1245,15 @@ export async function grantItemToInventory(
     const availableSlots = Math.max(0, capacity - usedSlots);
     const inventoryQuantity = Math.min(quantity, availableSlots);
     for (let index = 0; index < inventoryQuantity; index += 1) {
-      await ctx.db.insert("playerItems", {
+      const fields = {
         playerId,
         itemId,
         quantity: 1,
         acquiredAt: now,
         updatedAt: now,
-      });
+      };
+      const rowId = await ctx.db.insert("playerItems", fields);
+      rows.push({ ...fields, _id: rowId, _creationTime: now });
     }
     remaining -= inventoryQuantity;
     usedSlots += inventoryQuantity;
@@ -1403,7 +1425,7 @@ export const claimPendingReward = mutation({
     rewardId: v.id("pendingRewards"),
   },
   handler: async (ctx, { playerId, rewardId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const reward = await ctx.db.get(rewardId);
     if (
@@ -1442,7 +1464,7 @@ export const claimAllPendingRewards = mutation({
     playerId: v.id("players"),
   },
   handler: async (ctx, { playerId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const rewards = await ctx.db
       .query("pendingRewards")
@@ -1479,7 +1501,7 @@ export const equipItem = mutation({
     slot: equipmentSlotValidator,
   },
   handler: async (ctx, { playerId, playerItemId, slot }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {
@@ -1546,7 +1568,7 @@ export const unequipItem = mutation({
     playerItemId: v.id("playerItems"),
   },
   handler: async (ctx, { playerId, playerItemId }) => {
-    await requirePlayer(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     await settleTasksBeforeInteraction(ctx, playerId);
     const ownedItem = await ctx.db.get(playerItemId);
     if (!ownedItem || ownedItem.playerId !== playerId) {

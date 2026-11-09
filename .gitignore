@@ -13,3 +13,4 @@
 docker/.env.selfhosted
 # Convex Auth keypair for self-hosted backend (secret) - see docs/self-hosting.md
 docker/.auth-keys.env
+.backups/

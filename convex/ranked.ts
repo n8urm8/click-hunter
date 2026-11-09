@@ -2,7 +2,7 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requirePlayer, requirePlayerRead } from "./playerAuth";
+import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { calculateCombatLevel } from "./characterLevel";
 import { readBalanceMap } from "./balance";
 import { resolvePvpEquipment, snapshotPvpGear } from "./pvpLoadout";
@@ -642,7 +642,7 @@ export const getRankedLeaderboard = query({
 export const findRankedOpponents = query({
   args: { playerId: v.id("players") },
   handler: async (ctx, { playerId }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const row = await requireMembership(ctx, playerId);
     const config = await readRankedConfig(ctx);
     const [above, below] = await Promise.all([
@@ -697,7 +697,7 @@ export const getMyRankedBattles = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, { playerId, limit }) => {
-    await requirePlayerRead(ctx, playerId);
+    await requirePlayerOwner(ctx, playerId);
     const capped =
       typeof limit === "number" && Number.isSafeInteger(limit)
         ? Math.min(Math.max(limit, 1), 50)

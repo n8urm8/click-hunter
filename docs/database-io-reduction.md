@@ -306,3 +306,57 @@ poll, then fanned each combat write out to a 1000-row leaderboard scan. Fixed:
 Regression tests assert the cost directly (`convex/guildRaids.test.ts`, via
 `convex-test` transaction metrics): a not-due poll reads ≤8 docs and writes
 nothing; a due tick reads ≤30 (a `gameBalance` scan alone is 100+).
+
+### Batch settlement (replaces per-fight sync)
+
+Measured with seeded content (141 `gameBalance` rows, `convex-test` transaction
+metrics, snapshot built). "Before" is the same harness on the previous code.
+
+| Call | Docs before | Docs after | KB before | KB after |
+|---|---:|---:|---:|---:|
+| `tasks.sync`, one fight | 1,591 | 46 | 330 | 22 |
+| `tasks.sync`, a batch | 4,395 (5 fights) | 67 (up to 50 fights) | 912 | 29 |
+| `combat.getHpStatus` | 428 | 15 | 88 | 10 |
+| `players.getCurrentPlayer` | 160 | 23 | 35 | 12 |
+| `tasks.getQueue` | 142 | 6 | 29 | 6 |
+| `tasks.getActivePlan` | 141 | 5 | 29 | 5 |
+| `items.getPlayerInventory` | 161 | 24 | 34 | 11 |
+
+What changed:
+
+- `convex/balance.ts`: balance reads are memoized per transaction, and three or
+  more keys read one `balanceSnapshots` row instead of the table. A row with a
+  newer `lastUpdated` makes readers fall back to a scan, so a stale snapshot can
+  cost reads but never return an old value. Writers must set `lastUpdated`;
+  deleting a row must call `rebuildBalanceSnapshot`.
+- `convex/combat.ts`: `loadBattleContext` + pure `rollEncounter`. Reads happen
+  once per settlement regardless of fight count.
+- `convex/loot.ts`: `settleAutoBattleBatch` writes one set of patches and one
+  `fightHistory` row (`fightCount`) per batch. Auto-battle no longer writes
+  `lootAwards`, which exist only to replay duplicate boss settlements.
+- `convex/tasks.ts`: fights bank online credit and settle every
+  `taskSettlementIntervalMs` (30s), not at each fight's end. A defeat or a
+  reached target settles sooner. The client replays the winning encounter
+  between batches.
+- `convex/playerAuth.ts`: `requirePlayerOwner` reads `playerOwners`, so ownership
+  checks no longer subscribe a query to the `players` row.
+- `getEquippedProfile` ranges over equipped slots only, so inventory size and
+  loot grants no longer affect combat profile readers.
+- Heartbeat grace is now 90s and presence 45s, a third to a quarter as many
+  heartbeats. Hidden tabs throttled to one timer a minute keep their credit.
+- `getHpStatus` returns `asOf`; the client ticks regen instead of a 5s refetch.
+- Removed the 25-query prefetch on load, split routes, and added crons:
+  `refreshBalanceSnapshot`, `refreshLeaderboards`, `pruneHistory`.
+
+Still expensive, deliberately: `skills.getSkillCatalog` reads about 1,850 docs
+and 500 KB, but only when the skills page opens, and gameplay never invalidates
+it. Fewer queries (997 to 400) but the same bytes; a trimmed materialized catalog
+is the next step if this shows up in the dashboard.
+
+After deploying, run `pnpm run migrate:performance` once. Until it runs, readers
+scan `gameBalance` and use the player row for ownership: correct but slower.
+
+`convex/balance.ts` and the other modules the client imports (`taskTiming`,
+`rebirth`, `itemTypes`, `skillProgression`, `adminConfig`) must not register
+functions, or the browser logs "Convex functions should not be imported".
+`batchSettlement.test.ts` checks this.

@@ -12,7 +12,6 @@
 - [x] **HiddenSpots.tsx** — Fetches spots from `api.seed.getHiddenSpots`
 - [x] **ActiveFight.tsx** — Looks up monster name from DB instead of static MONSTERS map
 - [x] **RebirthPanel.tsx** — Reads `rebirthThresholds` from `api.seed.getGameBalance`
-- [x] **convex/upgrades.ts** — `purchaseUpgrade` + `applyUpgradeEffect` read from `upgrades` table (no more frontend import)
 - [x] **gameConfig.ts cleanup** — Reduced to types only (`StatType`, `UpgradeCategory`, `MonsterType`); all runtime data in DB
 
 ---

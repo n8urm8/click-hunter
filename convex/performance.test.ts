@@ -25,6 +25,7 @@ async function setup() {
       autoAttackEnabled: false, autoStartFightEnabled: false,
       createdAt: 0, lastUpdated: 0,
     });
+    await ctx.db.insert("playerOwners", { playerId, authSubject: "perf-user" });
     const itemId = await ctx.db.insert("items", {
       itemId: "wood", name: "Wood", category: "crafting",
       description: "Test material", stackable: true, maxStackSize: 100,
@@ -79,7 +80,7 @@ test("catalog reads each item once and never depends on player state", async () 
   expect(catalog.recipes[0].ingredients[0].item?._id).toBe(itemId);
   expect(catalog.augmentations[0].bossCatalystItem?._id).toBe(itemId);
   expect(catalog.skillXpBase).toBe(1_000);
-  expect(metrics.documentsRead.used).toBe(11);
+  expect(metrics.documentsRead.used).toBe(13);
 
   await t.run(async (ctx) => {
     await ctx.db.patch(playerId, { name: "Longer player name", gold: 10 });
@@ -111,7 +112,7 @@ test("split queries preserve the panel shape and keep progress reads small", asy
     await ctx.runQuery(api.skills.getPlayerSkills, { playerId });
     return await ctx.meta.getTransactionMetrics();
   });
-  // Player row (ownership check) + playerSkills rows.
+  // Owner row (ownership check) + playerSkills rows.
   expect(metrics.documentsRead.used).toBe(3);
   expect(metrics.databaseQueries.used).toBe(3);
 });
@@ -192,7 +193,7 @@ test("sync still settles offline progress without returning a duplicate snapshot
   }));
   expect(await t.mutation(api.tasks.sync, { playerId })).toEqual({
     serverTime: 10_000, nextSettlementAt: 20_000, requiresPresence: false,
-    settlementIntervalMs: 30_000, presenceIntervalMs: 10_000,
+    settlementIntervalMs: 30_000, presenceIntervalMs: 45_000,
     skillSettlementGapMs: 300_000,
   });
   expect(await t.run((ctx) => ctx.db.get(taskId))).toMatchObject({ progressMs: 10_000 });

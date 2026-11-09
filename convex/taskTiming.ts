@@ -6,11 +6,11 @@ export const TASK_SYNC_BALANCE_DEFAULTS = [
   {
     key: "taskSettlementIntervalMs",
     value: 30_000,
-    description: "Maximum delay between skill reward batches and online task settlements (milliseconds)",
+    description: "How long hunts bank fights before settling them together, and the maximum delay between online task settlements (milliseconds)",
   },
   {
     key: "taskPresenceIntervalMs",
-    value: 10_000,
+    value: 45_000,
     description: "Online-only task presence interval, capped at two thirds of the heartbeat grace window (milliseconds)",
   },
   {
@@ -61,8 +61,15 @@ export const battleEncounterValidator = v.object({
       })
     )
   ),
+  // Ability readiness left when this fight ends, carried into the next one.
+  abilityCooldowns: v.optional(
+    v.array(v.object({ abilityId: v.string(), remainingMs: v.number() }))
+  ),
   goldEarned: v.optional(v.number()),
   experienceEarned: v.optional(v.number()),
+  // Time actually spent fighting, when shorter than durationMs. The rest is the
+  // walk to the next monster, during which nobody takes damage.
+  combatMs: v.optional(v.number()),
   durationMs: v.number(),
 });
 
@@ -70,7 +77,11 @@ export function projectBattleHealth(
   result: Infer<typeof battleEncounterValidator>,
   elapsedMs: number
 ) {
-  const elapsed = Math.min(Math.max(0, elapsedMs), result.durationMs);
+  const wholeFight = elapsedMs >= result.durationMs;
+  const elapsed = Math.min(
+    Math.max(0, elapsedMs),
+    result.combatMs ?? result.durationMs
+  );
   const startHp =
     typeof result.playerStartingHp === "number" &&
     Number.isFinite(result.playerStartingHp)
@@ -100,11 +111,11 @@ export function projectBattleHealth(
         startHp - incomingPlayerDamage + (regen * elapsed) / 1_000
       );
   return {
-    currentMonsterHealth: timing && elapsed === result.durationMs && result.won ? 0 : Math.max(0, Math.ceil(
+    currentMonsterHealth: timing && wholeFight && result.won ? 0 : Math.max(0, Math.ceil(
       result.monsterMaxHealth - monsterDamage
     )),
     currentMonsterMaxHealth: result.monsterMaxHealth,
-    currentPlayerHealth: timing && elapsed === result.durationMs && !result.won ? 0 : Math.max(0, Math.ceil(
+    currentPlayerHealth: timing && wholeFight && !result.won ? 0 : Math.max(0, Math.ceil(
       playerHealth
     )),
     currentPlayerMaxHealth: result.playerMaxHealth,

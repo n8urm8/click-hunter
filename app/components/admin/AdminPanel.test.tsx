@@ -2,7 +2,6 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Id } from "../../../convex/_generated/dataModel";
 import gameShellSource from "../../routes/game.tsx?raw";
-import gameRootSource from "../game/GameRoot.tsx?raw";
 import { AdminPanel } from "./AdminPanel";
 
 const mocks = vi.hoisted(() => ({
@@ -31,6 +30,9 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: mocks.useQuery,
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
+vi.mock("~/components/admin/ChatReportsPanel", () => ({
+  ChatReportsPanel: () => null,
+}));
 vi.mock("convex/react", () => ({
   useConvex: () => ({ query: mocks.query }),
   useMutation: () => vi.fn(),
@@ -58,11 +60,9 @@ beforeEach(() => {
 
 const playerId = "admin" as Id<"players">;
 
-test("neither gameplay shell prefetches admin data", () => {
-  for (const source of [gameShellSource, gameRootSource]) {
-    expect(source).not.toContain("api.admin.");
-    expect(source).not.toContain("admin configuration");
-  }
+test("the gameplay shell doesn't fetch admin data", () => {
+  expect(gameShellSource).not.toContain("api.admin.");
+  expect(gameShellSource).not.toContain("admin configuration");
 });
 
 test.each(["players", "monsters", "items", "skills", "tree", "guilds", "general"])(

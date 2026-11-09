@@ -112,3 +112,14 @@ docker compose up -d --build web   # http://localhost:8080
   `--env-file docker/.env.selfhosted` — bare `convex` without the env file
   targets cloud via `.env.local`. `pnpm dev:cloud` is the explicit
   cloud-dev alternative.
+
+## Admin access
+
+New characters are plain players. Grant or revoke admin from the CLI:
+
+```bash
+npx convex run --env-file docker/.env.selfhosted admin:setPlayerRole '{"name":"Ash","role":"admin"}'
+```
+
+On a wiped database, create your character first, grant it admin, then run
+`seed:populateAll` with that character's `playerId`.

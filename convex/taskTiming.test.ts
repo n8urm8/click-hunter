@@ -5,7 +5,6 @@ import { api, internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import schema from "./schema";
 import * as combat from "./combat";
-import { getEquippedProfile } from "./items";
 import { projectBattleHealth, readTaskSyncSettings } from "./taskTiming";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -34,6 +33,14 @@ async function setup(overrides: Partial<Doc<"playerTasks">> = {}) {
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
       currentTier: 1, autoAttackEnabled: false, autoStartFightEnabled: false,
       createdAt: 0, lastUpdated: 0,
+    });
+    await ctx.db.insert("playerOwners", { playerId, authSubject: "timing-user" });
+    // Pinned so these tests pin the timing rules rather than the current tuning.
+    await ctx.db.insert("gameBalance", {
+      key: "taskHeartbeatGraceMs", value: 15_000, description: "Test grace", lastUpdated: 0,
+    });
+    await ctx.db.insert("gameBalance", {
+      key: "taskPresenceIntervalMs", value: 10_000, description: "Test presence", lastUpdated: 0,
     });
     await ctx.db.insert("monsters", {
       type: "rat", name: "Rat", str: 1, dex: 1, int: 1, luk: 1, con: 1,
@@ -83,7 +90,7 @@ async function setupSkill(canProgressOffline = true) {
   return fixture;
 }
 
-test("routine presence only reads the player, presence and grace; gameplay stays unchanged", async () => {
+test("routine presence only reads the owner, presence and grace; gameplay stays unchanged", async () => {
   const { t, playerId, taskId } = await setup({ battleEncounter: encounter });
   await t.mutation(api.tasks.sync, { playerId });
   const before = await t.run((ctx) => ctx.db.get(taskId));
@@ -93,7 +100,7 @@ test("routine presence only reads the player, presence and grace; gameplay stays
     return ctx.meta.getTransactionMetrics();
   });
   expect(metrics.databaseQueries.used).toBe(3);
-  expect(metrics.documentsRead.used).toBe(3);
+  expect(metrics.documentsRead.used).toBe(4);
   expect(metrics.documentsWritten.used).toBe(1);
   expect(metrics.bytesRead.used).toBeLessThan(2_048);
   expect(await t.run((ctx) => ctx.db.get(taskId))).toEqual(before);
@@ -102,7 +109,7 @@ test("routine presence only reads the player, presence and grace; gameplay stays
 });
 
 test("encounters are rolled once, early syncs preserve them and rewards settle exactly once", async () => {
-  const simulate = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(encounter);
+  const simulate = vi.spyOn(combat, "rollEncounter").mockReturnValue(encounter);
   const { t, playerId, taskId } = await setup();
   // The wait is the encounter itself, not a slice of it: the deadline is the
   // 60s encounter end, so no settlement is needed before it resolves.
@@ -168,7 +175,7 @@ test("ending a duration run mid-encounter grants no full-fight reward", async ()
 });
 
 test("defeat ends the hunt instead of recovering into the next encounter", async () => {
-  const simulate = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(encounter);
+  const simulate = vi.spyOn(combat, "rollEncounter").mockReturnValue(encounter);
   const { t, playerId, taskId } = await setup({
     targetBattles: 2, battleEncounter: { ...encounter, won: false, durationMs: 10_000 },
   });
@@ -190,7 +197,7 @@ test("defeat ends the hunt instead of recovering into the next encounter", async
 });
 
 test("a mid-hunt defeat banks earned loot and stops the run", async () => {
-  const restart = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(
+  const restart = vi.spyOn(combat, "rollEncounter").mockReturnValue(
     { ...encounter, won: false, durationMs: 10_000, goldEarned: 0, experienceEarned: 0 }
   );
   const { t, playerId, taskId } = await setup({
@@ -224,7 +231,7 @@ test("a mid-hunt defeat banks earned loot and stops the run", async () => {
 });
 
 test("batch-limit continuation drains pending credit without duplicating fights", async () => {
-  vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue({ ...encounter, durationMs: 10_000 });
+  vi.spyOn(combat, "rollEncounter").mockReturnValue({ ...encounter, durationMs: 10_000 });
   const { t, playerId, taskId } = await setup({
     targetBattles: 2, battleEncounter: { ...encounter, durationMs: 10_000 },
   });
@@ -332,7 +339,7 @@ test("cancellation settles earned battle work and removes the presence record", 
   const { t, playerId, taskId } = await setup({
     battleEncounter: { ...encounter, durationMs: 10_000 }, targetBattles: 2,
   });
-  vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(encounter);
+  vi.spyOn(combat, "rollEncounter").mockReturnValue(encounter);
   await t.mutation(api.tasks.sync, { playerId });
   vi.setSystemTime(10_000);
   await t.mutation(api.tasks.cancel, { playerId, taskId });
@@ -414,7 +421,7 @@ test("older clients still settle through heartbeats until they reload", async ()
 });
 
 test("a long encounter settles once at its end instead of on a repeated timer", async () => {
-  const simulate = vi.spyOn(combat, "simulateRegularBattle").mockResolvedValue(encounter);
+  const simulate = vi.spyOn(combat, "rollEncounter").mockReturnValue(encounter);
   const { t, playerId } = await setup({
     battleEncounter: { ...encounter, durationMs: 360_000 },
   });
@@ -618,17 +625,14 @@ test("craft cancellation settles the finished actions and refunds only unused re
 });
 
 test("equipment changes preserve the current encounter and affect the next fresh-player snapshot", async () => {
-  const simulate = vi.spyOn(combat, "simulateRegularBattle").mockImplementation(
-    async (ctx, player, _tier) => {
-      // Mirror the real simulation: the combat profile reads the live
-      // equipment, so a fresh encounter sees what the player has equipped.
-      const equipped = await getEquippedProfile(ctx, player._id);
-      return {
-        ...encounter,
-        durationMs: 10_000,
-        goldEarned: 50 + equipped.bonuses.str,
-      };
-    }
+  const simulate = vi.spyOn(combat, "rollEncounter").mockImplementation(
+    // Mirror the real roll: the loaded profile reads the live equipment, so a
+    // fresh encounter sees what the player has equipped.
+    (battle) => ({
+      ...encounter,
+      durationMs: 10_000,
+      goldEarned: 50 + battle.profile.bonuses.str,
+    })
   );
   const { t, playerId, taskId } = await setup({ targetBattles: 2 });
   const gearId = await t.run(async (ctx) => {
@@ -651,7 +655,6 @@ test("equipment changes preserve the current encounter and affect the next fresh
   vi.setSystemTime(10_000);
   await t.mutation(api.tasks.sync, { playerId });
   expect(simulate).toHaveBeenCalledTimes(2);
-  expect(simulate.mock.calls[1][1].totalExperience).toBe(25);
   expect(await t.run((ctx) => ctx.db.get(taskId)))
     .toMatchObject({ battleEncounter: { goldEarned: 62 }, completedBattles: 1 });
 });
