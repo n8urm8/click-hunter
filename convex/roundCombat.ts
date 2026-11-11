@@ -209,6 +209,35 @@ export function runRoundExchange(
   return log;
 }
 
+/** Most swings one fighter takes in a single round, however fast it is. */
+export const MAX_SWINGS_PER_ROUND = 10;
+
+/**
+ * How many times a fighter swings in `round`, so attack speed matters in the
+ * round-based encounters the same way it does in real-time ones.
+ *
+ * A fighter averages `attackSpeed × roundIntervalMs / 1000` swings a round.
+ * The fraction carries over between rounds without stored state: the swings
+ * due in a round are the whole swings completed by its end minus those
+ * completed by the end of the previous one. At the default 0.5 attacks per
+ * second and 2s rounds that is exactly one swing a round. A fighter with no
+ * attack speed (snapshots taken before speed counted) swings once.
+ */
+export function swingsInRound(
+  round: number,
+  attackSpeed: number | undefined,
+  roundIntervalMs: number
+): number {
+  if (attackSpeed === undefined) return 1;
+  const perRound = Math.min(
+    MAX_SWINGS_PER_ROUND,
+    Math.max(0, (attackSpeed * roundIntervalMs) / 1000)
+  );
+  // The epsilon keeps float error (0.7 × 3 = 2.0999…) from dropping a swing.
+  const completed = (r: number) => Math.floor(r * perRound + 1e-9);
+  return Math.max(0, completed(round) - completed(round - 1));
+}
+
 /** How a duel ended. */
 export type DuelVerdict =
   | { type: "ongoing" }

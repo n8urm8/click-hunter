@@ -13,7 +13,7 @@ const MONSTER_DROP_FAMILIES = new Set([
   "monster-augmentation",
   "monster-material",
 ]);
-const EFFECT_STATS = new Set(["str", "dex", "int", "luk", "con"]);
+const EFFECT_STATS = new Set(["str", "dex", "int", "luk", "con", "agi"]);
 
 async function rowsForRecipe(
   ctx: MutationCtx,

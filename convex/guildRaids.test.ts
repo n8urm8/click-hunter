@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -29,7 +30,7 @@ async function setup() {
   const member = base.withIdentity({ subject: "raid-member" });
   const fixture = await owner.run(async (ctx) => {
     const now = Date.now();
-    const ownerId = await ctx.db.insert("players", {
+    const ownerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "raid-owner-anon",
       name: "Owner",
       authSubject: "raid-owner",
@@ -49,7 +50,7 @@ async function setup() {
       createdAt: now,
       lastUpdated: now,
     });
-    const memberId = await ctx.db.insert("players", {
+    const memberId = await insertPlayerWithRecords(ctx, {
       anonymousId: "raid-member-anon",
       name: "Member",
       authSubject: "raid-member",
@@ -199,6 +200,8 @@ test("officer summons and any member can party, join, and begin", async () => {
   expect(begun?.status).toBe("active");
   expect(begun?.participants.length).toBe(2);
   expect(begun?.participants[0].maxHp).toBeGreaterThan(0);
+  // Raid dragons get boss defense: 1 per tier times the default 3.
+  expect(begun?.dragonDefense).toBe(3);
 
   // Members can open their own second lobby for the same tier.
   const party = await t.member.mutation(api.guildRaids.createRaidParty, {
@@ -221,7 +224,7 @@ test("parties hold at most four hunters", async () => {
     if (!guild) throw new Error("Missing guild");
     const ids = [];
     for (let i = 0; i < 3; i += 1) {
-      const pid = await ctx.db.insert("players", {
+      const pid = await insertPlayerWithRecords(ctx, {
         anonymousId: `extra-${i}`,
         name: `Extra${i}`,
         authSubject: `raid-extra-${i}`,
@@ -277,12 +280,12 @@ test("parties hold at most four hunters", async () => {
 test("ticks kill the dragon and pay boss-tier XP to every damager", async () => {
   const t = await setup();
   const raid = await summonBegin(t, "owner", 1);
-  const beforeOwner = await t.owner.run((ctx) => ctx.db.get(t.ownerId));
-  const beforeMember = await t.owner.run((ctx) => ctx.db.get(t.memberId));
+  const beforeOwner = await t.owner.run((ctx) => playerWithRecords(ctx, t.ownerId));
+  const beforeMember = await t.owner.run((ctx) => playerWithRecords(ctx, t.memberId));
   const result = await tickUntilDone(t, raid._id);
   expect(result?.killed).toBe(true);
-  const afterOwner = await t.owner.run((ctx) => ctx.db.get(t.ownerId));
-  const afterMember = await t.owner.run((ctx) => ctx.db.get(t.memberId));
+  const afterOwner = await t.owner.run((ctx) => playerWithRecords(ctx, t.ownerId));
+  const afterMember = await t.owner.run((ctx) => playerWithRecords(ctx, t.memberId));
   expect((afterOwner?.gold ?? 0)).toBeGreaterThan(beforeOwner?.gold ?? 0);
   expect((afterOwner?.totalExperience ?? 0)).toBeGreaterThan(
     beforeOwner?.totalExperience ?? 0
@@ -367,10 +370,10 @@ test("a wipe still pays XP and chips the tier for the next lobby", async () => {
       })),
     });
   });
-  const before = await t.owner.run((ctx) => ctx.db.get(t.ownerId));
+  const before = await t.owner.run((ctx) => playerWithRecords(ctx, t.ownerId));
   const result: any = await tick(t, "owner", raid._id, 3);
   expect(result.wiped).toBe(true);
-  const after = await t.owner.run((ctx) => ctx.db.get(t.ownerId));
+  const after = await t.owner.run((ctx) => playerWithRecords(ctx, t.ownerId));
   expect((after?.totalExperience ?? 0)).toBeGreaterThan(
     before?.totalExperience ?? 0
   );

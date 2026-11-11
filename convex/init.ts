@@ -7,7 +7,6 @@ import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
 import {
-  DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
   ensureBossForTier,
 } from "./bossData";
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
@@ -92,7 +91,6 @@ async function seedGameBalance(ctx: MutationCtx) {
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
     { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
-    { key: "bossUnlockLevelPerTier", value: DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER, description: "Character levels required per boss tier (tier multiplied by this value)" },
     { key: "maxTier",              value: 20,                           description: "Maximum tier available to fight" },
     { key: "rebirthThresholds",    value: [5, 10, 15, 21, 28, 36, 45], description: "Tier thresholds required for each rebirth" },
     { key: "rebirthStatLevelRequirement", value: 99, description: "Stat or skill level required in at least one stat or skill to rebirth" },

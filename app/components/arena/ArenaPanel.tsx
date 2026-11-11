@@ -43,6 +43,8 @@ type ArenaPlayer = {
   int: number;
   luk: number;
   con: number;
+  wis?: number;
+  agi?: number;
 };
 
 type MyLobbyData = NonNullable<ReturnType<typeof useMyLobby>["data"]>;
@@ -993,13 +995,17 @@ export function ArenaPanel({ player }: { player: ArenaPlayer }) {
     useState<Id<"arenaLobbies"> | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const combatLevel = calculateCombatLevel(
-    player.str,
-    player.dex,
-    player.int,
-    player.luk,
-    player.con
-  );
+  // Matches the server's matchmaking level, which counts wisdom and agility.
+  const combatLevel =
+    calculateCombatLevel(
+      player.str,
+      player.dex,
+      player.int,
+      player.luk,
+      player.con
+    ) +
+    (player.wis ?? 1) +
+    (player.agi ?? 1);
 
   // Keep showing a settled lobby (result screen) after getMyLobby stops
   // returning it — completed lobbies belong to history, not to "mine".

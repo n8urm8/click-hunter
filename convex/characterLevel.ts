@@ -1,7 +1,7 @@
 /**
  * Character level calculation
  *
- * Character level = sum of the 5 combat stat levels + sum of all skill levels.
+ * Character level = sum of the combat stat levels + sum of all skill levels.
  *
  * Skill levels are read from playerSkills, where rows are created lazily at
  * level 1 on first use (see ensurePlayerSkill in skills.ts), so enabled skills
@@ -20,6 +20,7 @@ export type CombatStats = {
   luk: number;
   con: number;
   wis?: number;
+  agi?: number;
 };
 
 export type Character = { _id: Id<"players"> } & CombatStats;
@@ -27,11 +28,14 @@ export type Character = { _id: Id<"players"> } & CombatStats;
 const MAX_SKILL_ROWS = 300;
 
 /**
- * Combat portion of the character level: the sum of the six combat stat
- * levels (including wisdom, optional for backward compatibility).
+ * Combat portion of the character level: the sum of the seven combat stat
+ * levels. Wisdom and agility read as 1 on rows from before they existed.
  */
 export function calculateCombatLevel(stats: CombatStats): number {
-  return stats.str + stats.dex + stats.int + stats.luk + stats.con + (stats.wis ?? 1);
+  return (
+    stats.str + stats.dex + stats.int + stats.luk + stats.con +
+    (stats.wis ?? 1) + (stats.agi ?? 1)
+  );
 }
 
 /**

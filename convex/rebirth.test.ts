@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api } from "./_generated/api";
@@ -14,7 +15,7 @@ async function setup(stats: Partial<typeof BASE_STATS> = {}) {
   const base = convexTest(schema, modules);
   const t = base.withIdentity({ subject: "rebirth-user" });
   const fixture = await t.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "rebirth-test", name: "Hunter", role: "admin",
       authSubject: "rebirth-user",
       ...BASE_STATS,
@@ -56,7 +57,7 @@ test("rebirth banks bonuses for qualifying stats and resets to level 1", async (
     str: 1, dex: 0, int: 0, luk: 0, con: 1,
   });
 
-  const player = await t.run((ctx) => ctx.db.get(playerId));
+  const player = await t.run((ctx) => playerWithRecords(ctx, playerId));
   expect(player).toMatchObject({
     ...BASE_STATS,
     rebirthCount: 1,
@@ -77,7 +78,7 @@ test("bonuses stack additively across rebirths and boost effective stats", async
 
   // 1 base STR x (1 + 2 x 5%) = 1.1 effective.
   const profile = await t.run((ctx) =>
-    ctx.db.get(playerId).then((player) => readPlayerCombatProfile(ctx, player!))
+    playerWithRecords(ctx, playerId).then((player) => readPlayerCombatProfile(ctx, player!))
   );
   expect(profile.effectiveStats.str).toBeCloseTo(1.1);
   expect(profile.effectiveStats.dex).toBeCloseTo(1);
@@ -149,7 +150,7 @@ test("skillSpeedMultiplier combines level speed and banked bonuses", () => {
 test("players without banked bonuses see no change in effective stats", async () => {
   const { t, playerId } = await setup();
   const profile = await t.run((ctx) =>
-    ctx.db.get(playerId).then((player) => readPlayerCombatProfile(ctx, player!))
+    playerWithRecords(ctx, playerId).then((player) => readPlayerCombatProfile(ctx, player!))
   );
   expect(profile.effectiveStats).toMatchObject({
     str: 1, dex: 1, int: 1, luk: 1, con: 1,
@@ -179,7 +180,7 @@ test("custom balance requirement and bonus percent are honored", async () => {
   await t.mutation(api.players.rebirth, { playerId });
 
   const profile = await t.run((ctx) =>
-    ctx.db.get(playerId).then((player) => readPlayerCombatProfile(ctx, player!))
+    playerWithRecords(ctx, playerId).then((player) => readPlayerCombatProfile(ctx, player!))
   );
   expect(profile.effectiveStats.str).toBeCloseTo(1.1);
 });

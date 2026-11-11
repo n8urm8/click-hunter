@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -31,7 +32,7 @@ async function setup() {
     stats: { str: number; dex: number; int: number; luk: number; con: number }
   ) =>
     base.run(async (ctx) => {
-      return await ctx.db.insert("players", {
+      return await insertPlayerWithRecords(ctx, {
         anonymousId: `ranked-${subject}`,
         name,
         authSubject: subject,
@@ -188,7 +189,7 @@ test("match list offers the five nearest point totals with previews", async () =
   ];
   for (const [subject, points] of specs) {
     const id = await base.run((ctx) =>
-      ctx.db.insert("players", {
+      insertPlayerWithRecords(ctx, {
         anonymousId: `ranked-${subject}`,
         name: subject,
         authSubject: subject,
@@ -246,8 +247,7 @@ test("weekly settlement pays the top 10 and resets the ladder", async () => {
   });
   const before: Record<string, number> = {};
   for (const id of [champion, rival]) {
-    const row: Doc<"players"> | null = await base.run((ctx) =>
-      ctx.db.get(id)
+    const row: Awaited<ReturnType<typeof playerWithRecords>> = await base.run((ctx) => playerWithRecords(ctx, id)
     );
     before[String(id)] = row?.gold ?? 0;
   }
@@ -255,11 +255,9 @@ test("weekly settlement pays the top 10 and resets the ladder", async () => {
     ctx.runMutation(internal.ranked.settleRankedWeek, {})
   );
   expect(settled).toMatchObject({ alreadySettled: false, winners: 2 });
-  const afterChampion: Doc<"players"> | null = await base.run((ctx) =>
-    ctx.db.get(champion)
+  const afterChampion: Awaited<ReturnType<typeof playerWithRecords>> = await base.run((ctx) => playerWithRecords(ctx, champion)
   );
-  const afterRival: Doc<"players"> | null = await base.run((ctx) =>
-    ctx.db.get(rival)
+  const afterRival: Awaited<ReturnType<typeof playerWithRecords>> = await base.run((ctx) => playerWithRecords(ctx, rival)
   );
   expect((afterChampion?.gold ?? 0) - before[String(champion)]).toBe(5000);
   expect((afterRival?.gold ?? 0) - before[String(rival)]).toBe(4000);
@@ -277,8 +275,7 @@ test("weekly settlement pays the top 10 and resets the ladder", async () => {
     ctx.runMutation(internal.ranked.settleRankedWeek, {})
   );
   expect(again).toMatchObject({ alreadySettled: true });
-  const rechampion: Doc<"players"> | null = await base.run((ctx) =>
-    ctx.db.get(champion)
+  const rechampion: Awaited<ReturnType<typeof playerWithRecords>> = await base.run((ctx) => playerWithRecords(ctx, champion)
   );
   expect(rechampion?.gold).toBe(afterChampion?.gold);
 });

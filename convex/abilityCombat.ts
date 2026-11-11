@@ -7,7 +7,6 @@ import {
   calculateFinalCooldown,
   canUseAbilityWithWeapon,
   getCombatAbilities,
-  getRebirthAbilityCooldownReduction,
   resolveAbilitySpec,
   specFromAbility,
 } from "./abilities";
@@ -18,6 +17,7 @@ import {
   getWisdomPowerMultiplier,
   readWisdomBalance,
 } from "./wisdom";
+import { readRebirthAbilityBonuses } from "./rebirth";
 type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
 
@@ -43,6 +43,9 @@ export const abilityRuntimeValidator = v.object({
   // Earliest timeline unit at which this ability may cast again.
   nextAt: v.number(),
   casts: v.number(),
+  // Banked rebirth power for this ability. Absent on states frozen before it
+  // applied, which read as 1.
+  powerMultiplier: v.optional(v.number()),
 });
 
 export type AbilityRuntimeState = Infer<typeof abilityRuntimeValidator>;
@@ -91,36 +94,41 @@ export function abilityWeaponFrom(
 
 /**
  * Freeze a player's usable equipped abilities into a serialisable combat
- * state. Weapon-type gating and rebirth cooldown reduction are applied here so
- * the frozen state matches what actually fought.
+ * state. Weapon-type gating and the rebirth power and cooldown bonuses are
+ * applied here so the frozen state matches what actually fought.
+ *
+ * Ally heals are always kept: the raid routes them to the most-injured
+ * member, every other encounter lands them on the caster.
  */
 export async function buildAbilityCombatState(
   ctx: DatabaseCtx,
   playerId: PlayerId,
   weapon: { weaponType?: string; element?: string } | null,
-  cooldownUnit: AbilityCooldownUnit,
-  options: { includeAlly?: boolean } = {}
+  cooldownUnit: AbilityCooldownUnit
 ): Promise<AbilityCombatState> {
-  const [entries, wisdomLevel, balance] = await Promise.all([
+  const [entries, wisdomLevel, balance, player] = await Promise.all([
     getCombatAbilities(ctx, playerId),
     getEffectiveWisdom(ctx, playerId),
     readWisdomBalance(ctx),
+    ctx.db.get(playerId),
   ]);
   const wisdomMultiplier = getWisdomPowerMultiplier(wisdomLevel, balance);
+  const rebirthBonus = player
+    ? await readRebirthAbilityBonuses(ctx, player)
+    : null;
 
   const runtimes: AbilityRuntimeState[] = [];
   for (const entry of entries) {
     const ability = entry.ability;
     if (!canUseAbilityWithWeapon(ability, weapon?.weaponType)) continue;
     if (ability.type === "utility") continue;
-    if (ability.target === "ally" && !options.includeAlly) continue;
 
-    const reduction = await getRebirthAbilityCooldownReduction(
-      ctx,
-      playerId,
-      ability.abilityId
+    const bonus = rebirthBonus?.(ability.abilityId);
+    const finalMs = calculateFinalCooldown(
+      entry.cooldownMs,
+      1,
+      bonus?.cooldownReduction ?? 0
     );
-    const finalMs = calculateFinalCooldown(entry.cooldownMs, 1, reduction);
     const cooldown =
       cooldownUnit.unit === "ms"
         ? Math.max(100, Math.round(finalMs))
@@ -132,6 +140,9 @@ export async function buildAbilityCombatState(
       cooldown,
       nextAt: 0,
       casts: 0,
+      ...(bonus && bonus.powerMultiplier !== 1
+        ? { powerMultiplier: bonus.powerMultiplier }
+        : {}),
     });
   }
 
@@ -154,30 +165,41 @@ export function hasCastableAbilities(
 }
 
 /**
- * Apply damage buffs to a raw damage value using the same "first active buff
- * wins" rule as the auto-battle loop.
+ * Apply damage buffs to a raw damage value. Buffs of one kind don't stack: the
+ * strongest active one applies, so an older weak buff can't mask a newer
+ * strong one and a re-cast can't double up.
  */
 export function damageWithBuffs(
   base: number,
   buffs: AbilityBuffState[],
   at: number
 ): number {
-  const buff = buffs.find((b) => b.kind === "damage" && b.until > at);
-  if (!buff) return base;
-  return buff.percent ? base * (1 + buff.value / 100) : base + buff.value;
+  let best = base;
+  for (const buff of buffs) {
+    if (buff.kind !== "damage" || buff.until <= at) continue;
+    const buffed = buff.percent
+      ? base * (1 + buff.value / 100)
+      : base + buff.value;
+    if (buffed > best) best = buffed;
+  }
+  return best;
 }
 
-/** Apply defense buffs to incoming damage. Mirrors the auto-battle rule. */
+/** Apply defense buffs to incoming damage. The strongest active one applies. */
 export function mitigateWithBuffs(
   base: number,
   buffs: AbilityBuffState[],
   at: number
 ): number {
-  const buff = buffs.find((b) => b.kind === "defense" && b.until > at);
-  if (!buff) return base;
-  return buff.percent
-    ? base * Math.max(0, 1 - buff.value / 100)
-    : Math.max(0, base - buff.value);
+  let best = base;
+  for (const buff of buffs) {
+    if (buff.kind !== "defense" || buff.until <= at) continue;
+    const mitigated = buff.percent
+      ? base * Math.max(0, 1 - buff.value / 100)
+      : Math.max(0, base - buff.value);
+    if (mitigated < best) best = mitigated;
+  }
+  return best;
 }
 
 export interface AbilityCastInput {
@@ -242,6 +264,8 @@ export function castDueAbilities(input: AbilityCastInput): AbilityCastOutcome {
   for (const runtime of state.runtimes) {
     if (runtime.nextAt > at || enemyHp <= 0) continue;
     const spec = runtime.spec;
+    // Wisdom and banked rebirth power both scale the ability's base power.
+    const power = state.wisdomMultiplier * (runtime.powerMultiplier ?? 1);
 
     if (spec.type === "utility") {
       runtime.nextAt = at + runtime.cooldown;
@@ -252,7 +276,7 @@ export function castDueAbilities(input: AbilityCastInput): AbilityCastOutcome {
       const result = resolveAbilitySpec({
         ability: spec,
         abilityLevel: runtime.level,
-        wisdomMultiplier: state.wisdomMultiplier,
+        wisdomMultiplier: power,
         weapon,
       });
       // A heal's power is a percentage of max HP, so it stays useful as HP grows.
@@ -285,7 +309,7 @@ export function castDueAbilities(input: AbilityCastInput): AbilityCastOutcome {
       const result = resolveAbilitySpec({
         ability: spec,
         abilityLevel: runtime.level,
-        wisdomMultiplier: state.wisdomMultiplier,
+        wisdomMultiplier: power,
         weapon,
       });
       state.buffs.push({
@@ -306,7 +330,7 @@ export function castDueAbilities(input: AbilityCastInput): AbilityCastOutcome {
     const result = resolveAbilitySpec({
       ability: spec,
       abilityLevel: runtime.level,
-      wisdomMultiplier: state.wisdomMultiplier,
+      wisdomMultiplier: power,
       weapon,
       targetStats: enemyStats,
     });
@@ -348,9 +372,10 @@ export function nextAbilityAt(state: AbilityCombatState): number | null {
 }
 
 /**
- * Award wisdom XP for abilities used in a settled fight. Callers must gate
- * this on the settlement not being a duplicate (settlementKey dedupe), so
- * re-delivered settlements cannot double-award.
+ * Award wisdom XP for abilities used in a settled fight, including each
+ * ability's banked rebirth wisdom-XP bonus. Callers must gate this on the
+ * settlement not being a duplicate (settlementKey dedupe), so re-delivered
+ * settlements cannot double-award.
  */
 export async function awardAbilityWisdomXp(
   ctx: MutationCtx,
@@ -359,8 +384,20 @@ export async function awardAbilityWisdomXp(
 ): Promise<void> {
   const used = casts.filter((cast) => cast.casts > 0);
   if (used.length === 0) return;
-  const { xpPerAbilityUse } = await readWisdomBalance(ctx);
+  const [{ xpPerAbilityUse }, player] = await Promise.all([
+    readWisdomBalance(ctx),
+    ctx.db.get(playerId),
+  ]);
+  const rebirthBonus = player
+    ? await readRebirthAbilityBonuses(ctx, player)
+    : null;
   for (const cast of used) {
-    await awardWisdomXp(ctx, playerId, cast.casts * xpPerAbilityUse, cast.level);
+    const multiplier = rebirthBonus?.(cast.abilityId).wisdomXpMultiplier ?? 1;
+    await awardWisdomXp(
+      ctx,
+      playerId,
+      cast.casts * xpPerAbilityUse * multiplier,
+      cast.level
+    );
   }
 }

@@ -1,5 +1,6 @@
 import { readRebirthRewardBonuses } from "./rebirth";
 import { readBalanceValue } from "./balance";
+import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ensureBossForTier } from "./bossData";
@@ -12,6 +13,7 @@ import type { CombatZone } from "./zones";
 import { grantItemToInventory, getActiveCombatBoosts, getEquippedWeapon, readInventoryForGrants } from "./items";
 import { grantInfusionDrops, rollBatchBonusDrops } from "./infusion";
 import { awardAbilityWisdomXp } from "./abilityCombat";
+import { recordMonsterClears } from "./tierClears";
 import { awardCrossedAchievements } from "./achievements";
 import { getPassiveBonuses } from "./passiveTree";
 import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
@@ -21,40 +23,47 @@ import {
   readSkillXpBase,
 } from "./skillProgression";
 
-type TrainableStat = "str" | "dex" | "int" | "con";
+type TrainableStat = "str" | "dex" | "int" | "con" | "agi";
 
 /**
- * Split a fight's XP across the wielded weapon's stats (70/30 weapon/con,
- * 35/35/30 unarmed) into per-stat XP pools leveled with the skill XP curve.
+ * Split a fight's XP across the wielded weapon's stats into per-stat XP pools
+ * leveled with the skill XP curve: 70% to the weapon's damage stat, 15% to
+ * agility (attack speed, which every weapon uses) and 15% to CON. Unarmed
+ * splits 30/30 STR/DEX, 15% agility and 25% CON.
  * Exported for raid settlements, which pay boss-tier XP without player loot.
  */
 export function applyCombatStatXp(
-  player: Doc<"players">,
+  stats: Pick<Doc<"players">, Exclude<TrainableStat, "agi">> & { agi?: number },
+  statXp: Doc<"playerProgress">["statXp"],
   weaponDamageStat: string | null,
   experienceEarned: number,
   xpBase: number
 ) {
   const splits: Record<TrainableStat, number> =
     weaponDamageStat === "dex"
-      ? { str: 0, dex: 0.7, int: 0, con: 0.3 }
+      ? { str: 0, dex: 0.7, int: 0, con: 0.15, agi: 0.15 }
       : weaponDamageStat === "int"
-        ? { str: 0, dex: 0, int: 0.7, con: 0.3 }
+        ? { str: 0, dex: 0, int: 0.7, con: 0.15, agi: 0.15 }
         : weaponDamageStat === "str"
-          ? { str: 0.7, dex: 0, int: 0, con: 0.3 }
-          : { str: 0.35, dex: 0.35, int: 0, con: 0.3 };
+          ? { str: 0.7, dex: 0, int: 0, con: 0.15, agi: 0.15 }
+          : { str: 0.3, dex: 0.3, int: 0, con: 0.25, agi: 0.15 };
   const pools = {
     str: 0,
     dex: 0,
     int: 0,
     luk: 0,
     con: 0,
-    ...(player.statXp ?? {}),
+    agi: 0,
+    ...(statXp ?? {}),
   };
+  // Only stats that crossed a level are returned, so callers patch `players`
+  // (stable) on a level-up and leave it alone on the usual XP-only settlement.
   const levels: Partial<Record<TrainableStat, number>> = {};
-  for (const stat of ["str", "dex", "int", "con"] as const) {
+  for (const stat of ["str", "dex", "int", "con", "agi"] as const) {
     const share = splits[stat];
     if (share <= 0) continue;
-    let level = player[stat];
+    const startLevel = stats[stat] ?? 1;
+    let level = startLevel;
     let pool = pools[stat] + experienceEarned * share;
     let required = getSkillXpRequiredForLevel(level, xpBase);
     while (pool >= required) {
@@ -65,10 +74,48 @@ export function applyCombatStatXp(
         throw new Error("Stat XP requirement exceeds the supported limit");
       }
     }
-    levels[stat] = level;
+    if (level !== startLevel) levels[stat] = level;
     pools[stat] = pool;
   }
-  return { ...levels, statXp: pools };
+  return { levels, statXp: pools };
+}
+
+/**
+ * Work out a stat XP award without writing it: the progress row it belongs to,
+ * the new XP pools, and any stat levels that crossed. Callers that already
+ * patch the progress row (raids) fold the pools into that patch.
+ */
+export async function planCombatStatXp(
+  ctx: MutationCtx,
+  playerId: PlayerId,
+  experienceEarned: number
+) {
+  const [weapon, player, progress, xpBaseValue] = await Promise.all([
+    getEquippedWeapon(ctx, playerId),
+    ctx.db.get(playerId),
+    readPlayerProgress(ctx, playerId),
+    getBalanceValue(ctx, "skillXpPerLevel"),
+  ]);
+  if (!player) throw new Error("Player not found");
+  const { levels, statXp } = applyCombatStatXp(
+    player,
+    progress.statXp,
+    weapon?.damageStat ?? null,
+    experienceEarned,
+    readSkillXpBase(xpBaseValue)
+  );
+  return { progress, levels, statXp };
+}
+
+/** Stat levels that crossed write to `players`; an ordinary fight leaves it alone. */
+export async function applyStatLevels(
+  ctx: MutationCtx,
+  playerId: PlayerId,
+  levels: Partial<Record<TrainableStat, number>>
+) {
+  if (Object.keys(levels).length > 0) {
+    await ctx.db.patch(playerId, { ...levels, lastUpdated: Date.now() });
+  }
 }
 
 export async function awardCombatStatXp(
@@ -77,17 +124,11 @@ export async function awardCombatStatXp(
   experienceEarned: number
 ) {
   if (!Number.isFinite(experienceEarned) || experienceEarned <= 0) return;
-  const [weapon, player, xpBaseValue] = await Promise.all([
-    getEquippedWeapon(ctx, playerId),
-    ctx.db.get(playerId),
-    getBalanceValue(ctx, "skillXpPerLevel"),
-  ]);
-  if (!player) throw new Error("Player not found");
-  await ctx.db.patch(playerId, {
-    ...applyCombatStatXp(player, weapon?.damageStat ?? null, experienceEarned, readSkillXpBase(xpBaseValue)),
-    lastUpdated: Date.now(),
-  });
+  const plan = await planCombatStatXp(ctx, playerId, experienceEarned);
+  await patchPlayerProgress(ctx, plan.progress, { statXp: plan.statXp });
+  await applyStatLevels(ctx, playerId, plan.levels);
 }
+
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
@@ -329,6 +370,9 @@ async function recordTierProgress(
 ) {
   const previousBest = player.maxTierReached ?? player.currentTier ?? 1;
   const newMaxTier = Math.max(previousBest, tier);
+  // Only a new best or a tier change writes `players`; the usual fight at the
+  // current tier leaves the stable row alone.
+  if (newMaxTier === player.maxTierReached && tier === player.currentTier) return;
   await ctx.db.patch(player._id, {
     maxTierReached: newMaxTier,
     currentTier: tier,
@@ -460,10 +504,11 @@ export async function settleCombatFight(
         )
       : 0;
     if (args.won) {
-      await ctx.db.patch(args.playerId, {
-        gold: player.gold + goldEarned,
-        totalExperience: player.totalExperience + experienceEarned,
-        lastUpdated: Date.now(),
+      const progress = await readPlayerProgress(ctx, args.playerId);
+      await ctx.db.patch(progress._id, {
+        gold: progress.gold + goldEarned,
+        totalExperience: progress.totalExperience + experienceEarned,
+        updatedAt: Date.now(),
       });
       await awardCombatStatXp(ctx, args.playerId, experienceEarned);
       await accrueGuildXpFromEarned(ctx, args.playerId, experienceEarned);
@@ -505,6 +550,9 @@ export async function settleCombatFight(
       goldEarned,
       experienceEarned,
     });
+    if (args.won) {
+      await recordMonsterClears(ctx, args.playerId, args.tier, [args.sourceId]);
+    }
     return {
       recorded: true,
       duplicate: false,
@@ -563,10 +611,11 @@ export async function settleCombatFight(
     : 0;
 
   if (args.won) {
-    await ctx.db.patch(args.playerId, {
-      gold: player.gold + goldEarned,
-      totalExperience: player.totalExperience + experienceEarned,
-      lastUpdated: Date.now(),
+    const progress = await readPlayerProgress(ctx, args.playerId);
+    await ctx.db.patch(progress._id, {
+      gold: progress.gold + goldEarned,
+      totalExperience: progress.totalExperience + experienceEarned,
+      updatedAt: Date.now(),
     });
     await awardCombatStatXp(ctx, args.playerId, experienceEarned);
     await accrueGuildXpFromEarned(ctx, args.playerId, experienceEarned);
@@ -673,14 +722,31 @@ export async function settleAutoBattleBatch(
     const xpBase = readSkillXpBase(await getBalanceValue(ctx, "skillXpPerLevel"));
     const previousBest = player.maxTierReached ?? player.currentTier ?? 1;
     const maxTierReached = Math.max(previousBest, tier);
-    await ctx.db.patch(playerId, {
-      ...applyCombatStatXp(player, args.weaponDamageStat, experienceEarned, xpBase),
-      gold: player.gold + goldEarned,
-      totalExperience: player.totalExperience + experienceEarned,
-      maxTierReached,
-      currentTier: tier,
-      lastUpdated: Date.now(),
+    const progress = await readPlayerProgress(ctx, playerId);
+    const now = Date.now();
+    const { levels, statXp } = applyCombatStatXp(
+      player,
+      progress.statXp,
+      args.weaponDamageStat,
+      experienceEarned,
+      xpBase
+    );
+    await ctx.db.patch(progress._id, {
+      gold: progress.gold + goldEarned,
+      totalExperience: progress.totalExperience + experienceEarned,
+      statXp,
+      updatedAt: now,
     });
+    // `players` is written only when something stable moved: a stat level-up
+    // or a tier change. An ordinary settlement leaves the stats query alone.
+    const tierChanged = maxTierReached !== player.maxTierReached || tier !== player.currentTier;
+    if (tierChanged || Object.keys(levels).length > 0) {
+      await ctx.db.patch(playerId, {
+        ...levels,
+        ...(tierChanged ? { maxTierReached, currentTier: tier } : {}),
+        lastUpdated: now,
+      });
+    }
     if (maxTierReached > previousBest) await ensureBossForTier(ctx, maxTierReached);
     await accrueGuildXpFromEarned(ctx, playerId, experienceEarned);
     await progressWeeklyObjectives(ctx, playerId, {
@@ -691,14 +757,21 @@ export async function settleAutoBattleBatch(
     await awardCrossedAchievements(
       ctx,
       playerId,
-      { maxTierReached: previousBest, totalExperience: player.totalExperience, rebirthCount: player.rebirthCount },
+      { maxTierReached: previousBest, totalExperience: progress.totalExperience, rebirthCount: player.rebirthCount },
       {
         maxTierReached,
-        totalExperience: player.totalExperience + experienceEarned,
+        totalExperience: progress.totalExperience + experienceEarned,
         rebirthCount: player.rebirthCount,
       }
     );
   }
+
+  await recordMonsterClears(
+    ctx,
+    playerId,
+    tier,
+    wins.map((fight) => fight.monsterType)
+  );
 
   // Merge casts per ability first: each award is a read-modify-write.
   const castsByAbility = new Map<string, { abilityId: string; level: number; casts: number }>();

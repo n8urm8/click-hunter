@@ -11,6 +11,17 @@ import {
   WEAPON_TYPE_VALUES,
 } from "./itemTypes";
 
+// Combat stat experience pools (floats); leveled with the skill XP curve.
+const combatStatXpValidator = v.object({
+  str: v.number(),
+  dex: v.number(),
+  int: v.number(),
+  luk: v.number(),
+  con: v.number(),
+  wis: v.optional(v.number()),
+  // Agility: attack speed. Optional so rows from before it existed still load.
+  agi: v.optional(v.number()),
+});
 const itemCategoryValidator = v.union(
   ...ITEM_CATEGORY_VALUES.map((value) => v.literal(value))
 );
@@ -132,6 +143,8 @@ const guildRaidPartyMemberValidator = v.object({
   ward: v.optional(v.number()),
   alive: v.optional(v.boolean()),
   attack: v.optional(v.number()),
+  // Attacks per second. Absent on older rows, which swing once a round.
+  attackSpeed: v.optional(v.number()),
   critChance: v.optional(v.number()),
   critMultiplier: v.optional(v.number()),
   // Frozen equipped-ability state (round-based cooldowns) for auto-cast
@@ -179,6 +192,8 @@ const arenaLobbyStatusValidator = v.union(
 const arenaFighterSnapshotValidator = v.object({
   maxHp: v.number(),
   attack: v.number(),
+  // Attacks per second. Absent on older snapshots, which swing once a round.
+  attackSpeed: v.optional(v.number()),
   defense: v.number(),
   magicalDefense: v.number(),
   critChance: v.number(),
@@ -229,9 +244,11 @@ export default defineSchema({
     luk: v.number(),
     con: v.number(),
     wis: v.optional(v.number()), // Wisdom: 6th combat stat for abilities (optional for migration)
-    // Progression
-    gold: v.number(),
-    totalExperience: v.number(),
+    // Agility: attack speed for every weapon. Absent reads as 1 (rows from
+    // before the stat existed).
+    agi: v.optional(v.number()),
+    // Stable progression. Gold, XP and stat XP live in `playerProgress`, and HP
+    // lives in `playerHp`, so the stats queries don't re-run on every fight.
     rebirthCount: v.number(),
     rebirthTierThreshold: v.number(), // e.g., 5, 10, 15 - which tier unlocks next rebirth
     currentTier: v.number(), // Which tier player is currently fighting in (1+)
@@ -247,6 +264,7 @@ export default defineSchema({
         luk: v.number(),
         con: v.number(),
         wis: v.optional(v.number()),
+        agi: v.optional(v.number()),
       })
     ),
     // Permanent rebirth bonuses per skill, keyed by skillId. Each point
@@ -260,32 +278,18 @@ export default defineSchema({
     // Upgrades
     autoAttackEnabled: v.boolean(),
     autoStartFightEnabled: v.boolean(),
-    // Combat stat experience pools (floats); leveled with the skill XP curve.
-    statXp: v.optional(
-      v.object({
-        str: v.number(),
-        dex: v.number(),
-        int: v.number(),
-        luk: v.number(),
-        con: v.number(),
-        wis: v.optional(v.number()),
-      })
-    ),
     // Chosen starter weapon ID (reselectable at each rebirth).
     starterWeapon: v.optional(v.string()),
     // True when the player must pick a starter kit (creation/rebirth flow).
     pendingStarterPick: v.optional(v.boolean()),
-    // Persistent HP between fights. Undefined means full (migration fallback).
-    currentHp: v.optional(v.number()),
-    currentHpUpdatedAt: v.optional(v.number()),
-    // Metadata
+    // Metadata. Bumped on stable changes only; fight settlements write the
+    // per-batch rows instead.
     createdAt: v.number(),
     lastUpdated: v.number(),
   })
     .index("by_anonymousId", ["anonymousId"])
     .index("by_authSubject", ["authSubject"])
     .index("by_createdAt", ["createdAt"])
-    .index("by_totalExperience", ["totalExperience"])
     .index("by_maxTierReached", ["maxTierReached"])
     .index("by_rebirthCount", ["rebirthCount"]),
 
@@ -294,6 +298,26 @@ export default defineSchema({
   playerOwners: defineTable({
     playerId: v.id("players"),
     authSubject: v.string(),
+  }).index("by_playerId", ["playerId"]),
+
+  // Gold, XP and stat XP pools, written by every auto-battle settlement. Kept
+  // off `players` so queries reading the stats don't re-run per settlement.
+  playerProgress: defineTable({
+    playerId: v.id("players"),
+    gold: v.number(),
+    totalExperience: v.number(),
+    statXp: v.optional(combatStatXpValidator),
+    updatedAt: v.number(),
+  })
+    .index("by_playerId", ["playerId"])
+    .index("by_totalExperience", ["totalExperience"]),
+
+  // Persistent HP between fights. Undefined means full (migration fallback).
+  // Written by every fight settlement, so split from `players` like progress.
+  playerHp: defineTable({
+    playerId: v.id("players"),
+    currentHp: v.optional(v.number()),
+    currentHpUpdatedAt: v.optional(v.number()),
   }).index("by_playerId", ["playerId"]),
 
   playerUpgrades: defineTable({
@@ -1145,6 +1169,9 @@ export default defineSchema({
     monsterMaxHp: v.number(),
     monsterAttack: v.number(),
     monsterAttackSpeed: v.number(),
+    // Flat defense taken off every strike and ability hit. Absent on older
+    // sessions, which had none.
+    monsterDefense: v.optional(v.number()),
     // Element dealt by this boss + the player's attuned ward at start.
     monsterElement: v.optional(v.string()),
     monsterWard: v.optional(v.number()),
@@ -1158,7 +1185,25 @@ export default defineSchema({
     ),
     strikes: v.number(),
     startedAt: v.number(),
+    // How far the fight's timeline has been resolved (monster swings, ability
+    // casts, regen). Not necessarily the last strike's time.
     lastStrikeAt: v.number(),
+    // When the boss swings next. Absent on older sessions, which swing one
+    // interval after `lastStrikeAt`.
+    nextMonsterHitAt: v.optional(v.number()),
+    // The player's combat numbers, frozen at the start like PvP and raid
+    // snapshots, so swapping gear mid-fight changes nothing. Absent on older
+    // sessions, which read the live profile.
+    playerCombat: v.optional(
+      v.object({
+        attack: v.number(),
+        critChance: v.number(),
+        critMultiplier: v.number(),
+        strikeCooldownMs: v.number(),
+        defense: v.number(),
+        regenPerSecond: v.number(),
+      })
+    ),
     // Frozen equipped-ability state for auto-casting over the real-time
     // timeline. Absent for sessions begun before abilities existed / by
     // players with nothing equipped.
@@ -1166,6 +1211,15 @@ export default defineSchema({
   })
     .index("by_playerId_and_status", ["playerId", "status"])
     .index("by_settlementKey", ["settlementKey"]),
+
+  // Monster types a player has defeated on each tier. One row per (player, tier)
+  // so a boss gate or batch settlement reads a single document.
+  playerTierClears: defineTable({
+    playerId: v.id("players"),
+    tier: v.number(),
+    monsterTypes: v.array(v.string()),
+    updatedAt: v.number(),
+  }).index("by_playerId_and_tier", ["playerId", "tier"]),
 
   // Guilds / Alliances
   guilds: defineTable({
@@ -1259,6 +1313,9 @@ export default defineSchema({
     // before snapshots existed (tick falls back to a live read).
     raidTuning: v.optional(guildRaidTuningValidator),
     dragonAttack: v.optional(v.number()),
+    // Flat defense taken off every party swing and ability hit. Absent on
+    // older rows, which had none.
+    dragonDefense: v.optional(v.number()),
   })
     .index("by_guildId_and_status", ["guildId", "status"])
     .index("by_status_and_expiresAt", ["status", "expiresAt"])
@@ -1370,7 +1427,7 @@ export default defineSchema({
     fighter1Name: v.optional(v.string()),
     fighter1Stake: v.optional(v.number()),
     fighter1Level: v.optional(v.number()),
-    // Combat-only level (str+dex+int+luk+con, no skills) for quick-match
+    // Combat-only level (sum of combat stats, no skills) for quick-match
     // pairing. Snapshotted at join like fighterNLevel.
     fighter1CombatLevel: v.optional(v.number()),
     fighter1Ready: v.optional(v.boolean()),

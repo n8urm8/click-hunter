@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { expect, test } from "vitest";
@@ -15,7 +16,7 @@ async function setup() {
   const other = base.withIdentity({ subject: "guild-member" });
   const fixture = await t.run(async (ctx) => {
     const now = Date.now();
-    const ownerId = await ctx.db.insert("players", {
+    const ownerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "guild-owner-anon",
       name: "Owner",
       authSubject: "guild-owner",
@@ -35,7 +36,7 @@ async function setup() {
       createdAt: now,
       lastUpdated: now,
     });
-    const memberId = await ctx.db.insert("players", {
+    const memberId = await insertPlayerWithRecords(ctx, {
       anonymousId: "guild-member-anon",
       name: "Member",
       authSubject: "guild-member",
@@ -84,7 +85,7 @@ test("createGuild deducts gold and makes the creator master", async () => {
   expect(mine?.membership.role).toBe("master");
   expect(mine?.memberCount).toBe(1);
 
-  const player = await t.run((ctx) => ctx.db.get(ownerId));
+  const player = await t.run((ctx) => playerWithRecords(ctx, ownerId));
   expect(player?.gold).toBe(50000);
 });
 
@@ -248,7 +249,7 @@ test("applyToGuild rejects applicants below the level requirement", async () => 
   const rookie = t.withIdentity({ subject: "guild-rookie" });
   const rookieId = await t.run(async (ctx) => {
     const now = Date.now();
-    return await ctx.db.insert("players", {
+    return await insertPlayerWithRecords(ctx, {
       anonymousId: "guild-rookie-anon",
       name: "Rookie",
       authSubject: "guild-rookie",
@@ -294,10 +295,10 @@ test("guild XP accrues as a bonus without touching player totals", async () => {
       lastUpdated: 0,
     })
   );
-  const beforePlayer = await t.run((ctx) => ctx.db.get(ownerId));
+  const beforePlayer = await t.run((ctx) => playerWithRecords(ctx, ownerId));
   await t.run((ctx) => accrueGuildXpFromEarned(ctx, ownerId, 500));
 
-  const afterPlayer = await t.run((ctx) => ctx.db.get(ownerId));
+  const afterPlayer = await t.run((ctx) => playerWithRecords(ctx, ownerId));
   expect(afterPlayer?.totalExperience).toBe(beforePlayer?.totalExperience);
   expect(afterPlayer?.gold).toBe(beforePlayer?.gold);
 
@@ -464,7 +465,7 @@ test("gathering XP applies the guild bonus and accrues bonus guild XP", async ()
   // skill XP only, and the guild share is never deducted).
   const afterGuild = await t.run((ctx) => ctx.db.get(guild._id));
   expect(afterGuild?.xp).toBe(3);
-  const player = await t.run((ctx) => ctx.db.get(ownerId));
+  const player = await t.run((ctx) => playerWithRecords(ctx, ownerId));
   expect(player?.totalExperience).toBe(1000);
   expect(player?.gold).toBe(50000);
 });

@@ -316,10 +316,10 @@
 
   <div class="stats">
     <div class="stat"><b>3 of 5</b><span>critical bosses beaten, 1 wounded; accounts were skipped by choice</span></div>
-    <div class="stat"><b>6 of 7</b><span>locked doors dealt with; the boss level gate is still open</span></div>
+    <div class="stat"><b>7 of 7</b><span>locked doors dealt with, including the boss gate</span></div>
     <div class="stat"><b>1.36×</b><span>best XP/hour gap between weapons, down from 7.3×</span></div>
     <div class="stat"><b>46</b><span>documents read to settle one fight, down from 1,591</span></div>
-    <div class="stat"><b>306/306</b><span>tests pass, plus clean typecheck and build</span></div>
+    <div class="stat"><b>312/312</b><span>tests pass, plus clean typecheck and build</span></div>
   </div>
 </header>
 
@@ -341,7 +341,6 @@
         <li><label><input type="checkbox" data-q="commit"><span><b>Commit the work.</b> About 70 files are uncommitted, so what's deployed is ahead of your repo.</span></label></li>
         <li><label><input type="checkbox" data-q="reportui"><span><b>Click through chat reports with a second account.</b> The report menu and admin Reports tab have server tests but have never been clicked in a browser.</span></label></li>
         <li><label><input type="checkbox" data-q="qatester"><span><b>Delete <code>QA Tester</code>.</b> This test character is still in the database and can appear on the XP leaderboard. Remove it in the dashboard at <code>localhost:6791</code>.</span></label></li>
-        <li><label><input type="checkbox" data-q="bossgate"><span><b>Decide on the boss level gate.</b> <code>bossUnlockLevelPerTier</code> still does nothing, because <code>getBossUnlockLevelPerTier</code> is never called (<code>convex/bossData.ts:86</code>). Either enforce it or delete the setting. My last update left this one out.</span></label></li>
         <li><label><input type="checkbox" data-q="hiddentab"><span><b>Test a hunt in a hidden tab for 10+ minutes.</b> The new 45-second heartbeat and 90-second grace window should keep it going, but it hasn't been tried in real Chrome.</span></label></li>
       </ul>
     </div>
@@ -381,8 +380,7 @@
       <span class="act-num">Cleanup</span>
       <h3>Smaller savings and tidying</h3>
       <ul>
-        <li><label><input type="checkbox" data-q="catalog"><span><b>Slim <code>getSkillCatalog</code>.</b> It still reads about 1,850 documents and 500 KB when the skills page opens, now the most expensive call measured.</span></label></li>
-        <li><label><input type="checkbox" data-q="png"><span><b>Compress the background image.</b> <code>magical-forest.png</code> is 746 KB, more than all the initial JS gzipped.</span></label></li>
+        <li><label><input type="checkbox" data-q="catalog"><span><b>Trim the skills page catalog.</b> It still loads about 620 KB and 1,850 documents on open. Next step: load recipes per skill.</span></label></li>
         <li><label><input type="checkbox" data-q="css"><span><b>Minify the CSS.</b> The built stylesheet is 115 KB and still unminified (18 KB gzipped, so this is a small win).</span></label></li>
         <li><label><input type="checkbox" data-q="memo"><span><b>Reduce game shell re-renders.</b> No component uses <code>memo</code> yet.</span></label></li>
         <li><label><input type="checkbox" data-q="dead"><span><b>Delete the remaining dead code.</b> <code>attemptAttack</code> and its unused hook, plus <code>getMonster</code>, <code>pickRandomMonster</code>, <code>getScaledMonster</code> and <code>pickAndScaleMonster</code> in <code>convex/seed.ts</code>.</span></label></li>
@@ -400,6 +398,12 @@
     <ul class="done-list">
       <li>New characters are plain players, not admins</li>
       <li>Wisdom now scales ability power</li>
+      <li>Boss needs every tier monster defeated, plus the key</li>
+      <li>Background image converted to WebP (746 KB to 187 KB)</li>
+      <li>Skill catalog sends each item once and returns all 338 recipes (the old cap dropped 38)</li>
+      <li>Inventory and rebirth screens load a light catalog (621 KB to 58 KB)</li>
+      <li>Player record split: gold, XP and HP no longer re-run the stats queries on every batch</li>
+      <li>Skills page loads one skill and tier, with the tier in the URL and the last view remembered</li>
       <li>Live events still apply after 100 past events</li>
       <li>Rebirth forfeits guild gold deposits and is blocked by open buy orders</li>
       <li>Stat shop removed</li>
@@ -473,7 +477,7 @@
     <div class="card"><span class="status done">✓ Removed</span><h3>🛒 Stat shop</h3><p>Gone, as you asked. Three upgrade rows stay because hidden spots use them as stat rewards.</p></div>
     <div class="card"><span class="status done">✓ Open</span><h3>🔁 Rebirth rewards</h3><p>The five milestones apply and show on the rebirth page: +10% gold, +15% XP, +20% gold, +5% all stats and +10% crit.</p></div>
     <div class="card"><span class="status done">✓ Open</span><h3>📝 Ability text</h3><p>Stuns, poison and chain hits were never implemented, so they came out of the descriptions. Heals now restore a percentage of max HP.</p></div>
-    <div class="card"><span class="status open">✗ Still locked</span><h3>🚪 Boss level gate</h3><p>The setting still has no effect. Its reader exists, but nothing calls it.</p><p class="where"><code>convex/bossData.ts:86</code></p></div>
+    <div class="card"><span class="status done">✓ Open</span><h3>🚪 Boss gate</h3><p>A boss needs every monster on its tier defeated, plus the boss key. The old character-level setting is removed.</p></div>
   </div>
 </section>
 
@@ -648,7 +652,7 @@
     <div class="card">
       <h3>Explored</h3>
       <ul class="plain">
-        <li>306 tests, typecheck and production build, all passing</li>
+        <li>312 tests, typecheck and production build, all passing</li>
         <li>A real hunt in the browser: fights, loot and XP all updated, with no console errors</li>
         <li>Migration results read back from the live database</li>
         <li>Document reads measured in the test harness</li>

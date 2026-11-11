@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -27,7 +28,7 @@ async function setupPlayer(
   gold = 10_000
 ) {
   return await base.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: `arena-${subject}`,
       name,
       authSubject: subject,
@@ -73,11 +74,10 @@ async function goldOf(
   base: ReturnType<typeof convexTest>,
   playerId: Id<"players">
 ): Promise<number> {
-  const row: Doc<"players"> | null = await base.run((ctx) =>
-    ctx.db.get(playerId)
+  const row: Awaited<ReturnType<typeof playerWithRecords>> = await base.run((ctx) => playerWithRecords(ctx, playerId)
   );
   if (!row) throw new Error("Missing test player");
-  return row.gold;
+  return row.gold ?? 0;
 }
 
 /** Both fighters ready up and the countdown is ticked through to active. */
@@ -626,7 +626,7 @@ test("quick match widens the level band until distant fighters pair", async () =
 
 test("quick match skips tables you cannot afford", async () => {
   const { base, t, t2, fighter1, fighter2 } = await setup();
-  await base.run((ctx) => ctx.db.patch(fighter1, { gold: 50_000 }));
+  await base.run((ctx) => patchPlayerWithRecords(ctx, fighter1, { gold: 50_000 }));
   await t.mutation(api.arena.createLobby, {
     playerId: fighter1,
     visibility: "general",

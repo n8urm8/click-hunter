@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { internal } from "./_generated/api";
@@ -76,7 +77,7 @@ test("live spawn/apply/accept/status/cleanup round trip", async () => {
 
   // Direct edits refuse real players but allow sim players.
   const realId = await t.run((ctx) =>
-    ctx.db.insert("players", {
+    insertPlayerWithRecords(ctx, {
       anonymousId: "real-player",
       name: "Real",
       str: 1,

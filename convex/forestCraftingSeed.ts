@@ -37,7 +37,7 @@ type SeedItem = {
   craftingSkillId?: string;
   craftingTier?: number;
   effectType?: string;
-  effectStat?: "str" | "dex" | "int" | "luk" | "con";
+  effectStat?: "str" | "dex" | "int" | "luk" | "con" | "agi";
   effectAmount?: number;
   effectDurationMs?: number;
   effectScope?: "all" | "gathering" | "crafting";
@@ -107,18 +107,20 @@ type WeaponSpec = {
 };
 
 /**
- * Staff raw damage is deliberately below every other weapon class, because
- * casters get a starter spell and scale through abilities. Exported so the
- * seed and the staff-rebalance migration cannot drift apart.
+ * Staff raw damage, tuned with the agility rebalance alongside the caster's
+ * starter spell. Exported so the seed and the staff migrations cannot drift
+ * apart.
  */
-export const STAFF_BASE_DAMAGE_PER_TIER = 9;
-export const STARTER_STAFF_BASE_DAMAGE = 3.75;
+export const STAFF_BASE_DAMAGE_PER_TIER = 10.5;
+export const STARTER_STAFF_BASE_DAMAGE = 4.375;
 
 const WEAPON_SPECS: Record<string, WeaponSpec> = {
-  sword: { damage: 10, speed: 1.0, scaling: "str" },
-  dagger: { damage: 6, speed: 1.6, scaling: "dex" },
+  // Tuned with the agility split (70% damage stat / 15% AGI / 15% CON) so
+  // every weapon type reaches stat level 100 in about the same hunting time.
+  sword: { damage: 12, speed: 1.0, scaling: "str" },
+  dagger: { damage: 7.5, speed: 1.6, scaling: "dex" },
   mace: { damage: 16, speed: 0.65, scaling: "str" },
-  bow: { damage: 8, speed: 1.3, scaling: "dex" },
+  bow: { damage: 9, speed: 1.3, scaling: "dex" },
   // Staves are intentionally the weakest raw weapon: the caster kit starts
   // with an arcane bolt and scales through abilities rather than swings.
   staff: { damage: STAFF_BASE_DAMAGE_PER_TIER, speed: 0.8, scaling: "int", magical: true },
@@ -127,10 +129,11 @@ const WEAPON_SPECS: Record<string, WeaponSpec> = {
 type ArmorSpec = { defense: number; penalty: number };
 
 const HEAVY_ARMOR: Record<string, ArmorSpec> = {
-  helm: { defense: 4, penalty: 0.04 },
-  mail: { defense: 6, penalty: 0.08 },
-  greaves: { defense: 5, penalty: 0.06 },
-  boots: { defense: 3, penalty: 0.02 },
+  // A full heavy set slows attacks by 10%.
+  helm: { defense: 4, penalty: 0.02 },
+  mail: { defense: 6, penalty: 0.04 },
+  greaves: { defense: 5, penalty: 0.03 },
+  boots: { defense: 3, penalty: 0.01 },
 };
 
 const LIGHT_ARMOR: Record<string, number> = {
@@ -439,7 +442,7 @@ const FORGING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
     heavyArmorItem(`${prefix}-helm`, `${material} Helm`, "forging-head", tier, "head", "con", "helm"),
     heavyArmorItem(`${prefix}-mail`, `${material} Mail`, "forging-chest", tier, "chest", "con", "mail"),
     heavyArmorItem(`${prefix}-greaves`, `${material} Greaves`, "forging-legs", tier, "legs", "str", "greaves"),
-    heavyArmorItem(`${prefix}-boots`, `${material} Boots`, "forging-feet", tier, "feet", "dex", "boots"),
+    heavyArmorItem(`${prefix}-boots`, `${material} Boots`, "forging-feet", tier, "feet", "agi", "boots"),
   ];
 });
 
@@ -476,7 +479,7 @@ const WOODWORKING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
     lightArmorItem(`${prefix}-hood`, `${material} Hood`, "woodworking-head", tier, "head", "luk", "hood"),
     lightArmorItem(`${prefix}-vest`, `${material} Vest`, "woodworking-chest", tier, "chest", "con", "vest"),
     lightArmorItem(`${prefix}-leggings`, `${material} Leggings`, "woodworking-legs", tier, "legs", "dex", "leggings"),
-    lightArmorItem(`${prefix}-boots`, `${material} Boots`, "woodworking-feet", tier, "feet", "dex", "boots"),
+    lightArmorItem(`${prefix}-boots`, `${material} Boots`, "woodworking-feet", tier, "feet", "agi", "boots"),
   ];
 });
 
@@ -795,7 +798,7 @@ const STARTER_ITEMS: SeedItem[] = [
     effectStat: "str",
     effectAmount: 1,
     augmentSlots: 0,
-    baseDamage: 4,
+    baseDamage: 5,
     attackSpeed: 1.0,
     damageStat: "str",
     damageType: "physical",
@@ -814,7 +817,7 @@ const STARTER_ITEMS: SeedItem[] = [
     effectStat: "dex",
     effectAmount: 1,
     augmentSlots: 0,
-    baseDamage: 3,
+    baseDamage: 3.75,
     attackSpeed: 1.6,
     damageStat: "dex",
     damageType: "physical",
@@ -852,7 +855,7 @@ const STARTER_ITEMS: SeedItem[] = [
     effectStat: "dex",
     effectAmount: 1,
     augmentSlots: 0,
-    baseDamage: 4,
+    baseDamage: 4.5,
     attackSpeed: 1.3,
     damageStat: "dex",
     damageType: "physical",
@@ -891,7 +894,7 @@ const STARTER_ITEMS: SeedItem[] = [
     effectAmount: 1,
     augmentSlots: 0,
     baseDefense: 3,
-    speedPenalty: 0.08,
+    speedPenalty: 0.04,
   },
   {
     itemId: "worn-vest",
@@ -1130,7 +1133,7 @@ const TALISMAN_ITEMS: SeedItem[] = [
   ),
 ];
 
-const ALL_ITEMS = [
+export const ALL_ITEMS = [
   ...RESOURCE_ITEMS,
   ...OUTPUT_ITEMS,
   ...STARTER_ITEMS,

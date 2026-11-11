@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import schema from "./schema";
@@ -60,7 +61,7 @@ test("triangular gaps grow 3, 6, 9… and flat keeps the legacy interval", () =>
 test("schedule prefers the gap step and falls back to the legacy interval", async () => {
   const t = convexTest(schema, modules).withIdentity({ subject: "points-user" });
   const playerId = await t.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "points", name: "Pointer", authSubject: "points-user",
       str: 40, dex: 30, int: 20, luk: 10, con: 10,
       gold: 0, totalExperience: 0, rebirthCount: 0,
@@ -76,14 +77,17 @@ test("schedule prefers the gap step and falls back to the legacy interval", asyn
     }
     return playerId;
   });
-  // No balance rows: legacy flat pacing (interval 5, base 5 + 3 skills = 8).
+  // No balance rows: legacy flat pacing (interval 5, base 6 starting stats
+  // including agility + 3 skills = 9; level 115 counts wisdom and agility).
   const legacy = await t.run(async (ctx) => {
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing player");
     return getPassivePoints(ctx, player);
   });
   expect(legacy.schedule).toEqual({ mode: "flat", interval: 5 });
-  expect(legacy.earned).toBe(Math.floor(110 / 5) - Math.floor(8 / 5));
+  expect(legacy.level).toBe(115);
+  expect(legacy.baseLevel).toBe(9);
+  expect(legacy.earned).toBe(Math.floor(115 / 5) - Math.floor(9 / 5));
 
   await t.run(async (ctx) => {
     await ctx.db.insert("gameBalance", {
@@ -91,7 +95,7 @@ test("schedule prefers the gap step and falls back to the legacy interval", asyn
     });
   });
   const triangular = await t.run(async (ctx) => {
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing player");
     return getPassivePoints(ctx, player);
   });

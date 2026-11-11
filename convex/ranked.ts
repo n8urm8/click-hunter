@@ -1,12 +1,16 @@
 import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
+import {
+  patchPlayerProgress,
+  readPlayerProgressOrNull,
+} from "./playerProgress";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { calculateCombatLevel } from "./characterLevel";
 import { readBalanceMap } from "./balance";
 import { resolvePvpEquipment, snapshotPvpGear } from "./pvpLoadout";
-import { rollHit, snapshotFighter } from "./pvpSnapshot";
+import { duelFighter, snapshotFighter } from "./pvpSnapshot";
 import {
   abilityWeaponFrom,
   buildAbilityCombatState,
@@ -15,7 +19,6 @@ import {
 import {
   resolveDuelVerdict,
   runRoundExchange,
-  type RoundFighter,
   type RoundSide,
 } from "./roundCombat";
 
@@ -222,38 +225,22 @@ function simulateBout(
   const log: BoutRound[] = [];
   // Both corners fight through the shared round exchange, the same one the
   // arena lobby uses, so a ranked bout resolves like the lobby fight would.
-  const attacker: RoundFighter = {
+  const attacker = duelFighter({
     id: "attacker",
+    self: attackerSnapshot,
+    opponent: defenderSnapshot,
     hp: attackerSnapshot.maxHp,
-    maxHp: attackerSnapshot.maxHp,
-    alive: true,
-    defense: attackerSnapshot.defense,
-    magicalDefense: attackerSnapshot.magicalDefense,
+    roundIntervalMs,
     ...(attackerAbilityState ? { abilityState: attackerAbilityState } : {}),
-    planSwing: (opponents) => {
-      const raw = rollHit(attackerSnapshot, defenderSnapshot);
-      return [
-        { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
-      ];
-    },
-    reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
-  };
-  const defender: RoundFighter = {
+  });
+  const defender = duelFighter({
     id: "defender",
+    self: defenderSnapshot,
+    opponent: attackerSnapshot,
     hp: defenderSnapshot.maxHp,
-    maxHp: defenderSnapshot.maxHp,
-    alive: true,
-    defense: defenderSnapshot.defense,
-    magicalDefense: defenderSnapshot.magicalDefense,
+    roundIntervalMs,
     ...(defenderAbilityState ? { abilityState: defenderAbilityState } : {}),
-    planSwing: (opponents) => {
-      const raw = rollHit(defenderSnapshot, attackerSnapshot);
-      return [
-        { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
-      ];
-    },
-    reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
-  };
+  });
   const sides: RoundSide[] = [
     { fighters: [attacker] },
     { fighters: [defender] },
@@ -387,15 +374,13 @@ export const fightRankedBattle = mutation({
         ctx,
         playerId,
         abilityWeaponFrom(attackerEquipment.weapon),
-        { unit: "rounds", roundIntervalMs: RANKED_ROUND_INTERVAL_MS },
-        { includeAlly: true }
+        { unit: "rounds", roundIntervalMs: RANKED_ROUND_INTERVAL_MS }
       ),
       buildAbilityCombatState(
         ctx,
         defenderId,
         abilityWeaponFrom(defenderEquipment.weapon),
-        { unit: "rounds", roundIntervalMs: RANKED_ROUND_INTERVAL_MS },
-        { includeAlly: true }
+        { unit: "rounds", roundIntervalMs: RANKED_ROUND_INTERVAL_MS }
       ),
     ]);
     const bout = simulateBout(
@@ -521,12 +506,9 @@ export const settleRankedWeek = internalMutation({
           Math.min(index, config.weeklyRewards.length - 1)
         ] ?? 0;
       if (rewardGold > 0) {
-        const player = await ctx.db.get(fighter.playerId);
-        if (player) {
-          await ctx.db.patch(fighter.playerId, {
-            gold: player.gold + rewardGold,
-            lastUpdated: now,
-          });
+        const progress = await readPlayerProgressOrNull(ctx, fighter.playerId);
+        if (progress) {
+          await patchPlayerProgress(ctx, progress, { gold: progress.gold + rewardGold });
         }
       }
       standings.push({

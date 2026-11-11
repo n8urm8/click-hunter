@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, expect, test, vi } from "vitest";
@@ -21,7 +22,7 @@ async function setup() {
   rateLimiterTest.register(base);
   const t = base.withIdentity({ subject: SUBJECT });
   const ids = await t.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "infusion", name: "Infuser", authSubject: SUBJECT,
       str: 5, dex: 5, int: 5, luk: 5, con: 10,
       gold: 0, totalExperience: 0, rebirthCount: 0,
@@ -167,7 +168,7 @@ test("enchanting consumes tier-matched essence and raises base damage", async ()
     await ctx.db.insert("playerItems", {
       playerId, itemId: essence, quantity: 100, acquiredAt: 0, updatedAt: 0,
     });
-    await ctx.db.patch(playerId, { gold: 100_000 });
+    await patchPlayerWithRecords(ctx, playerId, { gold: 100_000 });
   });
   vi.spyOn(Math, "random").mockReturnValue(0);
   const result = await t.mutation(api.infusion.enchantEquipment, {
@@ -197,7 +198,7 @@ test("failed enchants burn essence but grant half XP", async () => {
     await ctx.db.insert("playerItems", {
       playerId, itemId: essence, quantity: 100, acquiredAt: 0, updatedAt: 0,
     });
-    await ctx.db.patch(playerId, { gold: 100_000 });
+    await patchPlayerWithRecords(ctx, playerId, { gold: 100_000 });
   });
   vi.spyOn(Math, "random").mockReturnValue(0.999);
   const result = await t.mutation(api.infusion.enchantEquipment, {
@@ -349,7 +350,7 @@ test("elemental ward mitigates matching-element hits", async () => {
   });
   const { simulateRegularBattle } = await import("./combat");
   const plain = await t.run(async (ctx) => {
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing player");
     return simulateRegularBattle(ctx, player, 1);
   });
@@ -361,7 +362,7 @@ test("elemental ward mitigates matching-element hits", async () => {
     });
   });
   const warded = await t.run(async (ctx) => {
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing player");
     return simulateRegularBattle(ctx, player, 1);
   });

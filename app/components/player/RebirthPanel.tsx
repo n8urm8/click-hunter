@@ -42,6 +42,7 @@ const STAT_LABELS: Record<RebirthStatKey, string> = {
   luk: "LUK",
   con: "CON",
   wis: "WIS",
+  agi: "AGI",
 };
 
 function ProgressRow({
@@ -124,7 +125,7 @@ function RebirthMilestones({ rebirthCount }: { rebirthCount: number }) {
 export function RebirthPanel({ player }: RebirthPanelProps) {
   const canRebirthQuery = useCanRebirth(player._id);
   const rebirthMutation = useRebirth();
-  const skillPanel = useSkillPanel(player._id);
+  const skillPanel = useSkillPanel(player._id, "augmentations");
   const requirementQuery = useQuery({
     ...convexQuery(api.seed.getGameBalance, {
       key: "rebirthStatLevelRequirement",

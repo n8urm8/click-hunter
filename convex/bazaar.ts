@@ -29,6 +29,7 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
+import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 import {
   canGrantItemToInventory,
   grantItemToInventory,
@@ -455,12 +456,8 @@ async function closeFilledBuyOrder(
   args: { quantity: number; escrowAfter: number; now: number; goldSpent: number }
 ) {
   if (args.escrowAfter > 0) {
-    const buyer = await ctx.db.get(order.playerId);
-    if (!buyer) throw new Error("Buyer not found");
-    await ctx.db.patch(order.playerId, {
-      gold: buyer.gold + args.escrowAfter,
-      lastUpdated: args.now,
-    });
+    const buyer = await readPlayerProgress(ctx, order.playerId);
+    await patchPlayerProgress(ctx, buyer, { gold: buyer.gold + args.escrowAfter });
   }
   await ctx.db.patch(order._id, {
     quantity: args.quantity,
@@ -596,12 +593,8 @@ async function matchSellAgainstBuys(
   }
 
   if (goldEarned > 0) {
-    const seller = await ctx.db.get(args.sellerId);
-    if (!seller) throw new Error("Seller not found");
-    await ctx.db.patch(args.sellerId, {
-      gold: seller.gold + goldEarned,
-      lastUpdated: args.now,
-    });
+    const seller = await readPlayerProgress(ctx, args.sellerId);
+    await patchPlayerProgress(ctx, seller, { gold: seller.gold + goldEarned });
   }
 
   if (remaining < args.quantity) {
@@ -677,12 +670,8 @@ async function matchBuyAgainstSells(
     );
 
     const tax = calculateTradeTax(total, args.config.taxPercent);
-    const seller = await ctx.db.get(maker.playerId);
-    if (!seller) throw new Error("Seller not found");
-    await ctx.db.patch(maker.playerId, {
-      gold: seller.gold + (total - tax),
-      lastUpdated: args.now,
-    });
+    const seller = await readPlayerProgress(ctx, maker.playerId);
+    await patchPlayerProgress(ctx, seller, { gold: seller.gold + (total - tax) });
 
     escrowRemaining -= total;
     goldSpent += total;
@@ -823,7 +812,8 @@ export const placeBuyOrder = mutation({
 
     const total = unitPrice * quantity;
     validateTradeTotal(total);
-    if (player.gold < total) {
+    const progress = await readPlayerProgress(ctx, playerId);
+    if (progress.gold < total) {
       throw new Error("Insufficient gold");
     }
 
@@ -839,10 +829,7 @@ export const placeBuyOrder = mutation({
       );
     }
 
-    await ctx.db.patch(playerId, {
-      gold: player.gold - total,
-      lastUpdated: now,
-    });
+    await patchPlayerProgress(ctx, progress, { gold: progress.gold - total });
 
     const orderId = await ctx.db.insert("marketOrders", {
       playerId,
@@ -908,8 +895,7 @@ export const fulfillOrder = mutation({
 
     if (order.side === "sell") {
       // The caller is buying from a sell order.
-      const buyer = await ctx.db.get(playerId);
-      if (!buyer) throw new Error("Player not found");
+      const buyer = await readPlayerProgress(ctx, playerId);
       if (buyer.gold < total) throw new Error("Insufficient gold");
       const hasRoom = await canGrantItemToInventory(
         ctx,
@@ -922,16 +908,9 @@ export const fulfillOrder = mutation({
       await deliverFromSellOrder(ctx, order, item, quantity, playerId, now);
 
       const tax = calculateTradeTax(total, config.taxPercent);
-      const seller = await ctx.db.get(order.playerId);
-      if (!seller) throw new Error("Seller not found");
-      await ctx.db.patch(order.playerId, {
-        gold: seller.gold + (total - tax),
-        lastUpdated: now,
-      });
-      await ctx.db.patch(playerId, {
-        gold: buyer.gold - total,
-        lastUpdated: now,
-      });
+      const seller = await readPlayerProgress(ctx, order.playerId);
+      await patchPlayerProgress(ctx, seller, { gold: seller.gold + (total - tax) });
+      await patchPlayerProgress(ctx, buyer, { gold: buyer.gold - total });
 
       const remaining = order.quantity - quantity;
       await ctx.db.patch(orderId, {
@@ -997,12 +976,8 @@ export const fulfillOrder = mutation({
     });
 
     const tax = calculateTradeTax(total, config.taxPercent);
-    const seller = await ctx.db.get(playerId);
-    if (!seller) throw new Error("Player not found");
-    await ctx.db.patch(playerId, {
-      gold: seller.gold + (total - tax),
-      lastUpdated: now,
-    });
+    const seller = await readPlayerProgress(ctx, playerId);
+    await patchPlayerProgress(ctx, seller, { gold: seller.gold + (total - tax) });
 
     const remaining = order.quantity - quantity;
     const escrowAfter = (order.escrowedGold ?? 0) - total;
@@ -1081,11 +1056,9 @@ export const cancelOrder = mutation({
         now,
       });
     } else {
-      const player = await ctx.db.get(playerId);
-      if (!player) throw new Error("Player not found");
-      await ctx.db.patch(playerId, {
-        gold: player.gold + (order.escrowedGold ?? 0),
-        lastUpdated: now,
+      const progress = await readPlayerProgress(ctx, playerId);
+      await patchPlayerProgress(ctx, progress, {
+        gold: progress.gold + (order.escrowedGold ?? 0),
       });
     }
 

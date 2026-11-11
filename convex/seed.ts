@@ -11,14 +11,7 @@ import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { requireAdmin } from "./adminAuth";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
-import {
-  DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
-  bossElementForTier,
-  ensureBossForTier,
-  getTierScale,
-  getTierScaleMultiplier,
-  scaleBossStat,
-} from "./bossData";
+import { ensureBossForTier, readScaledBoss } from "./bossData";
 import { DEFAULT_MONSTER_POWER_MULTIPLIER } from "./combat";
 import { combatZoneValidator, monstersInZone } from "./zones";
 import {
@@ -44,6 +37,7 @@ import { SIM_LIVE_BALANCE_DEFAULTS } from "./simLive";
 import { PVP_ARENA_BALANCE_DEFAULTS } from "./arena";
 import { RANKED_BALANCE_DEFAULTS } from "./ranked";
 import { calculateCombatLevel } from "./characterLevel";
+import { deletePlayerSplitRows, insertPlayerProgress } from "./playerProgress";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -119,7 +113,6 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
     { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
-    { key: "bossUnlockLevelPerTier", value: DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER, description: "Character levels required per boss tier (tier multiplied by this value)" },
     { key: "maxTier",              value: 20,                           description: "Maximum tier available to fight" },
     { key: "rebirthThresholds",    value: [5, 10, 15, 21, 28, 36, 45], description: "Tier thresholds required for each rebirth" },
     { key: "rebirthStatLevelRequirement", value: 99, description: "Stat or skill level required in at least one stat or skill to rebirth" },
@@ -751,25 +744,7 @@ export const getScaledBoss = query({
       throw new Error("Player not found");
     }
 
-    const boss = await ctx.db
-      .query("bosses")
-      .withIndex("by_tier", (q) => q.eq("tier", args.tier))
-      .first();
-    if (!boss) return null;
-
-    const mult = boss.statsTierScaled
-      ? 1
-      : getTierScale(args.tier, await getTierScaleMultiplier(ctx));
-
-    return {
-      ...boss,
-      element: bossElementForTier(args.tier),
-      str: scaleBossStat(boss.str, mult),
-      dex: scaleBossStat(boss.dex, mult),
-      int: scaleBossStat(boss.int, mult),
-      luk: scaleBossStat(boss.luk, mult),
-      con: scaleBossStat(boss.con, mult),
-    };
+    return await readScaledBoss(ctx, args.tier);
   },
 });
 
@@ -1256,6 +1231,7 @@ export const seedBazaarOrders = mutation({
       for (const order of orders) {
         await ctx.db.delete(order._id);
       }
+      await deletePlayerSplitRows(ctx, player._id);
       await ctx.db.delete(player._id);
       resetTraders += 1;
     }
@@ -1317,6 +1293,7 @@ export const seedBazaarOrders = mutation({
     let buyOrders = 0;
     for (let start = 0; start < specs.length; start += config.maxOpenOrders) {
       const slice = specs.slice(start, start + config.maxOpenOrders);
+      const traderGold = 100 + Math.floor(random() * 400);
       const traderId = await ctx.db.insert("players", {
         anonymousId: `${BAZAAR_SEED_TRADER_PREFIX}${traders}`,
         name: seedTraderName(traders),
@@ -1325,9 +1302,6 @@ export const seedBazaarOrders = mutation({
         int: 10,
         luk: 10,
         con: 10,
-        statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
-        gold: 100 + Math.floor(random() * 400),
-        totalExperience: 0,
         rebirthCount: 0,
         rebirthTierThreshold,
         currentTier: 1,
@@ -1336,6 +1310,12 @@ export const seedBazaarOrders = mutation({
         autoStartFightEnabled: false,
         createdAt: now,
         lastUpdated: now,
+      });
+      await insertPlayerProgress(ctx, traderId, {
+        gold: traderGold,
+        totalExperience: 0,
+        statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+        updatedAt: now,
       });
       traders += 1;
 
@@ -1459,6 +1439,7 @@ export const seedArenaLobbies = internalMutation({
       }
       for (const player of await ctx.db.query("players").collect()) {
         if (sparIds.has(player._id)) {
+          await deletePlayerSplitRows(ctx, player._id);
           await ctx.db.delete(player._id);
           resetBots += 1;
         }
@@ -1481,23 +1462,25 @@ export const seedArenaLobbies = internalMutation({
     ];
     const ids: Id<"players">[] = [];
     for (const [index, bot] of bots.entries()) {
-      ids.push(
-        await ctx.db.insert("players", {
-          anonymousId: `${ARENA_SPAR_PREFIX}${index}`,
-          name: bot.name,
-          ...bot.stats,
-          gold: Math.max(0, 5000 - bot.spentStakes),
-          totalExperience: 0,
-          rebirthCount: 0,
-          rebirthTierThreshold: 5,
-          currentTier: 1,
-          maxTierReached: 1,
-          autoAttackEnabled: true,
-          autoStartFightEnabled: false,
-          createdAt: now,
-          lastUpdated: now,
-        })
-      );
+      const botId = await ctx.db.insert("players", {
+        anonymousId: `${ARENA_SPAR_PREFIX}${index}`,
+        name: bot.name,
+        ...bot.stats,
+        rebirthCount: 0,
+        rebirthTierThreshold: 5,
+        currentTier: 1,
+        maxTierReached: 1,
+        autoAttackEnabled: true,
+        autoStartFightEnabled: false,
+        createdAt: now,
+        lastUpdated: now,
+      });
+      await insertPlayerProgress(ctx, botId, {
+        gold: Math.max(0, 5000 - bot.spentStakes),
+        totalExperience: 0,
+        updatedAt: now,
+      });
+      ids.push(botId);
     }
     const bot = (index: number) => ({
       id: ids[index],
@@ -1720,6 +1703,7 @@ export const seedRankedLeague = internalMutation({
       }
       for (const player of await ctx.db.query("players").collect()) {
         if (sparIds.has(player._id)) {
+          await deletePlayerSplitRows(ctx, player._id);
           await ctx.db.delete(player._id);
           resetBots += 1;
         }
@@ -1748,8 +1732,6 @@ export const seedRankedLeague = internalMutation({
         anonymousId: `${RANKED_SPAR_PREFIX}${index}`,
         name: bot.name,
         ...bot.stats,
-        gold: 1000,
-        totalExperience: 0,
         rebirthCount: 0,
         rebirthTierThreshold: 5,
         currentTier: 1,
@@ -1758,6 +1740,11 @@ export const seedRankedLeague = internalMutation({
         autoStartFightEnabled: false,
         createdAt: now,
         lastUpdated: now,
+      });
+      await insertPlayerProgress(ctx, playerId, {
+        gold: 1000,
+        totalExperience: 0,
+        updatedAt: now,
       });
       await ctx.db.insert("rankedFighters", {
         playerId,

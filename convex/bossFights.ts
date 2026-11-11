@@ -1,11 +1,11 @@
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { requirePlayer, requirePlayerOwner } from "./playerAuth";
 import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { components } from "./_generated/api";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import type { Doc, Id } from "./_generated/dataModel";
-import { readPlayerCombatProfile } from "./combat";
+import { readPlayerCombatProfile, type PlayerCombatProfile } from "./combat";
 import { rollAttackHit, rollPowerHit } from "./hitRoll";
 import {
   abilityCastsLog,
@@ -13,19 +13,28 @@ import {
   awardAbilityWisdomXp,
   buildAbilityCombatState,
   castDueAbilities,
+  damageWithBuffs,
+  mitigateWithBuffs,
   nextAbilityAt,
 } from "./abilityCombat";
-import { resolveCurrentHp, readHpRegenBalance, writePlayerHp } from "./playerHp";
+import {
+  readHpRegenBalance,
+  readPlayerHpOrNull,
+  resolveCurrentHp,
+  writePlayerHp,
+} from "./playerHp";
 import { tickEquippedConsumables } from "./consumableSlots";
 import { settleCombatFight } from "./loot";
 import { consumeBossKey } from "./infusion";
+import { bossElementForTier, readScaledBoss } from "./bossData";
 import {
-  getTierScale,
-  getTierScaleMultiplier,
-  bossElementForTier,
-  scaleBossStat,
-} from "./bossData";
+  bossAttackSpeed,
+  bossTierDefense,
+  monsterBaseHealth,
+  monsterPhysicalAttack,
+} from "./monsterStats";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
+import { getTierClearStatus } from "./tierClears";
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {});
 
@@ -76,81 +85,82 @@ async function settleBossFight(
   return settlement;
 }
 
-async function getScaledBoss(ctx: MutationCtx, tier: number) {
-  const boss = await ctx.db
-    .query("bosses")
-    .withIndex("by_tier", (q) => q.eq("tier", tier))
-    .first();
-  if (!boss) return null;
-  const mult = boss.statsTierScaled
-    ? 1
-    : getTierScale(tier, await getTierScaleMultiplier(ctx));
-  return {
-    ...boss,
-    str: scaleBossStat(boss.str, mult),
-    dex: scaleBossStat(boss.dex, mult),
-    int: scaleBossStat(boss.int, mult),
-    luk: scaleBossStat(boss.luk, mult),
-    con: scaleBossStat(boss.con, mult),
-  };
-}
-
 function monsterDerivedStats(boss: { str: number; dex: number; con: number; int: number }) {
-  // Mirrors calculateDerivedStats for the client HP bar.
   return {
-    maxHp: Math.max(1, Math.round(boss.con * 10 + boss.int * 2)),
-    attack: Math.max(1, boss.str * 1.2 + boss.dex * 0.5),
-    attackSpeed: Math.max(0.5, (boss.dex - 10) * 0.1 + 1.0),
+    maxHp: Math.max(1, Math.round(monsterBaseHealth(boss))),
+    attack: monsterPhysicalAttack(boss),
+    attackSpeed: bossAttackSpeed(boss),
   };
 }
 
-function rollMonsterHit(monsterAttack: number, ward = 0) {
-  return rollPowerHit({ power: monsterAttack, mitigation: ward, minimum: 0 });
+type BossPlayerCombat = NonNullable<BossSession["playerCombat"]>;
+
+/** Freeze the numbers a boss fight uses from the player's combat profile. */
+function bossPlayerCombat(profile: PlayerCombatProfile): BossPlayerCombat {
+  const { combatStats } = profile;
+  return {
+    attack: combatStats.attack,
+    critChance: combatStats.critChance,
+    critMultiplier: combatStats.critDamageMultiplier,
+    strikeCooldownMs: Math.ceil(1000 / combatStats.attackSpeed),
+    defense: Math.max(0, combatStats.defense),
+    regenPerSecond:
+      profile.conRegenPerSecond + (profile.boosts?.regenPerSecond ?? 0),
+  };
+}
+
+/**
+ * The session's frozen combat numbers. Sessions opened before snapshots
+ * existed fall back to the live profile.
+ */
+async function sessionPlayerCombat(
+  ctx: MutationCtx,
+  session: BossSession,
+  now: number
+): Promise<BossPlayerCombat> {
+  if (session.playerCombat) return session.playerCombat;
+  const player = await ctx.db.get(session.playerId);
+  if (!player) throw new Error("Player not found");
+  return bossPlayerCombat(await readPlayerCombatProfile(ctx, player, { now }));
+}
+
+function bossSwingIntervalMs(monsterAttackSpeed: number) {
+  return Math.max(500, 1000 / monsterAttackSpeed);
 }
 
 export interface BossTimelineResult {
   playerHp: number;
   monsterHp: number;
   abilityCasts: Array<{ abilityId: string; level: number; casts: number }>;
+  /** How far the timeline was resolved; persist as `lastStrikeAt`. */
+  advancedTo: number;
+  /** When the boss swings next; persist as `nextMonsterHitAt`. */
+  nextMonsterHitAt: number;
+  /** Monster swings and ability casts resolved. Zero means only regen ran. */
+  events: number;
 }
 
 /**
  * Advance the boss fight's real-time timeline from `session.lastStrikeAt` to
- * `now`, interleaving monster swings with auto-cast abilities so a lethal
- * ability cast wins the tie against a same-millisecond swing (mirroring the
- * auto-battle resolver). The fast path (no abilities equipped) is unchanged
- * from the original monster-only loop, so its timing stays bit-for-bit.
+ * `now` on one event loop: monster swings, auto-cast abilities, and
+ * continuous regen between them. A lethal ability cast wins the tie against a
+ * same-millisecond swing (mirroring the auto-battle resolver).
+ *
+ * The boss's swing clock lives on the session (`nextMonsterHitAt`), so a
+ * player strike never resets it. Swings are mitigated like a raid dragon's:
+ * flat defense and elemental ward off the roll, then defense buffs.
  */
 function advanceBossTimeline(args: {
   session: BossSession;
-  monsterAttackSpeed: number;
-  monsterAttack: number;
+  combat: BossPlayerCombat;
   now: number;
-  regenPerSecond: number;
-  retryMs: number;
 }): BossTimelineResult {
-  const {
-    session,
-    monsterAttackSpeed,
-    monsterAttack,
-    now,
-    regenPerSecond,
-    retryMs,
-  } = args;
-  const intervalMs = Math.max(500, 1000 / monsterAttackSpeed);
+  const { session, combat, now } = args;
+  const intervalMs = bossSwingIntervalMs(session.monsterAttackSpeed);
+  const retryMs = Math.max(250, Math.ceil(intervalMs));
   const from = session.lastStrikeAt;
-  const elapsedMs = Math.max(0, now - from);
-  const cappedHits = Math.min(
-    MAX_MONSTER_HITS_PER_CALL,
-    Math.floor(elapsedMs / intervalMs)
-  );
-  // If the hit cap kicks in (a long AFK gap), stop the ability timeline at the
-  // last applied swing too, so idle time can't free-cast the boss to death.
-  const timelineEnd =
-    cappedHits >= MAX_MONSTER_HITS_PER_CALL
-      ? from + cappedHits * intervalMs
-      : now;
   const maxHp = Math.max(1, session.playerMaxHp);
+  const regenPerSecond = Math.max(0, combat.regenPerSecond);
 
   // Attuned armor augments ward matching-element boss hits.
   const ward =
@@ -159,55 +169,55 @@ function advanceBossTimeline(args: {
     session.monsterWard > 0
       ? session.monsterWard
       : 0;
+  const mitigation = Math.max(0, combat.defense) + ward;
 
-  const state = session.abilityState;
-  if (!state || state.runtimes.length === 0) {
-    let playerHp = session.playerHp;
-    for (let i = 0; i < cappedHits; i += 1) {
-      playerHp -= rollMonsterHit(monsterAttack, ward);
-      if (playerHp <= 0) break;
-    }
-    // CON + heal-over-time regen ticks alongside monster hits so weak bosses
-    // can't grind you down when your build out-regens them.
-    if (playerHp > 0 && regenPerSecond > 0 && elapsedMs > 0) {
-      playerHp = Math.min(maxHp, playerHp + (regenPerSecond * elapsedMs) / 1000);
-    }
-    return {
-      playerHp: Math.max(0, Math.ceil(playerHp)),
-      monsterHp: session.monsterHp,
-      abilityCasts: [],
-    };
-  }
+  let nextHitAt = session.nextMonsterHitAt ?? from + intervalMs;
+  const hitsDue =
+    nextHitAt <= now ? Math.floor((now - nextHitAt) / intervalMs) + 1 : 0;
+  const cappedHits = Math.min(MAX_MONSTER_HITS_PER_CALL, hitsDue);
+  // If the hit cap kicks in (a long AFK gap), stop the timeline at the last
+  // applied swing; the rest resolves on the next call, so idle time can
+  // neither free-cast the boss to death nor skip swings.
+  const timelineEnd =
+    hitsDue > MAX_MONSTER_HITS_PER_CALL
+      ? nextHitAt + (cappedHits - 1) * intervalMs
+      : now;
 
+  const state =
+    session.abilityState && session.abilityState.runtimes.length > 0
+      ? session.abilityState
+      : null;
   let playerHp = session.playerHp;
   let monsterHp = session.monsterHp;
   let cursor = from;
   let hitsDone = 0;
-  let nextHitAt = from + intervalMs;
+  let events = 0;
   const regenTo = (at: number) => {
-    if (regenPerSecond > 0 && at > cursor) {
+    if (at <= cursor) return;
+    if (regenPerSecond > 0) {
       playerHp = Math.min(
         maxHp,
         playerHp + (regenPerSecond * (at - cursor)) / 1000
       );
     }
-    if (at > cursor) cursor = at;
+    cursor = at;
   };
 
-  const castBudget = state.runtimes.reduce((sum, runtime) => {
+  const spanMs = Math.max(0, timelineEnd - from);
+  const castBudget = (state?.runtimes ?? []).reduce((sum, runtime) => {
     if (!Number.isFinite(runtime.cooldown) || runtime.cooldown <= 0) return sum + 1;
-    return sum + Math.ceil(elapsedMs / runtime.cooldown) + 1;
+    return sum + Math.ceil(spanMs / Math.min(runtime.cooldown, retryMs)) + 1;
   }, 0);
   const guardLimit = cappedHits + castBudget + 64;
 
   for (let guard = 0; guard < guardLimit; guard += 1) {
     if (playerHp <= 0 || monsterHp <= 0) break;
-    const abilityAt = nextAbilityAt(state);
+    const abilityAt = state ? nextAbilityAt(state) : null;
     const abilityDue = abilityAt !== null && abilityAt <= timelineEnd;
     const hitDue = hitsDone < cappedHits && nextHitAt <= timelineEnd;
     if (!abilityDue && !hitDue) break;
 
-    if (abilityDue && (!hitDue || abilityAt! <= nextHitAt)) {
+    if (state && abilityDue && (!hitDue || abilityAt! <= nextHitAt)) {
       const at = Math.max(abilityAt!, cursor);
       regenTo(at);
       const outcome = castDueAbilities({
@@ -217,7 +227,10 @@ function advanceBossTimeline(args: {
         playerHp,
         playerMaxHp: maxHp,
         enemyHp: monsterHp,
-        enemyStats: { defense: 0, magicalDefense: 0 },
+        enemyStats: {
+          defense: session.monsterDefense ?? 0,
+          magicalDefense: session.monsterDefense ?? 0,
+        },
         weapon: {
           weaponType: state.weaponType,
           element: state.weaponElement,
@@ -225,25 +238,30 @@ function advanceBossTimeline(args: {
       });
       playerHp = outcome.playerHp;
       monsterHp = outcome.enemyHp;
+      events += outcome.casts;
     } else {
       regenTo(nextHitAt);
-      playerHp -= rollMonsterHit(monsterAttack, ward);
+      const raw = rollPowerHit({
+        power: session.monsterAttack,
+        mitigation,
+        minimum: 0,
+      });
+      playerHp -= state ? mitigateWithBuffs(raw, state.buffs, nextHitAt) : raw;
       hitsDone += 1;
+      events += 1;
       nextHitAt += intervalMs;
     }
   }
 
-  if (playerHp > 0 && regenPerSecond > 0 && timelineEnd > cursor) {
-    playerHp = Math.min(
-      maxHp,
-      playerHp + (regenPerSecond * (timelineEnd - cursor)) / 1000
-    );
-  }
+  if (playerHp > 0) regenTo(timelineEnd);
 
   return {
     playerHp: Math.max(0, Math.ceil(playerHp)),
     monsterHp: Math.max(0, Math.floor(monsterHp)),
-    abilityCasts: abilityCastsLog(state),
+    abilityCasts: state ? abilityCastsLog(state) : [],
+    advancedTo: Math.max(from, timelineEnd),
+    nextMonsterHitAt: nextHitAt,
+    events,
   };
 }
 
@@ -260,6 +278,18 @@ function toClientState(session: BossSession) {
     status: session.status,
   };
 }
+
+/** Monsters still to defeat on a tier before its boss can be challenged. */
+export const getBossRequirements = query({
+  args: {
+    playerId: v.id("players"),
+    tier: v.number(),
+  },
+  handler: async (ctx, { playerId, tier }) => {
+    await requirePlayerOwner(ctx, playerId);
+    return await getTierClearStatus(ctx, playerId, tier);
+  },
+});
 
 /**
  * Open a server-authoritative boss fight. Returns the session the client
@@ -282,6 +312,13 @@ export const startBossFight = mutation({
       throw new Error("That boss tier is not unlocked yet");
     }
 
+    const clears = await getTierClearStatus(ctx, playerId, tier);
+    if (clears.missingNames.length > 0) {
+      throw new Error(
+        `Defeat every monster on Tier ${tier} first (${clears.missingNames.length} left: ${clears.missingNames.join(", ")})`
+      );
+    }
+
     // Manual bosses and the auto-battle queue both pay rewards: never both.
     const [activeTask, queuedTask] = await Promise.all([
       ctx.db
@@ -301,7 +338,7 @@ export const startBossFight = mutation({
       throw new Error("Finish or stop queued tasks before challenging a boss.");
     }
 
-    const boss = await getScaledBoss(ctx, tier);
+    const boss = await readScaledBoss(ctx, tier);
     if (!boss) {
       throw new Error("Boss is not configured for this tier");
     }
@@ -334,8 +371,9 @@ export const startBossFight = mutation({
     const bossElement = bossElementForTier(tier);
     const maxHp = Math.max(1, Math.ceil(combatStats.health));
     const regenBalance = await readHpRegenBalance(ctx);
+    const storedHp = await readPlayerHpOrNull(ctx, playerId);
     const hpState = resolveCurrentHp(
-      player,
+      storedHp,
       maxHp,
       profile.effectiveStats.con,
       regenBalance,
@@ -350,9 +388,9 @@ export const startBossFight = mutation({
       ctx,
       playerId,
       abilityWeaponFrom(profile.weapon),
-      { unit: "ms" },
-      { includeAlly: true }
+      { unit: "ms" }
     );
+    const playerCombat = bossPlayerCombat(profile);
     const sessionId = await ctx.db.insert("bossSessions", {
       playerId,
       bossId: boss.bossId,
@@ -361,6 +399,11 @@ export const startBossFight = mutation({
       monsterMaxHp: monster.maxHp,
       monsterAttack: monster.attack,
       monsterAttackSpeed: monster.attackSpeed,
+      monsterDefense: bossTierDefense(
+        tier,
+        profile.balance.monsterDefensePerTier,
+        profile.balance.bossDefenseMultiplier
+      ),
       monsterElement: bossElement,
       monsterWard: ward[bossElement] ?? 0,
       playerHp: Math.ceil(hpState.currentHp),
@@ -370,6 +413,8 @@ export const startBossFight = mutation({
       strikes: 0,
       startedAt: now,
       lastStrikeAt: now,
+      nextMonsterHitAt: now + bossSwingIntervalMs(monster.attackSpeed),
+      playerCombat,
       ...(abilityState.runtimes.length > 0 ? { abilityState } : {}),
     });
     const session = await ctx.db.get(sessionId);
@@ -392,7 +437,7 @@ export const strikeBoss = mutation({
     sessionId: v.id("bossSessions"),
   },
   handler: async (ctx, { playerId, sessionId }) => {
-    const player = await requirePlayer(ctx, playerId);
+    await requirePlayer(ctx, playerId);
     const session = await ctx.db.get(sessionId);
     if (!session || session.playerId !== playerId) {
       throw new Error("Boss session not found");
@@ -428,14 +473,17 @@ export const strikeBoss = mutation({
     }
 
     const now = Date.now();
-    await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
-    const profile = await readPlayerCombatProfile(ctx, player, { now });
-    const totalRegen =
-      profile.conRegenPerSecond + (profile.boosts?.regenPerSecond ?? 0);
-    const cooldownMs = Math.ceil(1000 / profile.combatStats.attackSpeed);
+    // Stats were frozen when the fight started (consumables included), so
+    // gear swaps and mid-fight consumables don't change the fight.
+    const combat = await sessionPlayerCombat(ctx, session, now);
     const status = await rateLimiter.limit(ctx, "manualAttack", {
       key: playerId,
-      config: { kind: "token bucket", rate: 1, period: cooldownMs, capacity: 1 },
+      config: {
+        kind: "token bucket",
+        rate: 1,
+        period: combat.strikeCooldownMs,
+        capacity: 1,
+      },
     });
     if (!status.ok) {
       return {
@@ -450,14 +498,7 @@ export const strikeBoss = mutation({
 
     // Advance the real-time timeline: monster swings interleaved with
     // auto-cast abilities. Abilities resolve before a same-ms swing.
-    const timeline = advanceBossTimeline({
-      session,
-      monsterAttackSpeed: session.monsterAttackSpeed,
-      monsterAttack: session.monsterAttack,
-      now,
-      regenPerSecond: totalRegen,
-      retryMs: Math.max(250, Math.ceil(1000 / session.monsterAttackSpeed)),
-    });
+    const timeline = advanceBossTimeline({ session, combat, now });
 
     // An auto-cast ability can finish the boss before the strike lands.
     if (timeline.monsterHp <= 0 && timeline.playerHp > 0) {
@@ -506,11 +547,20 @@ export const strikeBoss = mutation({
       };
     }
 
-    const hit = rollAttackHit({
-      attack: profile.combatStats.attack,
-      critChance: profile.combatStats.critChance,
-      critMultiplier: profile.combatStats.critDamageMultiplier,
+    const roll = rollAttackHit({
+      attack: combat.attack,
+      critChance: combat.critChance,
+      critMultiplier: combat.critMultiplier,
     });
+    // Active offense buffs from auto-cast abilities boost the strike, then the
+    // boss's defense comes off. A strike always deals at least 1.
+    const buffed = session.abilityState
+      ? damageWithBuffs(roll.damage, session.abilityState.buffs, now)
+      : roll.damage;
+    const hit = {
+      isCrit: roll.isCrit,
+      damage: Math.max(1, Math.ceil(buffed - (session.monsterDefense ?? 0))),
+    };
     const monsterHp = Math.max(0, timeline.monsterHp - hit.damage);
     if (monsterHp <= 0) {
       const settlement = await settleBossFight(
@@ -544,7 +594,8 @@ export const strikeBoss = mutation({
       monsterHp,
       playerHp: timeline.playerHp,
       strikes: session.strikes + 1,
-      lastStrikeAt: now,
+      lastStrikeAt: timeline.advancedTo,
+      nextMonsterHitAt: timeline.nextMonsterHitAt,
       ...(session.abilityState ? { abilityState: session.abilityState } : {}),
     });
     await writePlayerHp(ctx, playerId, timeline.playerHp, session.playerMaxHp, now);
@@ -594,19 +645,8 @@ export const checkBossFight = mutation({
       };
     }
     const now = Date.now();
-    const player = await requirePlayer(ctx, playerId);
-    await tickEquippedConsumables(ctx, playerId, { kind: "boss" }, now);
-    const regenProfile = await readPlayerCombatProfile(ctx, player, { now });
-    const regenTotal =
-      regenProfile.conRegenPerSecond + (regenProfile.boosts?.regenPerSecond ?? 0);
-    const timeline = advanceBossTimeline({
-      session,
-      monsterAttackSpeed: session.monsterAttackSpeed,
-      monsterAttack: session.monsterAttack,
-      now,
-      regenPerSecond: regenTotal,
-      retryMs: Math.max(250, Math.ceil(1000 / session.monsterAttackSpeed)),
-    });
+    const combat = await sessionPlayerCombat(ctx, session, now);
+    const timeline = advanceBossTimeline({ session, combat, now });
 
     // Auto-cast abilities can win the fight between strikes; report it.
     if (timeline.monsterHp <= 0 && timeline.playerHp > 0) {
@@ -629,7 +669,11 @@ export const checkBossFight = mutation({
       };
     }
 
-    if (timeline.playerHp >= session.playerHp && timeline.monsterHp >= session.monsterHp) {
+    // Nothing but regen happened: skip the write. Regen is continuous and
+    // deterministic, so the next call resolves it from the same point. Any
+    // swing or cast is always kept, whichever way it went, so re-polling
+    // can't re-roll swings until they come out badly.
+    if (timeline.events === 0) {
       return {
         ...toClientState(session),
         status: "open" as const,
@@ -654,7 +698,8 @@ export const checkBossFight = mutation({
     await ctx.db.patch(session._id, {
       playerHp: timeline.playerHp,
       monsterHp: timeline.monsterHp,
-      lastStrikeAt: now,
+      lastStrikeAt: timeline.advancedTo,
+      nextMonsterHitAt: timeline.nextMonsterHitAt,
       ...(session.abilityState ? { abilityState: session.abilityState } : {}),
     });
     await writePlayerHp(ctx, playerId, timeline.playerHp, session.playerMaxHp, now);

@@ -13,6 +13,7 @@ export const ITEM_EFFECT_STAT_VALUES = [
   "int",
   "luk",
   "con",
+  "agi",
 ] as const;
 export type ItemEffectStat = (typeof ITEM_EFFECT_STAT_VALUES)[number];
 

@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -22,7 +23,7 @@ async function setup() {
   const t = base.withIdentity({ subject: "boss-ability-user" });
   const playerId = await t.run(async (ctx) => {
     const now = Date.now();
-    const id = await ctx.db.insert("players", {
+    const id = await insertPlayerWithRecords(ctx, {
       anonymousId: "boss-ability",
       name: "Caster",
       authSubject: "boss-ability-user",
@@ -105,6 +106,10 @@ async function setup() {
       updatedAt: now,
     });
 
+    // Boss defense is covered in bossFightFixes.test.ts; keep these numbers simple.
+    await ctx.db.insert("gameBalance", {
+      key: "bossDefenseMultiplier", value: 0, description: "test", lastUpdated: 0,
+    } as never);
     await ctx.db.insert("abilities", {
       abilityId: "arcane_bolt",
       name: "Arcane Bolt",
@@ -166,7 +171,7 @@ test("boss fights auto-cast equipped abilities and win when the ability lands th
   expect(result.status).toBe("won");
   expect(result.monsterHp).toBe(0);
 
-  const after = await t.run((ctx) => ctx.db.get(playerId));
+  const after = await t.run((ctx) => playerWithRecords(ctx, playerId));
   // 3 casts * 10 base wisdom XP per use.
   expect(after?.statXp?.wis).toBe(30);
 
@@ -188,7 +193,7 @@ test("a loss still closes the session and awards wisdom XP for casts made", asyn
   // A glass cannon: the player dies to the first swing, but the t=0 auto-cast
   // still resolves (and earns wisdom XP for the use).
   await t.run(async (ctx) => {
-    await ctx.db.patch(playerId, {
+    await patchPlayerWithRecords(ctx, playerId, {
       con: 1,
       statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0, wis: 0 },
     });
@@ -217,7 +222,7 @@ test("a loss still closes the session and awards wisdom XP for casts made", asyn
   expect(result.playerHp).toBe(0);
   const closed = await t.run((ctx) => ctx.db.get(session.sessionId));
   expect(closed?.status).toBe("lost");
-  const after = await t.run((ctx) => ctx.db.get(playerId));
+  const after = await t.run((ctx) => playerWithRecords(ctx, playerId));
   // One cast landed at t=0 before the lethal swing.
   expect(after?.statXp?.wis).toBe(10);
 });

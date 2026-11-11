@@ -4,6 +4,11 @@
  */
 
 import type { StatType } from "./gameConfig";
+import {
+  bossAttackSpeed,
+  monsterBaseHealth,
+  monsterPhysicalAttack,
+} from "../../convex/monsterStats";
 
 export interface DerivedStats {
   health: number;
@@ -32,10 +37,10 @@ export function calculateDerivedStats(
   con: number
 ): DerivedStats {
   return {
-    health: con * 10 + int * 2,
-    attack: str * 1.2 + dex * 0.5,
+    health: monsterBaseHealth({ str, dex, con, int }),
+    attack: monsterPhysicalAttack({ str, dex, con, int }),
     defense: con * 0.8 + int * 0.3,
-    attackSpeed: Math.max(0.5, (dex - 10) * 0.1 + 1.0), // min 0.5 attacks/sec
+    attackSpeed: bossAttackSpeed({ dex }), // attacks/sec
     critChance: luk * 0.5, // percentage
   };
 }

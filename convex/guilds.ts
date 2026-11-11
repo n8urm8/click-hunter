@@ -5,6 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { requirePlayer, requirePlayerRead, requirePlayerOwner } from "./playerAuth";
 import { calculateCharacterLevel } from "./characterLevel";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
+import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 import { readBalanceMap } from "./balance";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
@@ -316,15 +317,13 @@ export async function createGuildCore(
       `Founding a guild requires character level ${config.createMinLevel} (you are ${founderLevel})`
     );
   }
-  if (player.gold < config.creationCost) {
+  const progress = await readPlayerProgress(ctx, playerId);
+  if (progress.gold < config.creationCost) {
     throw new Error(`Creating a guild costs ${config.creationCost} gold`);
   }
 
   const now = Date.now();
-  await ctx.db.patch(playerId, {
-    gold: player.gold - config.creationCost,
-    lastUpdated: now,
-  });
+  await patchPlayerProgress(ctx, progress, { gold: progress.gold - config.creationCost });
   const guildId = await ctx.db.insert("guilds", {
     name: cleanName,
     tag: cleanTag,
@@ -766,11 +765,10 @@ export const depositGold = mutation({
     if (!Number.isSafeInteger(amount) || amount < 1) {
       throw new Error("Deposit amount must be a positive whole number");
     }
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
-    if (player.gold < amount) throw new Error("Insufficient gold");
+    const progress = await readPlayerProgress(ctx, playerId);
+    if (progress.gold < amount) throw new Error("Insufficient gold");
     const now = Date.now();
-    await ctx.db.patch(playerId, { gold: player.gold - amount, lastUpdated: now });
+    await patchPlayerProgress(ctx, progress, { gold: progress.gold - amount });
     await ctx.db.patch(guild._id, { gold: guild.gold + amount, updatedAt: now });
     await ctx.db.patch(membership._id, {
       contributionGold: membership.contributionGold + amount,
@@ -795,11 +793,10 @@ export const withdrawGold = mutation({
       throw new Error("Withdraw amount must be a positive whole number");
     }
     if (guild.gold < amount) throw new Error("Guild bank has insufficient gold");
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    const progress = await readPlayerProgress(ctx, playerId);
     const now = Date.now();
     await ctx.db.patch(guild._id, { gold: guild.gold - amount, updatedAt: now });
-    await ctx.db.patch(playerId, { gold: player.gold + amount, lastUpdated: now });
+    await patchPlayerProgress(ctx, progress, { gold: progress.gold + amount });
     if (membership.netGoldDeposited) {
       await ctx.db.patch(membership._id, {
         netGoldDeposited: Math.max(0, membership.netGoldDeposited - amount),

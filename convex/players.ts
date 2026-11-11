@@ -16,6 +16,12 @@ import {
 } from "./items";
 import { clearPlayerPassives } from "./passiveTree";
 import { readPlayerCombatProfile } from "./combat";
+import {
+  insertPlayerProgress,
+  patchPlayerProgress,
+  progressFields,
+  readPlayerProgress,
+} from "./playerProgress";
 import { STARTER_KITS } from "./forestCraftingSeed";
 import {
   getRebirthSkillBonuses,
@@ -35,7 +41,7 @@ import {
 import { getRebirthAbilityBonuses } from "./rebirth";
 
 // Default balance constants — must match gameBalance seeds in seed.ts
-const STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1, wis: 1 };
+const STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1, wis: 1, agi: 1 };
 // Casters begin with a spell so a low-damage staff does not leave them
 // strictly worse than a swing weapon. Balance-editable via `starterAbilityIds`.
 export const STARTER_ABILITY_DEFAULTS: Record<string, string> = {
@@ -280,11 +286,9 @@ export const getOrCreatePlayer = mutation({
       int: startingStats.int,
       luk: startingStats.luk,
       con: startingStats.con,
-      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+      agi: startingStats.agi,
       ...(starterId === undefined ? {} : { starterWeapon: starterId }),
       ...(starterId === undefined ? { pendingStarterPick: true } : {}),
-      gold: 0,
-      totalExperience: 0,
       rebirthCount: 0,
       rebirthTierThreshold: rebirthThresholds[0],
       currentTier: 1,
@@ -293,6 +297,12 @@ export const getOrCreatePlayer = mutation({
       autoStartFightEnabled: false,
       createdAt: now,
       lastUpdated: now,
+    });
+    await insertPlayerProgress(ctx, playerId, {
+      gold: 0,
+      totalExperience: 0,
+      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0, agi: 0 },
+      updatedAt: now,
     });
 
     await setPlayerOwner(ctx, playerId, subject);
@@ -357,10 +367,25 @@ export const getPlayerById = query({
   },
   handler: async (ctx, { playerId }) => {
     const player = await requirePlayerRead(ctx, playerId);
+    const progress = await readPlayerProgress(ctx, playerId);
     return {
       ...(await withEquipmentStats(ctx, player)),
+      ...progressFields(progress),
       characterLevel: await calculateCharacterLevel(ctx, player),
     };
+  },
+});
+
+/**
+ * Gold, total XP and stat XP for one character. Kept out of `getCurrentPlayer`
+ * so a fight settlement doesn't re-run the stats query. The client merges the
+ * two results (see `usePlayer`). Reads only the progress row, not `players`.
+ */
+export const getPlayerWallet = query({
+  args: { playerId: v.id("players") },
+  handler: async (ctx, { playerId }) => {
+    await requirePlayerOwner(ctx, playerId);
+    return progressFields(await readPlayerProgress(ctx, playerId));
   },
 });
 
@@ -406,14 +431,10 @@ export const updateGold = internalMutation({
     delta: v.number(),
   },
   handler: async (ctx, { playerId, delta }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    const progress = await readPlayerProgress(ctx, playerId);
 
-    const newGold = Math.max(0, player.gold + delta);
-    await ctx.db.patch(playerId, {
-      gold: newGold,
-      lastUpdated: Date.now(),
-    });
+    const newGold = Math.max(0, progress.gold + delta);
+    await patchPlayerProgress(ctx, progress, { gold: newGold });
 
     return newGold;
   },
@@ -428,18 +449,11 @@ export const addExperience = internalMutation({
     amount: v.number(),
   },
   handler: async (ctx, { playerId, amount }) => {
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Player not found");
+    const progress = await readPlayerProgress(ctx, playerId);
 
-    const newExperience = player.totalExperience + amount;
-    await ctx.db.patch(playerId, {
-      totalExperience: newExperience,
-      lastUpdated: Date.now(),
-    });
-
-    // Note: leaderboards updated asynchronously via scheduled function
-    // For now, just update directly for consistency
-    await ctx.db.patch(playerId, { lastUpdated: Date.now() });
+    const newExperience = progress.totalExperience + amount;
+    // Leaderboards read the progress index, so no separate refresh is needed.
+    await patchPlayerProgress(ctx, progress, { totalExperience: newExperience });
 
     return newExperience;
   },
@@ -456,7 +470,8 @@ export const increaseStat = internalMutation({
       v.literal("dex"),
       v.literal("int"),
       v.literal("luk"),
-      v.literal("con")
+      v.literal("con"),
+      v.literal("agi")
     ),
     delta: v.number(),
   },
@@ -662,6 +677,12 @@ export const rebirth = mutation({
     await resetAllPlayerAbilities(ctx, playerId);
     await unequipAllAbilities(ctx, playerId);
 
+    const progress = await readPlayerProgress(ctx, playerId);
+    await patchPlayerProgress(ctx, progress, {
+      gold: 0,
+      totalExperience: 0,
+      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0, wis: 0, agi: 0 },
+    });
     await ctx.db.patch(playerId, {
       str: startingStats.str,
       dex: startingStats.dex,
@@ -669,13 +690,11 @@ export const rebirth = mutation({
       luk: startingStats.luk,
       con: startingStats.con,
       wis: startingStats.wis,
-      statXp: { str: 0, dex: 0, int: 0, luk: 0, con: 0, wis: 0 },
+      agi: startingStats.agi,
       rebirthStatBonuses: bonuses,
       rebirthSkillBonuses: skillBonuses,
       rebirthAbilityBonuses: abilityBonuses,
       pendingStarterPick: true,
-      gold: 0,
-      totalExperience: 0,
       rebirthCount: nextRebirthCount,
       rebirthTierThreshold: nextThreshold,
       currentTier: 1,

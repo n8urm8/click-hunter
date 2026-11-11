@@ -14,7 +14,6 @@ import {
 import {
   resolveDuelVerdict,
   runRoundExchange,
-  type RoundFighter,
   type RoundSide,
 } from "./roundCombat";
 import { readBalanceMap } from "./balance";
@@ -23,8 +22,13 @@ import {
   snapshotPvpGear,
   type PvpEquipmentBundle,
 } from "./pvpLoadout";
-import { rollHit, snapshotFighter } from "./pvpSnapshot";
+import { duelFighter, snapshotFighter } from "./pvpSnapshot";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
+import {
+  patchPlayerProgress,
+  readPlayerProgress,
+  readPlayerProgressOrNull,
+} from "./playerProgress";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 type ArenaLobby = Doc<"arenaLobbies">;
@@ -354,7 +358,6 @@ export type PublicLobby = Awaited<ReturnType<typeof toPublicLobby>>;
 
 /** Refund escrowed stakes in full. No-op for empty slots. */
 async function refundStakes(ctx: MutationCtx, lobby: ArenaLobby) {
-  const now = Date.now();
   const refunds: Array<{ playerId: Id<"players">; stake: number }> = [];
   if (lobby.fighter1Id !== undefined && (lobby.fighter1Stake ?? 0) > 0) {
     refunds.push({ playerId: lobby.fighter1Id, stake: lobby.fighter1Stake ?? 0 });
@@ -363,12 +366,9 @@ async function refundStakes(ctx: MutationCtx, lobby: ArenaLobby) {
     refunds.push({ playerId: lobby.fighter2Id, stake: lobby.fighter2Stake ?? 0 });
   }
   for (const refund of refunds) {
-    const fighter = await ctx.db.get(refund.playerId);
+    const fighter = await readPlayerProgressOrNull(ctx, refund.playerId);
     if (fighter) {
-      await ctx.db.patch(refund.playerId, {
-        gold: fighter.gold + refund.stake,
-        lastUpdated: now,
-      });
+      await patchPlayerProgress(ctx, fighter, { gold: fighter.gold + refund.stake });
     }
   }
 }
@@ -380,12 +380,9 @@ async function refundFighterStake(
   stake: number
 ) {
   if (stake <= 0) return;
-  const fighter = await ctx.db.get(playerId);
+  const fighter = await readPlayerProgressOrNull(ctx, playerId);
   if (!fighter) return;
-  await ctx.db.patch(playerId, {
-    gold: fighter.gold + stake,
-    lastUpdated: Date.now(),
-  });
+  await patchPlayerProgress(ctx, fighter, { gold: fighter.gold + stake });
 }
 
 type SpectatorRow = Doc<"arenaSpectators">;
@@ -516,12 +513,8 @@ async function settleFight(
   const pot = stake1 + stake2;
   const tax = Math.floor((pot * taxPercent) / 100);
   const payout = pot - tax;
-  const winner = await ctx.db.get(outcome.winnerId);
-  if (!winner) throw new Error("Winner not found");
-  await ctx.db.patch(outcome.winnerId, {
-    gold: winner.gold + payout,
-    lastUpdated: now,
-  });
+  const winner = await readPlayerProgress(ctx, outcome.winnerId);
+  await patchPlayerProgress(ctx, winner, { gold: winner.gold + payout });
   await ctx.db.patch(lobby._id, {
     status: "completed",
     winnerId: outcome.winnerId,
@@ -584,15 +577,13 @@ async function startFightCore(
       ctx,
       fighter1._id,
       abilityWeaponFrom(equipment1.weapon),
-      { unit: "rounds", roundIntervalMs: config.roundIntervalMs },
-      { includeAlly: true }
+      { unit: "rounds", roundIntervalMs: config.roundIntervalMs }
     ),
     buildAbilityCombatState(
       ctx,
       fighter2._id,
       abilityWeaponFrom(equipment2.weapon),
-      { unit: "rounds", roundIntervalMs: config.roundIntervalMs },
-      { includeAlly: true }
+      { unit: "rounds", roundIntervalMs: config.roundIntervalMs }
     ),
   ]);
   await ctx.db.patch(lobby._id, {
@@ -646,13 +637,9 @@ async function createLobbyCore(
     throw new Error("You are already fighting or waiting in another lobby");
   }
   await settleIfTasksExist(ctx, player._id);
-  const fresh = await ctx.db.get(player._id);
-  if (!fresh) throw new Error("Player not found");
+  const fresh = await readPlayerProgress(ctx, player._id);
   if (fresh.gold < stake) throw new Error("Insufficient gold for that stake");
-  await ctx.db.patch(player._id, {
-    gold: fresh.gold - stake,
-    lastUpdated: now,
-  });
+  await patchPlayerProgress(ctx, fresh, { gold: fresh.gold - stake });
   const lobbyId = await ctx.db.insert("arenaLobbies", {
     visibility: args.visibility,
     ...(cleanPassword === undefined ? {} : { password: cleanPassword }),
@@ -722,13 +709,9 @@ async function joinLobbyCore(
     throw new Error("You are already fighting or waiting in another lobby");
   }
   await settleIfTasksExist(ctx, player._id);
-  const fresh = await ctx.db.get(player._id);
-  if (!fresh) throw new Error("Player not found");
+  const fresh = await readPlayerProgress(ctx, player._id);
   if (fresh.gold < stake) throw new Error("Insufficient gold for that stake");
-  await ctx.db.patch(player._id, {
-    gold: fresh.gold - stake,
-    lastUpdated: now,
-  });
+  await patchPlayerProgress(ctx, fresh, { gold: fresh.gold - stake });
   // A spectator taking a corner stops spectating.
   const watching = await ctx.db
     .query("arenaSpectators")
@@ -814,7 +797,7 @@ export const joinLobbyAsFighter = mutation({
 /**
  * Join the general lobby with the closest combat level, or open a minimum-
  * stake lobby when none is waiting. Matching runs on combat level only
- * (str+dex+int+luk+con, no skills): ±10% first, widening by 10 points until
+ * (the combat stats, no skills): ±10% first, widening by 10 points until
  * something fits. The joiner always matches the seated fighter's stake —
  * there is no stake input on quick match.
  */
@@ -824,6 +807,7 @@ export const quickMatch = mutation({
   },
   handler: async (ctx, { playerId }) => {
     const player = await requirePlayer(ctx, playerId);
+    const progress = await readPlayerProgress(ctx, playerId);
     const config = await readArenaConfig(ctx);
     const now = Date.now();
     const waiting = await ctx.db
@@ -868,7 +852,7 @@ export const quickMatch = mutation({
       // Skip tables whose stake is no longer legal or affordable; the join
       // itself re-checks gold after settling tasks.
       if (stake < config.minStake || stake > config.maxStake) continue;
-      if (player.gold < stake) continue;
+      if (progress.gold < stake) continue;
       candidates.push({ lobby, combat, stake });
     }
     let pick: Candidate | null = null;
@@ -1325,39 +1309,22 @@ export const tickFight = mutation({
     // Both corners fight through the shared round exchange: the arena
     // supplies the swing roll, the exchange owns the round order and the
     // damage pipeline.
-    const fighter1: RoundFighter = {
+    const fighter1 = duelFighter({
       id: "fighter1",
+      self: snapshot1,
+      opponent: snapshot2,
       hp: hp1,
-      maxHp: max1,
-      alive: hp1 > 0,
-      defense: snapshot1.defense,
-      magicalDefense: snapshot1.magicalDefense,
+      roundIntervalMs: interval,
       ...(state1 ? { abilityState: state1 } : {}),
-      planSwing: (opponents) => {
-        const raw = rollHit(snapshot1, snapshot2);
-        return [
-          { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
-        ];
-      },
-      // Arena damage always lands as a whole number of at least one.
-      reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
-    };
-    const fighter2: RoundFighter = {
+    });
+    const fighter2 = duelFighter({
       id: "fighter2",
+      self: snapshot2,
+      opponent: snapshot1,
       hp: hp2,
-      maxHp: max2,
-      alive: hp2 > 0,
-      defense: snapshot2.defense,
-      magicalDefense: snapshot2.magicalDefense,
+      roundIntervalMs: interval,
       ...(state2 ? { abilityState: state2 } : {}),
-      planSwing: (opponents) => {
-        const raw = rollHit(snapshot2, snapshot1);
-        return [
-          { target: opponents[0], damage: raw.damage, isCrit: raw.isCrit },
-        ];
-      },
-      reduceIncoming: (damage) => Math.max(1, Math.round(damage)),
-    };
+    });
     const sides: RoundSide[] = [
       { fighters: [fighter1] },
       { fighters: [fighter2] },

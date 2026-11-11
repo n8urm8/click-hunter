@@ -6,6 +6,7 @@ import {
   readSkillXpBase,
   SKILL_XP_BALANCE_DEFAULT,
 } from "./skillProgression";
+import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
@@ -85,13 +86,12 @@ export function calculateWisdomLevel(wisdomXp: number, xpBase: number): number {
  * Get current wisdom level for a player.
  */
 export async function getPlayerWisdomLevel(ctx: DatabaseCtx, playerId: PlayerId): Promise<number> {
-  const [player, xpBaseValue] = await Promise.all([
-    ctx.db.get(playerId),
+  const [progress, xpBaseValue] = await Promise.all([
+    readPlayerProgress(ctx, playerId),
     readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key),
   ]);
-  if (!player) throw new Error("Player not found");
   const xpBase = readSkillXpBase(xpBaseValue);
-  const wisdomXp = player.statXp?.wis ?? 0;
+  const wisdomXp = progress.statXp?.wis ?? 0;
   return calculateWisdomLevel(wisdomXp, xpBase);
 }
 
@@ -104,13 +104,12 @@ export async function getPlayerWisdomProgress(ctx: DatabaseCtx, playerId: Player
   xpToNext: number;
   xpBase: number;
 }> {
-  const [player, xpBaseValue] = await Promise.all([
-    ctx.db.get(playerId),
+  const [progress, xpBaseValue] = await Promise.all([
+    readPlayerProgress(ctx, playerId),
     readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key),
   ]);
-  if (!player) throw new Error("Player not found");
   const xpBase = readSkillXpBase(xpBaseValue);
-  const wisdomXp = player.statXp?.wis ?? 0;
+  const wisdomXp = progress.statXp?.wis ?? 0;
   const level = calculateWisdomLevel(wisdomXp, xpBase);
   const required = getSkillXpRequiredForLevel(level, xpBase);
   const currentXp = wisdomXp - (level > 1 ? getTotalXpForLevel(level - 1, xpBase) : 0);
@@ -170,31 +169,38 @@ export async function awardWisdomXp(
   if (!Number.isFinite(baseXp) || baseXp <= 0) return;
 
   const balance = await readWisdomBalance(ctx);
-  const player = await ctx.db.get(playerId);
+  const [player, progress] = await Promise.all([
+    ctx.db.get(playerId),
+    readPlayerProgress(ctx, playerId),
+  ]);
   if (!player) throw new Error("Player not found");
 
   // Wisdom XP scales with ability level and wisdom bonus
-  const wisdomLevel = calculateWisdomLevel(player.statXp?.wis ?? 0, readSkillXpBase(await readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key)));
+  const wisdomLevel = calculateWisdomLevel(progress.statXp?.wis ?? 0, readSkillXpBase(await readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key)));
   const wisdomBonus = getWisdomPowerMultiplier(wisdomLevel, balance) - 1; // just the bonus portion
   const xpGain = Math.floor(baseXp * abilityLevel * (1 + wisdomBonus));
 
-  const currentWisXp = player.statXp?.wis ?? 0;
+  const currentWisXp = progress.statXp?.wis ?? 0;
   const newWisXp = currentWisXp + xpGain;
   const xpBase = readSkillXpBase(await readBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key));
 
-  await ctx.db.patch(playerId, {
-    // Combat, character level, and rebirth all read this; XP alone moves nothing.
-    wis: calculateWisdomLevel(newWisXp, xpBase),
+  await patchPlayerProgress(ctx, progress, {
     statXp: {
-      str: player.statXp?.str ?? 0,
-      dex: player.statXp?.dex ?? 0,
-      int: player.statXp?.int ?? 0,
-      luk: player.statXp?.luk ?? 0,
-      con: player.statXp?.con ?? 0,
+      str: progress.statXp?.str ?? 0,
+      dex: progress.statXp?.dex ?? 0,
+      int: progress.statXp?.int ?? 0,
+      luk: progress.statXp?.luk ?? 0,
+      con: progress.statXp?.con ?? 0,
       wis: newWisXp,
+      ...(progress.statXp?.agi !== undefined ? { agi: progress.statXp.agi } : {}),
     },
-    lastUpdated: Date.now(),
   });
+  // Combat, character level, and rebirth read the wisdom level, not its XP.
+  // Only a level-up writes `players`, so ability casts don't re-run stats queries.
+  const newWisLevel = calculateWisdomLevel(newWisXp, xpBase);
+  if (newWisLevel !== player.wis) {
+    await ctx.db.patch(playerId, { wis: newWisLevel, lastUpdated: Date.now() });
+  }
 }
 
 /**

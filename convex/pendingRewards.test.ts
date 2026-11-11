@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { internal } from "./_generated/api";
@@ -10,7 +11,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 async function setup() {
   const t = convexTest(schema, modules);
   const fixture = await t.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "pending-test", name: "Hunter", role: "admin",
       authSubject: "pending-user",
       str: 10, dex: 10, int: 10, luk: 0, con: 50,

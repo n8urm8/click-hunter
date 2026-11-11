@@ -213,6 +213,8 @@ function nodeIconFor(node: TreeNodeLike): LucideIcon {
           return Clover;
         case "con":
           return HeartPulse;
+        case "agi":
+          return Gauge;
         default:
           return Sparkles;
       }
@@ -1023,7 +1025,7 @@ export function PassiveTree({ playerId, isAdmin = false }: PassiveTreeProps) {
             <dd className="text-foreground">
               STR +{bonuses.stats.str} · DEX +{bonuses.stats.dex} · INT +
               {bonuses.stats.int} · LUK +{bonuses.stats.luk} · CON +
-              {bonuses.stats.con}
+              {bonuses.stats.con} · AGI +{bonuses.stats.agi ?? 0}
             </dd>
           </div>
           <div className="flex justify-between gap-2 border-b border-forest-light/15 pb-1">

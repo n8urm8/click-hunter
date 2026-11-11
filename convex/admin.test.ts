@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, patchPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -11,7 +12,7 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 async function setup() {
   const t = convexTest(schema, modules).withIdentity({ subject: "admin-user" });
   await t.mutation(internal.init.default, {});
-  const playerId = await t.run((ctx) => ctx.db.insert("players", {
+  const playerId = await t.run((ctx) => insertPlayerWithRecords(ctx, {
     anonymousId: "admin-test", name: "Admin", role: "admin",
       authSubject: "admin-user",
     str: 1, dex: 1, int: 1, luk: 1, con: 1,
@@ -59,7 +60,8 @@ test("the admin player snapshot does not load the configuration catalog", async 
   });
   expect(players).toHaveLength(1);
   expect(players[0]).toMatchObject({ _id: playerId, name: "Admin" });
-  expect(metrics.databaseQueries.used).toBe(4);
+  // Five queries: the character list, the progress index (gold and XP), and the rest as before.
+  expect(metrics.databaseQueries.used).toBe(5);
 });
 
 test("scoped reads and saves still reject a revoked admin role", async () => {
@@ -101,7 +103,7 @@ test("fresh snapshots reflect saved rarities and their item references", async (
 test("character snapshots do not weaken the stale-edit guard", async () => {
   const { t, playerId } = await setup();
   const [player] = await t.query(api.admin.getPlayers, { playerId });
-  await t.run((ctx) => ctx.db.patch(playerId, { gold: 10, lastUpdated: 1 }));
+  await t.run((ctx) => patchPlayerWithRecords(ctx, playerId, { gold: 10, lastUpdated: 1 }));
   await expect(t.mutation(api.admin.updatePlayer, {
     adminPlayerId: playerId, targetPlayerId: playerId,
     expectedLastUpdated: player.lastUpdated, name: player.name,

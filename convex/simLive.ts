@@ -27,6 +27,12 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
 import {
+  deletePlayerSplitRows,
+  insertPlayerProgress,
+  patchPlayerProgress,
+  readPlayerProgress,
+} from "./playerProgress";
+import {
   acceptApplicationRow,
   applyToGuildCore,
   createGuildCore,
@@ -136,16 +142,6 @@ async function insertSimPlayer(
     name: args.name,
     authSubject: `${SIM_LIVE_SUBJECT_PREFIX}${tag}`,
     ...stats,
-    statXp: {
-      str: 0,
-      dex: 0,
-      int: 0,
-      luk: 0,
-      con: 0,
-      ...args.statXp,
-    },
-    gold: args.gold ?? 0,
-    totalExperience: args.totalExperience ?? 0,
     rebirthCount: 0,
     rebirthTierThreshold: 5,
     currentTier: 1,
@@ -154,6 +150,19 @@ async function insertSimPlayer(
     autoStartFightEnabled: false,
     createdAt: now,
     lastUpdated: now,
+  });
+  await insertPlayerProgress(ctx, id, {
+    gold: args.gold ?? 0,
+    totalExperience: args.totalExperience ?? 0,
+    statXp: {
+      str: 0,
+      dex: 0,
+      int: 0,
+      luk: 0,
+      con: 0,
+      ...args.statXp,
+    },
+    updatedAt: now,
   });
   await insertSkillRows(ctx, id, args.skills ?? []);
   await grantSimItems(ctx, id, args.items ?? []);
@@ -410,7 +419,7 @@ export const setGold = internalMutation({
     if (!Number.isSafeInteger(gold) || gold < 0) {
       throw new Error("gold must be an integer >= 0");
     }
-    await ctx.db.patch(playerId, { gold, lastUpdated: Date.now() });
+    await patchPlayerProgress(ctx, await readPlayerProgress(ctx, playerId), { gold });
     return await ctx.db.get(playerId);
   },
 });
@@ -506,6 +515,7 @@ export const cleanup = internalMutation({
         await ctx.db.delete(application._id);
         removedApplications += 1;
       }
+      await deletePlayerSplitRows(ctx, player._id);
       await ctx.db.delete(player._id);
       removedPlayers += 1;
     }

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
+import { STAFF_BASE_DAMAGE_PER_TIER, STARTER_STAFF_BASE_DAMAGE } from "./forestCraftingSeed";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -145,10 +146,10 @@ test("rebalanceStaffWeapons overwrites staff damage and backfills weapon types i
   const readItem = (id: (typeof ids)[keyof typeof ids]) =>
     t.run((ctx) => ctx.db.get(id));
   expect(await readItem(ids.worn)).toMatchObject({
-    baseDamage: 3.75, weaponType: "staff",
+    baseDamage: STARTER_STAFF_BASE_DAMAGE, weaponType: "staff",
   });
   expect(await readItem(ids.crafted)).toMatchObject({
-    baseDamage: 27, weaponType: "staff",
+    baseDamage: STAFF_BASE_DAMAGE_PER_TIER * 3, weaponType: "staff",
   });
   expect(await readItem(ids.sword)).toMatchObject({ weaponType: "sword" });
   expect((await readItem(ids.robe))?.weaponType).toBeUndefined();
@@ -157,6 +158,6 @@ test("rebalanceStaffWeapons overwrites staff damage and backfills weapon types i
   expect(second.staffDamageUpdated).toBe(0);
   expect(second.weaponTypesBackfilled).toBe(0);
   expect(await readItem(ids.crafted)).toMatchObject({
-    baseDamage: 27, weaponType: "staff",
+    baseDamage: STAFF_BASE_DAMAGE_PER_TIER * 3, weaponType: "staff",
   });
 });

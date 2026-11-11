@@ -85,6 +85,7 @@ vi.mock("~/hooks/useBossFight", () => ({
   useStartBossFight: () => mocks.startBoss,
   useStrikeBoss: () => vi.fn(),
   useCheckBossFight: () => vi.fn(),
+  useBossRequirements: () => ({ data: { total: 9, defeated: 9, missingNames: [] } }),
 }));
 vi.mock("~/hooks/useInventory", () => ({
   usePlayerInventory: () => ({

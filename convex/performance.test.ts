@@ -1,12 +1,14 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, patchPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
-import { getSkillXpRequiredForLevel } from "./skillProgression";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const timestamps = { createdAt: 0, updatedAt: 0 };
+// Documents one skill-page read touches in the fixture: owner, skill, tiers, player skill, two recipes with their parts, items, augmentation and balance snapshot.
+const EXPECTED_PAGE_DOCS = 13;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -16,7 +18,7 @@ afterEach(() => {
 async function setup() {
   const t = convexTest(schema, modules).withIdentity({ subject: "perf-user" });
   const fixtures = await t.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "test-player", name: "Test player",
       authSubject: "perf-user",
       str: 1, dex: 1, int: 1, luk: 1, con: 1,
@@ -69,45 +71,90 @@ async function setup() {
   return { t, ...fixtures };
 }
 
-test("catalog reads each item once and never depends on player state", async () => {
+test("the skill page reads each item once and never depends on player state", async () => {
   const { t, playerId, itemId } = await setup();
   const measure = () => t.query(async (ctx) => {
-    const catalog = await ctx.runQuery(api.skills.getSkillCatalog, {});
-    return { catalog, metrics: await ctx.meta.getTransactionMetrics() };
+    const page = await ctx.runQuery(api.skills.getSkillPage, { playerId, skillId: "woodworking", tier: 1 });
+    return { page, metrics: await ctx.meta.getTransactionMetrics() };
   });
-  const { catalog, metrics } = await measure();
-  expect(catalog.recipes.map((recipe) => recipe.recipeId)).toEqual(["plank", "beam"]);
-  expect(catalog.recipes[0].ingredients[0].item?._id).toBe(itemId);
-  expect(catalog.augmentations[0].bossCatalystItem?._id).toBe(itemId);
-  expect(catalog.skillXpBase).toBe(1_000);
-  expect(metrics.documentsRead.used).toBe(13);
+  const { page, metrics } = await measure();
+  expect(page.selectedTier).toBe(1);
+  expect(page.recipes.map((recipe) => recipe.recipeId)).toEqual(["plank", "beam"]);
+  expect(page.recipes[0].ingredients[0].itemId).toBe(itemId);
+  expect(page.items[itemId]?._id).toBe(itemId);
+  expect(page.augmentations[0].bossCatalystItemId).toBe(itemId);
+  expect(page.skillXpBase).toBe(1_000);
+  expect(metrics.documentsRead.used).toBe(EXPECTED_PAGE_DOCS);
 
   await t.run(async (ctx) => {
-    await ctx.db.patch(playerId, { name: "Longer player name", gold: 10 });
+    await patchPlayerWithRecords(ctx, playerId, { name: "Longer player name", gold: 10 });
     await ctx.db.insert("playerSkills", {
       playerId, skillId: "other", level: 1, experience: 0,
       totalExperience: 0, actionsCompleted: 0, ...timestamps,
     });
   });
   const after = await measure();
-  expect(after.catalog).toEqual(catalog);
+  expect(after.page).toEqual(page);
   expect(after.metrics.bytesRead.used).toBe(metrics.bytesRead.used);
   expect(after.metrics.documentsRead.used).toBe(metrics.documentsRead.used);
 });
 
-test("split queries preserve the panel shape and keep progress reads small", async () => {
-  const { t, playerId } = await setup();
-  const catalog = await t.query(api.skills.getSkillCatalog, {});
-  const rows = await t.query(api.skills.getPlayerSkills, { playerId });
-  const composed = {
-    ...catalog,
-    playerSkills: rows.map((row) => ({
-      ...row,
-      xpRequiredForNextLevel: getSkillXpRequiredForLevel(row.level, catalog.skillXpBase),
-    })),
-  };
-  expect(composed).toEqual(await t.query(api.skills.getSkillPanel, { playerId }));
+test("the skill page opens the highest unlocked tier, and honours explicit tiers", async () => {
+  const { t, playerId, playerSkillId } = await setup();
+  // Tier 3 needs level 3; the fixture player is level 2.
+  await t.run(async (ctx) => {
+    await ctx.db.insert("skillTierDefinitions", {
+      skillId: "woodworking", tier: 3, name: "Tier three",
+      description: "Test tier", requiredLevel: 3, enabled: true, ...timestamps,
+    });
+    await ctx.db.insert("recipes", {
+      recipeId: "tall", skillId: "woodworking", tier: 3, name: "tall",
+      description: "Test recipe", experienceReward: 10, enabled: true, ...timestamps,
+    });
+  });
+  const ids = (page: { recipes: Array<{ recipeId: string }> }) => page.recipes.map((recipe) => recipe.recipeId);
 
+  const locked = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking" });
+  expect(locked.selectedTier).toBe(1);
+  expect(locked.tierNumbers).toEqual([1, 3]);
+  expect(ids(locked)).toEqual(["plank", "beam"]);
+
+  // Locked tiers still open when asked for explicitly.
+  const explicitLocked = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking", tier: 3 });
+  expect(explicitLocked.selectedTier).toBe(3);
+  expect(ids(explicitLocked)).toEqual(["tall"]);
+
+  const everything = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking", tier: "all" });
+  expect(everything.selectedTier).toBe("all");
+  expect(ids(everything)).toEqual(["plank", "beam", "tall"]);
+
+  const unknownTier = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking", tier: 99 });
+  expect(unknownTier.selectedTier).toBe(1);
+  // The disabled tier 2 recipe never shows, even under "all".
+  expect(ids(everything)).not.toContain("hidden");
+
+  // Reaching level 3 unlocks tier 3, and the default moves up with it.
+  await t.run((ctx) => ctx.db.patch(playerSkillId, { level: 3 }));
+  const unlocked = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking" });
+  expect(unlocked.selectedTier).toBe(3);
+  expect(ids(unlocked)).toEqual(["tall"]);
+});
+
+test("a player with no progress in the skill opens its lowest tier", async () => {
+  const { t, playerId, playerSkillId } = await setup();
+  await t.run((ctx) => ctx.db.delete(playerSkillId));
+  const page = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking" });
+  expect(page.selectedTier).toBe(1);
+});
+
+test("the skill page falls back to the first skill for an unknown id", async () => {
+  const { t, playerId } = await setup();
+  const page = await t.query(api.skills.getSkillPage, { playerId, skillId: "not-a-skill" });
+  expect(page.skill?.skillId).toBe("woodworking");
+});
+
+test("split queries keep progress reads small", async () => {
+  const { t, playerId } = await setup();
   const metrics = await t.query(async (ctx) => {
     await ctx.runQuery(api.skills.getPlayerSkills, { playerId });
     return await ctx.meta.getTransactionMetrics();
@@ -121,16 +168,16 @@ test("progress, configuration edits, and missing item references remain correct"
   const { t, playerId, playerSkillId, itemId } = await setup();
   await t.run(async (ctx) => {
     await ctx.db.patch(playerSkillId, { experience: 500 });
-    await ctx.db.patch(playerId, { gold: 200 });
+    await patchPlayerWithRecords(ctx, playerId, { gold: 200 });
     await ctx.db.insert("gameBalance", {
       key: "skillXpPerLevel", value: 2_000, description: "Test XP base", lastUpdated: 0,
     });
     await ctx.db.delete(itemId);
   });
-  const catalog = await t.query(api.skills.getSkillCatalog, {});
-  expect(catalog.skillXpBase).toBe(2_000);
-  expect(catalog.recipes[0].ingredients[0].item).toBeNull();
-  expect(catalog.augmentations[0].bossCatalystItem).toBeNull();
+  const page = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking", tier: 1 });
+  expect(page.skillXpBase).toBe(2_000);
+  expect(page.items[itemId]).toBeUndefined();
+  expect(page.recipes[0].ingredients[0].itemId).toBe(itemId);
   expect((await t.query(api.skills.getPlayerSkills, { playerId }))[0].experience).toBe(500);
 });
 
@@ -197,4 +244,44 @@ test("sync still settles offline progress without returning a duplicate snapshot
     skillSettlementGapMs: 300_000,
   });
   expect(await t.run((ctx) => ctx.db.get(taskId))).toMatchObject({ progressMs: 10_000 });
+});
+
+test("a tier returns every enabled recipe, not just the first 300", async () => {
+  const { t, itemId, playerId } = await setup();
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 305; index += 1) {
+      const recipeId = `bulk-${index}`;
+      await ctx.db.insert("recipes", {
+        recipeId, skillId: "woodworking", tier: 1, name: recipeId,
+        description: "Bulk recipe", experienceReward: 1,
+        enabled: true, ...timestamps,
+      });
+      await ctx.db.insert("recipeIngredients", { recipeId, itemId, quantity: 1 });
+      await ctx.db.insert("recipeOutputs", { recipeId, itemId, quantity: 1 });
+    }
+  });
+  const page = await t.query(api.skills.getSkillPage, { playerId, skillId: "woodworking", tier: 1 });
+  expect(page.recipes).toHaveLength(307);
+  expect(Object.keys(page.items)).toEqual([itemId]);
+});
+
+test("the augmentation catalog keeps augmentations and their items, and reads far fewer documents", async () => {
+  const { t, itemId, playerId } = await setup();
+  const measure = (fn: "getSkillPage" | "getAugmentationCatalog") =>
+    t.query(async (ctx) => {
+      const result =
+        fn === "getSkillPage"
+          ? await ctx.runQuery(api.skills.getSkillPage, { playerId, skillId: "woodworking", tier: "all" })
+          : await ctx.runQuery(api.skills.getAugmentationCatalog, {});
+      return { result, metrics: await ctx.meta.getTransactionMetrics() };
+    });
+  const full = await measure("getSkillPage");
+  const light = await measure("getAugmentationCatalog");
+  expect(light.result.augmentations.map((row) => row.augmentationId)).toEqual(["wood-strength"]);
+  expect(light.result.items[itemId]?._id).toBe(itemId);
+  expect(light.result.recipes).toEqual([]);
+  expect(light.result.activities).toEqual([]);
+  expect(light.result.definitions).toEqual(full.result.definitions);
+  expect(light.result.infusionRates).toEqual(full.result.infusionRates);
+  expect(light.metrics.documentsRead.used).toBeLessThan(full.metrics.documentsRead.used);
 });

@@ -1,12 +1,18 @@
-import { useMemo, useState } from "react";
-import { useAtom } from "jotai";
-import { skillTierFilterAtom } from "~/store/gameStore";
-import { useNavigate, useParams } from "react-router";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { usePlayerInventory } from "~/hooks/useInventory";
 import { useEnqueueSkillAction, useTaskQueue } from "~/hooks/useTasks";
-import { useSkillPanel } from "~/hooks/useSkills";
+import { useSkillPage } from "~/hooks/useSkills";
+import { GAME_PATHS } from "~/lib/gameRoutes";
+import {
+  parseTierParam,
+  readStoredSkillsView,
+  skillsViewSearch,
+  writeStoredSkillsView,
+  type SkillsTierParam,
+} from "~/lib/skillsView";
 import { formatPercent, infusionSuccessChance } from "~/lib/infusion";
 import {
   Tabs,
@@ -22,7 +28,7 @@ interface SkillsPanelProps {
   playerId: Id<"players">;
 }
 
-type SkillPanelData = NonNullable<ReturnType<typeof useSkillPanel>["data"]>;
+type SkillPanelData = NonNullable<ReturnType<typeof useSkillPage>["data"]>;
 type SkillDefinition = SkillPanelData["definitions"][number];
 type SkillState = SkillPanelData["playerSkills"][number];
 type TierDefinition = SkillPanelData["tiers"][number];
@@ -205,27 +211,18 @@ function TierBadge({
   );
 }
 
-const TIER_FILTER_OPTIONS: Array<number | null> = [
-  null,
-  1,
-  2,
-  3,
-  4,
-  5,
-  6,
-  7,
-  8,
-];
-
 function TierFilterSidebar({
   skillName,
+  tiers,
   selectedTier,
   onSelect,
 }: {
   skillName: string;
-  selectedTier: number | null;
-  onSelect: (tier: number | null) => void;
+  tiers: number[];
+  selectedTier: SkillsTierParam;
+  onSelect: (tier: SkillsTierParam) => void;
 }) {
+  const options: SkillsTierParam[] = ["all", ...tiers];
   return (
     <nav
       aria-label={`${skillName} tier filter`}
@@ -236,12 +233,11 @@ function TierFilterSidebar({
           Tier
         </p>
         <ul className="flex flex-row gap-0 overflow-x-auto p-1 md:flex-col md:overflow-visible">
-          {TIER_FILTER_OPTIONS.map((tier) => {
-            const isActive =
-              tier === null ? selectedTier == null : selectedTier === tier;
-            const label = tier === null ? "All" : `Tier ${tier}`;
+          {options.map((tier) => {
+            const isActive = selectedTier === tier;
+            const label = tier === "all" ? "All" : `Tier ${tier}`;
             return (
-              <li key={tier === null ? "all" : `tier-${tier}`} className="w-auto shrink-0 md:w-full">
+              <li key={`tier-${tier}`} className="w-auto shrink-0 md:w-full">
                 <button
                   type="button"
                   aria-pressed={isActive}
@@ -265,17 +261,60 @@ function TierFilterSidebar({
 }
 
 export function SkillsPanel({ playerId }: SkillsPanelProps) {
-  const panel = useSkillPanel(playerId);
   const inventory = usePlayerInventory(playerId);
   const enqueueSkillAction = useEnqueueSkillAction();
   const taskQueue = useTaskQueue(playerId);
   const navigate = useNavigate();
   const params = useParams();
-  const [tierFilterBySkill, setTierFilterBySkill] = useAtom(
-    skillTierFilterAtom
-  );
+  const [searchParams] = useSearchParams();
   const routeSkillId =
     typeof params.skillId === "string" ? params.skillId : null;
+  const urlSkill = searchParams.get("skill");
+  const urlTier = parseTierParam(searchParams.get("tier"));
+  const hasUrlSelection = urlSkill !== null || routeSkillId !== null;
+  // With no skill in the URL, the last view this browser showed decides.
+  const storedView = useMemo(
+    () => (hasUrlSelection ? null : readStoredSkillsView()),
+    [hasUrlSelection]
+  );
+  const panel = useSkillPage(playerId, {
+    skillId: routeSkillId ?? urlSkill ?? storedView?.skill,
+    tier: hasUrlSelection ? urlTier : storedView?.tier,
+  });
+  const resolvedSkill =
+    !panel.isPlaceholderData && panel.data?.skill
+      ? panel.data.skill.skillId
+      : null;
+  const resolvedTier =
+    !panel.isPlaceholderData && panel.data ? panel.data.selectedTier : null;
+
+  // The page reports the skill and tier it used. Keep the URL on those values
+  // (replacing history) and remember them for the next visit to /skills.
+  useEffect(() => {
+    if (routeSkillId !== null) {
+      navigate(
+        {
+          pathname: GAME_PATHS.skills,
+          search: `?skill=${encodeURIComponent(routeSkillId)}`,
+        },
+        { replace: true }
+      );
+      return;
+    }
+    if (resolvedSkill === null || resolvedTier === null) return;
+    if (urlSkill !== resolvedSkill || urlTier !== resolvedTier) {
+      navigate(
+        {
+          pathname: GAME_PATHS.skills,
+          search: skillsViewSearch({ skill: resolvedSkill, tier: resolvedTier }),
+        },
+        { replace: true }
+      );
+      return;
+    }
+    writeStoredSkillsView({ skill: resolvedSkill, tier: resolvedTier });
+  }, [navigate, routeSkillId, resolvedSkill, resolvedTier, urlSkill, urlTier]);
+
   const hasQueuedTasks =
     taskQueue.data !== undefined &&
     (taskQueue.data.active != null ||
@@ -354,12 +393,7 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
   }
 
   const data = panel.data;
-  const activeSkill =
-    (routeSkillId
-      ? data.definitions.find((skill) => skill.skillId === routeSkillId)
-      : undefined) ??
-    data.definitions[0] ??
-    null;
+  const activeSkill = data.skill;
 
   if (!activeSkill) {
     return (
@@ -980,19 +1014,11 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
     const augmentations = data.augmentations
       .filter((augmentation) => augmentation.skillId === skill.skillId)
       .sort((left, right) => left.tier - right.tier);
-    const tierNumbers = Array.from(
-      new Set([
-        ...data.tiers
-          .filter((tier) => tier.skillId === skill.skillId)
-          .map((tier) => tier.tier),
-        ...activities.map((activity) => activity.tier),
-        ...recipes.map((recipe) => recipe.tier),
-        ...augmentations.map((augmentation) => augmentation.tier),
-      ])
-    ).sort((left, right) => left - right);
-    const selectedTier = tierFilterBySkill[skill.skillId] ?? null;
+    // Enabled tiers for this skill, from the page response.
+    const tierNumbers = data.tierNumbers;
+    const selectedTier = data.selectedTier;
     const visibleTierNumbers =
-      selectedTier == null
+      selectedTier === "all"
         ? tierNumbers
         : tierNumbers.filter((tierNumber) => tierNumber === selectedTier);
 
@@ -1011,12 +1037,13 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
           <div className="flex flex-col gap-4 md:flex-row">
             <TierFilterSidebar
               skillName={skill.name}
+              tiers={tierNumbers}
               selectedTier={selectedTier}
               onSelect={(tier) =>
-                setTierFilterBySkill((current) => ({
-                  ...current,
-                  [skill.skillId]: tier,
-                }))
+                navigate({
+                  pathname: GAME_PATHS.skills,
+                  search: skillsViewSearch({ skill: skill.skillId, tier }),
+                })
               }
             />
             <div className="min-w-0 flex-1 space-y-5">
@@ -1094,7 +1121,10 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
         onValueChange={(value) => {
           if (data.definitions.some((skill) => skill.skillId === value)) {
             setError(null);
-            navigate(`/skills/${value}`, { replace: false });
+            navigate({
+              pathname: GAME_PATHS.skills,
+              search: `?skill=${encodeURIComponent(value)}`,
+            });
           }
         }}
         className="gap-0"
@@ -1112,20 +1142,18 @@ export function SkillsPanel({ playerId }: SkillsPanelProps) {
             ))}
           </TabsList>
         </div>
-        {data.definitions.map((skill) => (
-          <TabsContent
-            key={skill.skillId}
-            value={skill.skillId}
-            className="space-y-4 p-4 outline-none"
-          >
-            {error && (
-              <p className="text-xs text-blood-light" role="alert">
-                {error}
-              </p>
-            )}
-            {renderSkillContent(skill)}
-          </TabsContent>
-        ))}
+        <TabsContent
+          key={activeSkill.skillId}
+          value={activeSkill.skillId}
+          className="space-y-4 p-4 outline-none"
+        >
+          {error && (
+            <p className="text-xs text-blood-light" role="alert">
+              {error}
+            </p>
+          )}
+          {renderSkillContent(activeSkill)}
+        </TabsContent>
       </Tabs>
     </Card>
   );

@@ -42,7 +42,6 @@ const BOSS_NAME_TITLES = [
 
 const DEFAULT_BOSS_STAT_MULTIPLIER = 3;
 const DEFAULT_TIER_SCALE_MULTIPLIER = 2;
-export const DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER = 20;
 export const DEFAULT_BOSS_REWARD_MULTIPLIER = 3;
 
 type DatabaseCtx = MutationCtx | QueryCtx;
@@ -75,18 +74,6 @@ function readTierScaleMultiplier(value: unknown) {
     : DEFAULT_TIER_SCALE_MULTIPLIER;
 }
 
-function readBossUnlockLevelPerTier(value: unknown) {
-  return typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 1
-    ? value
-    : DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER;
-}
-
-export async function getBossUnlockLevelPerTier(ctx: DatabaseCtx) {
-  return readBossUnlockLevelPerTier(await readBalanceValue(ctx, "bossUnlockLevelPerTier"));
-}
-
 export async function getTierScaleMultiplier(ctx: DatabaseCtx) {
   return readTierScaleMultiplier(await readBalanceValue(ctx, "tierScaleMultiplier"));
 }
@@ -108,24 +95,36 @@ export function scaleBossStat(value: number, multiplier: number) {
 }
 
 /**
+ * A tier's boss with its stats scaled to the tier and its element set, or
+ * null when no boss exists for the tier yet. Bosses created with
+ * tier-scaled stats are returned as stored.
+ */
+export async function readScaledBoss(ctx: DatabaseCtx, tier: number) {
+  const boss = await ctx.db
+    .query("bosses")
+    .withIndex("by_tier", (q) => q.eq("tier", tier))
+    .first();
+  if (!boss) return null;
+  const mult = boss.statsTierScaled
+    ? 1
+    : getTierScale(tier, await getTierScaleMultiplier(ctx));
+  return {
+    ...boss,
+    element: bossElementForTier(tier),
+    str: scaleBossStat(boss.str, mult),
+    dex: scaleBossStat(boss.dex, mult),
+    int: scaleBossStat(boss.int, mult),
+    luk: scaleBossStat(boss.luk, mult),
+    con: scaleBossStat(boss.con, mult),
+  };
+}
+
+/**
  * Create the shared boss record for a tier when it is first needed.
  */
 export async function ensureBossForTier(ctx: MutationCtx, tier: number) {
   if (!Number.isSafeInteger(tier) || tier < 1) {
     throw new Error("Boss tier must be a positive integer");
-  }
-
-  const unlockLevelRow = await ctx.db
-    .query("gameBalance")
-    .withIndex("by_key", (q) => q.eq("key", "bossUnlockLevelPerTier"))
-    .first();
-  if (!unlockLevelRow) {
-    await ctx.db.insert("gameBalance", {
-      key: "bossUnlockLevelPerTier",
-      value: DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
-      description: "Character levels required per boss tier (tier multiplied by this value)",
-      lastUpdated: Date.now(),
-    });
   }
 
   const existing = await ctx.db

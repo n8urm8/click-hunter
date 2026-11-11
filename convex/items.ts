@@ -86,6 +86,7 @@ export type EquipmentStatBonuses = {
   int: number;
   luk: number;
   con: number;
+  agi: number;
 };
 
 /**
@@ -107,6 +108,7 @@ const EMPTY_EQUIPMENT_STAT_BONUSES: EquipmentStatBonuses = {
   int: 0,
   luk: 0,
   con: 0,
+  agi: 0,
 };
 
 export async function getEquippedStatBonuses(
@@ -458,7 +460,7 @@ export const DEX_SPEED_COEFF_DEFAULT = 0.005;
 
 export const COMBAT_BALANCE_DEFAULTS = [
   { key: "combatStatAttackCoeff", value: 1.2, description: "Attack gained per point of a weapon's scaling stat" },
-  { key: "combatDexSpeedCoeff", value: DEX_SPEED_COEFF_DEFAULT, description: "Fraction of weapon speed gained per point of the weapon's scaling stat above 10 (0.005 = +0.5%)" },
+  { key: "combatDexSpeedCoeff", value: DEX_SPEED_COEFF_DEFAULT, description: "Fraction of weapon speed gained per point of AGI (agility) above 10, for every weapon (0.005 = +0.5%). The key keeps its old DEX name so tuned values carry over" },
   { key: "combatMinAttackSpeed", value: 0.5, description: "Minimum attacks per second" },
   { key: "combatPhysDefConCoeff", value: 0.8, description: "Physical defense gained per con" },
   { key: "combatMagDefIntCoeff", value: 0.8, description: "Magical defense gained per int" },
@@ -471,7 +473,9 @@ export const COMBAT_BALANCE_DEFAULTS = [
   { key: "combatStatBonusCap", value: 100, description: "Maximum combined timed stat bonus per stat" },
   { key: "combatXpMultiplierCap", value: 10, description: "Maximum combined combat XP multiplier" },
   PLAYER_ATTACK_SPEED_BALANCE_DEFAULT,
+  { key: "monsterDefensePerTier", value: 1, description: "Defense every enemy gains per tier (tier 3 = 3). Regular monsters take it off physical attacks, and off magic when their INT defense is lower" },
   { key: "weaponSpeedDamageExponent", value: 1, description: "How much a slow weapon's hits make up for its speed: damage is multiplied by (1 / weapon speed) ^ this (0 = no compensation, 1 = equal base damage per second)" },
+  { key: "bossDefenseMultiplier", value: 3, description: "Bosses and raid dragons have this many times a regular monster's tier defense, against physical and magical hits" },
 ] as const;
 
 async function getCombatBalanceNumber(
@@ -501,7 +505,7 @@ export async function readCombatBalance(ctx: DatabaseCtx) {
   });
   return {
     statAttackCoeff: entries[0],
-    dexSpeedCoeff: entries[1],
+    agiSpeedCoeff: entries[1],
     minAttackSpeed: entries[2],
     physDefConCoeff: entries[3],
     magDefIntCoeff: entries[4],
@@ -514,7 +518,9 @@ export async function readCombatBalance(ctx: DatabaseCtx) {
     statBonusCap: entries[11],
     xpMultiplierCap: entries[12],
     attackSpeedMultiplier: entries[13],
-    weaponSpeedDamageExponent: entries[14],
+    monsterDefensePerTier: entries[14],
+    weaponSpeedDamageExponent: entries[15],
+    bossDefenseMultiplier: entries[16],
   };
 }
 
@@ -950,21 +956,22 @@ export async function computeEquipmentStats(
 }
 
 /**
- * Bonuses scale the weapon's own speed instead of adding a flat amount, and
- * come from the stat the weapon already scales with. Together with
- * weaponSpeedDamageExponent, that leaves speed as a choice of how damage is
- * delivered rather than how much: a flat bonus or a DEX-only one would hand
- * fast weapons a second multiplier on their main stat.
+ * Agility speeds up every weapon: each point above 10 scales the weapon's own
+ * speed by `agiSpeedCoeff`, and armor penalties slow it back down. Agility is
+ * its own stat, separate from every weapon's damage stat, so no weapon gets
+ * both damage and speed from one stat. Bonuses scale the weapon's speed
+ * rather than adding a flat amount, so a fast weapon stays faster than a
+ * slow one at any agility.
  */
 export function computeAttackSpeed(
   weaponSpeed: number,
-  scalingStat: number,
+  agi: number,
   armorPenalty: number,
-  balance: { dexSpeedCoeff: number; minAttackSpeed: number; attackSpeedMultiplier: number }
+  balance: { agiSpeedCoeff: number; minAttackSpeed: number; attackSpeedMultiplier: number }
 ) {
   return Math.max(
     balance.minAttackSpeed,
-    weaponSpeed * (1 + Math.max(0, scalingStat - 10) * balance.dexSpeedCoeff - armorPenalty)
+    weaponSpeed * (1 + Math.max(0, agi - 10) * balance.agiSpeedCoeff - armorPenalty)
   ) * balance.attackSpeedMultiplier;
 }
 
@@ -991,6 +998,7 @@ export async function getActiveCombatBoosts(
     int: 0,
     luk: 0,
     con: 0,
+    agi: 0,
   };
   let regenPerSecond = 0;
   let xpMultiplier = 1;

@@ -51,14 +51,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-type SnapshotEffectStat = "str" | "dex" | "int" | "luk" | "con";
+type SnapshotEffectStat = "str" | "dex" | "int" | "luk" | "con" | "agi";
 
 function snapshotEffectStat(value: unknown): SnapshotEffectStat | undefined {
   return value === "str" ||
     value === "dex" ||
     value === "int" ||
     value === "luk" ||
-    value === "con"
+    value === "con" ||
+    value === "agi"
     ? value
     : undefined;
 }
@@ -626,7 +627,7 @@ type CraftingRecipeSnapshot = {
     quantity: number;
     itemFamily?: string;
     effectType?: string;
-    effectStat?: "str" | "dex" | "int" | "luk" | "con";
+    effectStat?: "str" | "dex" | "int" | "luk" | "con" | "agi";
     effectAmount?: number;
     effectDurationMs?: number;
   }>;
@@ -1970,131 +1971,88 @@ export async function refundSkillTaskReservation(
   return refunded;
 }
 
-const MAX_CATALOG_RECIPE_ROWS = 10_000;
+/** Rows for one skill's tier. Far above content size; the old panel cap dropped recipes. */
+const MAX_SKILL_PAGE_ROWS = 2_000;
 
-async function getSkillCatalogData(ctx: DatabaseCtx) {
-  const [definitions, tiers, activities, recipes, augmentations] =
-    await Promise.all([
-      ctx.db.query("skillDefinitions").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
-      ctx.db.query("skillTierDefinitions").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
-      ctx.db.query("gatheringActivities").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
-      ctx.db.query("recipes").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
-      ctx.db.query("augmentationDefinitions").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
-    ]);
-  const items = new Map<Id<"items">, Promise<Doc<"items"> | null>>();
-  const getItem = (itemId: Id<"items">) => {
-    let item = items.get(itemId);
-    if (item === undefined) {
-      item = ctx.db.get(itemId);
-      items.set(itemId, item);
-    }
-    return item;
+function buildInfusionRates(infusionBalance: Awaited<ReturnType<typeof readInfusionBalance>>) {
+  return {
+    baseRate: infusionBalance.infusionBaseRate,
+    augmentBaseRate: infusionBalance.augmentBaseRate,
+    falloffPerTierGap: infusionBalance.infusionFalloffPerTierGap,
+    minRate: infusionBalance.infusionMinRate,
+    maxRate: infusionBalance.infusionMaxRate,
+    failXpPercent: infusionBalance.infusionFailXpPercent,
+    keyEssenceQty: infusionBalance.bossKeyEssenceQty,
+    enchantEssenceQty: infusionBalance.enchantEssenceQty,
+    enchantGoldPerLevel: infusionBalance.enchantGoldPerLevel,
+    damagePerLevel: infusionBalance.enchantDamagePerLevel,
+    defensePerLevel: infusionBalance.enchantDefensePerLevel,
+    enchantLevelCap: infusionBalance.enchantLevelCap,
   };
+}
+
+async function readCatalogItems(ctx: DatabaseCtx, itemIds: Iterable<Id<"items">>) {
+  const unique = [...new Set(itemIds)];
+  const found = await Promise.all(unique.map((itemId) => ctx.db.get(itemId)));
+  const itemDocs: Record<string, Doc<"items">> = {};
+  unique.forEach((itemId, index) => {
+    const item = found[index];
+    if (item) itemDocs[itemId] = item;
+  });
+  return itemDocs;
+}
+
+/**
+ * Augmentation-only catalog for the inventory and rebirth screens. Skips
+ * recipes and activities (the bulk of the full catalog and of its doc reads);
+ * those two arrays are empty so the shape matches `getSkillPage`.
+ */
+async function getAugmentationCatalogData(ctx: DatabaseCtx) {
+  const [definitions, tiers, augmentations] = await Promise.all([
+    ctx.db.query("skillDefinitions").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
+    ctx.db.query("skillTierDefinitions").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
+    ctx.db.query("augmentationDefinitions").withIndex("by_enabled", (q) => q.eq("enabled", true)).take(MAX_SKILL_PANEL_ROWS),
+  ]);
   const enabledSkillIds = new Set(definitions.map((skill) => skill.skillId));
-  const enabledSkillTiers = new Set(
-    tiers.map((tier) => `${tier.skillId}:${tier.tier}`)
-  );
-  const visibleTiers = tiers.filter((tier) =>
-    enabledSkillIds.has(tier.skillId)
-  );
-  const visibleActivities = activities.filter((activity) =>
-    enabledSkillIds.has(activity.skillId) &&
-    enabledSkillTiers.has(`${activity.skillId}:${activity.tier}`)
-  );
-  const visibleRecipes = recipes.filter((recipe) =>
-    enabledSkillIds.has(recipe.skillId) &&
-    enabledSkillTiers.has(`${recipe.skillId}:${recipe.tier}`)
-  );
+  const enabledSkillTiers = new Set(tiers.map((tier) => `${tier.skillId}:${tier.tier}`));
   const visibleAugmentations = augmentations.filter((augmentation) =>
     enabledSkillIds.has(augmentation.skillId) &&
     enabledSkillTiers.has(`${augmentation.skillId}:${augmentation.tier}`)
   );
-  // One read per table instead of two per recipe: ~1,000 queries down to a few.
-  const [allIngredients, allOutputs] = await Promise.all([
-    ctx.db.query("recipeIngredients").take(MAX_CATALOG_RECIPE_ROWS),
-    ctx.db.query("recipeOutputs").take(MAX_CATALOG_RECIPE_ROWS),
-  ]);
-  const groupByRecipe = <T extends { recipeId: string }>(rows: T[]) => {
-    const grouped = new Map<string, T[]>();
-    for (const row of rows) {
-      const list = grouped.get(row.recipeId);
-      if (list) list.push(row);
-      else grouped.set(row.recipeId, [row]);
-    }
-    return grouped;
-  };
-  const ingredientsByRecipe = groupByRecipe(allIngredients);
-  const outputsByRecipe = groupByRecipe(allOutputs);
-  const recipeDetails = await Promise.all(
-    visibleRecipes.map(async (recipe) => {
-      const ingredients = ingredientsByRecipe.get(recipe.recipeId) ?? [];
-      const outputs = outputsByRecipe.get(recipe.recipeId) ?? [];
-      return {
-        ...recipe,
-        ingredients: await Promise.all(
-          ingredients.map(async (ingredient) => ({
-            ...ingredient,
-            item: await getItem(ingredient.itemId),
-          }))
-        ),
-        outputs: await Promise.all(
-          outputs.map(async (output) => ({
-            ...output,
-            item: await getItem(output.itemId),
-          }))
-        ),
-      };
-    })
-  );
-  const activityDetails = await Promise.all(
-    visibleActivities.map(async (activity) => ({
-      ...activity,
-      outputItem: await getItem(activity.outputItemId),
-    }))
-  );
-  const augmentationDetails = await Promise.all(
-    visibleAugmentations.map(async (augmentation) => ({
-      ...augmentation,
-      experienceReward:
-        augmentation.experienceReward ?? 50 * augmentation.tier,
-      requiredMaterialItem: await getItem(augmentation.requiredMaterialItemId),
-      bossCatalystItem:
-        augmentation.bossCatalystItemId === undefined
-          ? null
-          : await getItem(augmentation.bossCatalystItemId),
-    }))
+  const items = await readCatalogItems(
+    ctx,
+    visibleAugmentations.flatMap((augmentation) =>
+      augmentation.bossCatalystItemId === undefined
+        ? [augmentation.requiredMaterialItemId]
+        : [augmentation.requiredMaterialItemId, augmentation.bossCatalystItemId]
+    )
   );
   const [xpBaseValue, skillTaskMsPerXp] = await Promise.all([
     getBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key),
     readSkillTaskMsPerXp(ctx),
   ]);
-  const skillXpBase = readSkillXpBase(xpBaseValue);
   const infusionBalance = await readInfusionBalance(ctx);
   return {
     definitions,
-    tiers: visibleTiers,
-    activities: activityDetails,
-    recipes: recipeDetails,
-    augmentations: augmentationDetails,
-    skillXpBase,
+    tiers: tiers.filter((tier) => enabledSkillIds.has(tier.skillId)),
+    items,
+    activities: [] as never[],
+    recipes: [] as never[],
+    augmentations: visibleAugmentations.map((augmentation) => ({
+      ...augmentation,
+      experienceReward: augmentation.experienceReward ?? 50 * augmentation.tier,
+    })),
+    skillXpBase: readSkillXpBase(xpBaseValue),
     skillTaskMsPerXp,
     maxSkillBatchSize: MAX_SKILL_BATCH_SIZE,
-    infusionRates: {
-      baseRate: infusionBalance.infusionBaseRate,
-      augmentBaseRate: infusionBalance.augmentBaseRate,
-      falloffPerTierGap: infusionBalance.infusionFalloffPerTierGap,
-      minRate: infusionBalance.infusionMinRate,
-      maxRate: infusionBalance.infusionMaxRate,
-      failXpPercent: infusionBalance.infusionFailXpPercent,
-      keyEssenceQty: infusionBalance.bossKeyEssenceQty,
-      enchantEssenceQty: infusionBalance.enchantEssenceQty,
-      enchantGoldPerLevel: infusionBalance.enchantGoldPerLevel,
-      damagePerLevel: infusionBalance.enchantDamagePerLevel,
-      defensePerLevel: infusionBalance.enchantDefensePerLevel,
-      enchantLevelCap: infusionBalance.enchantLevelCap,
-    },
+    infusionRates: buildInfusionRates(infusionBalance),
   };
 }
+
+export const getAugmentationCatalog = query({
+  args: {},
+  handler: getAugmentationCatalogData,
+});
 
 async function getPlayerSkillRows(ctx: DatabaseCtx, playerId: PlayerId) {
   await getPlayer(ctx, playerId);
@@ -2103,11 +2061,6 @@ async function getPlayerSkillRows(ctx: DatabaseCtx, playerId: PlayerId) {
     .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
     .take(MAX_SKILL_PANEL_ROWS);
 }
-
-export const getSkillCatalog = query({
-  args: {},
-  handler: getSkillCatalogData,
-});
 
 export const getPlayerSkills = query({
   args: {
@@ -2119,25 +2072,187 @@ export const getPlayerSkills = query({
   },
 });
 
-export const getSkillPanel = query({
+type SkillPageTier = number | "all";
+
+type SkillContent = {
+  activities: Doc<"gatheringActivities">[];
+  recipes: Array<
+    Doc<"recipes"> & {
+      ingredients: Doc<"recipeIngredients">[];
+      outputs: Doc<"recipeOutputs">[];
+    }
+  >;
+  augmentations: Array<
+    Doc<"augmentationDefinitions"> & { experienceReward: number }
+  >;
+  items: Record<string, Doc<"items">>;
+};
+
+/**
+ * The content for one skill and tier ("all" for every tier of the skill).
+ * Activities, recipes and augmentations come from the `by_skillId_and_tier`
+ * indexes, and recipe parts from `by_recipeId`, so the reads follow what is shown.
+ */
+async function loadSkillContent(
+  ctx: DatabaseCtx,
+  skillId: string,
+  tier: SkillPageTier,
+  enabledTiers: Set<number>
+): Promise<SkillContent> {
+  const [activityRows, recipeRows, augmentationRows] = await Promise.all([
+    ctx.db
+      .query("gatheringActivities")
+      .withIndex("by_skillId_and_tier", (q) =>
+        tier === "all" ? q.eq("skillId", skillId) : q.eq("skillId", skillId).eq("tier", tier)
+      )
+      .take(MAX_SKILL_PAGE_ROWS),
+    ctx.db
+      .query("recipes")
+      .withIndex("by_skillId_and_tier", (q) =>
+        tier === "all" ? q.eq("skillId", skillId) : q.eq("skillId", skillId).eq("tier", tier)
+      )
+      .take(MAX_SKILL_PAGE_ROWS),
+    ctx.db
+      .query("augmentationDefinitions")
+      .withIndex("by_skillId_and_tier", (q) =>
+        tier === "all" ? q.eq("skillId", skillId) : q.eq("skillId", skillId).eq("tier", tier)
+      )
+      .take(MAX_SKILL_PAGE_ROWS),
+  ]);
+  const visible = (row: { enabled: boolean; tier: number }) =>
+    row.enabled && enabledTiers.has(row.tier);
+  const activities = activityRows.filter(visible);
+  const recipes = await Promise.all(
+    recipeRows.filter(visible).map(async (recipe) => {
+      const [ingredients, outputs] = await Promise.all([
+        ctx.db
+          .query("recipeIngredients")
+          .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+          .take(MAX_SKILL_PAGE_PARTS),
+        ctx.db
+          .query("recipeOutputs")
+          .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+          .take(MAX_SKILL_PAGE_PARTS),
+      ]);
+      return { ...recipe, ingredients, outputs };
+    })
+  );
+  const augmentations = augmentationRows.filter(visible).map((augmentation) => ({
+    ...augmentation,
+    experienceReward: augmentation.experienceReward ?? 50 * augmentation.tier,
+  }));
+
+  const itemIds = new Set<Id<"items">>();
+  for (const recipe of recipes) {
+    for (const row of [...recipe.ingredients, ...recipe.outputs]) itemIds.add(row.itemId);
+  }
+  for (const activity of activities) itemIds.add(activity.outputItemId);
+  for (const augmentation of augmentations) {
+    itemIds.add(augmentation.requiredMaterialItemId);
+    if (augmentation.bossCatalystItemId !== undefined) {
+      itemIds.add(augmentation.bossCatalystItemId);
+    }
+  }
+  return {
+    activities,
+    recipes,
+    augmentations,
+    items: await readCatalogItems(ctx, itemIds),
+  };
+}
+
+const MAX_SKILL_PAGE_PARTS = 50;
+
+/**
+ * One skill page: the enabled skill list for navigation, the skill's tiers, and
+ * the content for the selected tier. Without an explicit tier the page opens
+ * the player's highest unlocked tier (level at or above its requirement), or
+ * the lowest tier when none is unlocked yet. An unknown skill or tier falls
+ * back to the defaults. The response reports what was selected, so the client
+ * can correct its URL.
+ */
+async function getSkillPageData(
+  ctx: DatabaseCtx,
+  args: { playerId: PlayerId; skillId?: string; tier?: SkillPageTier }
+) {
+  await requirePlayerOwner(ctx, args.playerId);
+  const definitions = await ctx.db
+    .query("skillDefinitions")
+    .withIndex("by_enabled", (q) => q.eq("enabled", true))
+    .take(MAX_SKILL_PANEL_ROWS);
+  const skill =
+    definitions.find((definition) => definition.skillId === args.skillId) ??
+    definitions[0] ??
+    null;
+
+  const [tiers, playerSkill] = await Promise.all([
+    skill
+      ? ctx.db
+          .query("skillTierDefinitions")
+          .withIndex("by_skillId", (q) => q.eq("skillId", skill.skillId))
+          .take(MAX_SKILL_PANEL_ROWS)
+          .then((rows) => rows.filter((tier) => tier.enabled))
+      : Promise.resolve([]),
+    skill
+      ? ctx.db
+          .query("playerSkills")
+          .withIndex("by_playerId_and_skillId", (q) =>
+            q.eq("playerId", args.playerId).eq("skillId", skill.skillId)
+          )
+          .first()
+      : Promise.resolve(null),
+  ]);
+  const tierNumbers = tiers.map((tier) => tier.tier).sort((left, right) => left - right);
+  const enabledTiers = new Set(tierNumbers);
+  const level = playerSkill?.level ?? 1;
+  const unlockedTiers = tiers
+    .filter((tier) => tier.requiredLevel <= level)
+    .map((tier) => tier.tier);
+  const defaultTier: number | "all" =
+    unlockedTiers.length > 0
+      ? Math.max(...unlockedTiers)
+      : (tierNumbers[0] ?? "all");
+  const selectedTier: SkillPageTier =
+    args.tier === "all"
+      ? "all"
+      : typeof args.tier === "number" && enabledTiers.has(args.tier)
+        ? args.tier
+        : defaultTier;
+
+  const [content, xpBaseValue, skillTaskMsPerXp, infusionBalance] = await Promise.all([
+    skill
+      ? loadSkillContent(ctx, skill.skillId, selectedTier, enabledTiers)
+      : Promise.resolve<SkillContent>({
+          activities: [],
+          recipes: [],
+          augmentations: [],
+          items: {},
+        }),
+    getBalanceValue(ctx, SKILL_XP_BALANCE_DEFAULT.key),
+    readSkillTaskMsPerXp(ctx),
+    readInfusionBalance(ctx),
+  ]);
+  return {
+    skill,
+    definitions,
+    tiers,
+    tierNumbers,
+    selectedTier,
+    ...content,
+    skillXpBase: readSkillXpBase(xpBaseValue),
+    skillTaskMsPerXp,
+    maxSkillBatchSize: MAX_SKILL_BATCH_SIZE,
+    infusionRates: buildInfusionRates(infusionBalance),
+  };
+}
+
+export type SkillPage = Awaited<ReturnType<typeof getSkillPageData>>;
+
+export const getSkillPage = query({
   args: {
     playerId: v.id("players"),
+    skillId: v.optional(v.string()),
+    tier: v.optional(v.union(v.number(), v.literal("all"))),
   },
-  handler: async (ctx, { playerId }) => {
-    await requirePlayerOwner(ctx, playerId);
-    const [catalog, playerSkills] = await Promise.all([
-      getSkillCatalogData(ctx),
-      getPlayerSkillRows(ctx, playerId),
-    ]);
-    return {
-      ...catalog,
-      playerSkills: playerSkills.map((playerSkill) => ({
-        ...playerSkill,
-        xpRequiredForNextLevel: getSkillXpRequiredForLevel(
-          playerSkill.level,
-          catalog.skillXpBase
-        ),
-      })),
-    };
-  },
+  handler: getSkillPageData,
 });

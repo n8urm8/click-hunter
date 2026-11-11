@@ -10,7 +10,13 @@ import { readBalanceValue, rebuildBalanceSnapshot } from "./balance";
 import { awardMetAchievements } from "./achievements";
 import { setPlayerOwner } from "./playerAuth";
 import {
-  DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
+  insertPlayerProgress,
+  patchPlayerProgress,
+  readPlayerProgressOrNull,
+} from "./playerProgress";
+import { readPlayerHpOrNull } from "./playerHp";
+import type { Doc } from "./_generated/dataModel";
+import {
   ensureBossForTier,
   getTierScale,
   getTierScaleMultiplier,
@@ -32,6 +38,7 @@ import { COMBAT_BALANCE_DEFAULTS, DEX_SPEED_COEFF_DEFAULT, inferWeaponType } fro
 import { HP_REGEN_BALANCE_DEFAULTS } from "./playerHp";
 import { LEATHER_BALANCE_DEFAULTS } from "./leatherwork";
 import {
+  ALL_ITEMS,
   seedLeathercraftingContent,
   STAFF_BASE_DAMAGE_PER_TIER,
   STARTER_STAFF_BASE_DAMAGE,
@@ -105,30 +112,23 @@ export const backfillItemRarities = internalMutation({
 });
 
 /**
- * Migration: add the configurable character-level requirement for bosses.
+ * Migration: remove the character-level requirement for bosses. Bosses now
+ * need every regular monster on the tier defeated, plus the boss key.
  *
- * Run: npx convex run migrations:backfillBossUnlockLevelPerTier
+ * Run: npx convex run migrations:removeBossUnlockLevelPerTier
  */
-export const backfillBossUnlockLevelPerTier = internalMutation({
+export const removeBossUnlockLevelPerTier = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const existing = await ctx.db
+    const rows = await ctx.db
       .query("gameBalance")
       .withIndex("by_key", (q) => q.eq("key", "bossUnlockLevelPerTier"))
-      .first();
-    if (existing) {
-      return { created: false };
+      .collect();
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
     }
-
-    await ctx.db.insert("gameBalance", {
-      key: "bossUnlockLevelPerTier",
-      value: DEFAULT_BOSS_UNLOCK_LEVEL_PER_TIER,
-      description:
-        "Character levels required per boss tier (tier multiplied by this value)",
-      lastUpdated: Date.now(),
-    });
-
-    return { created: true };
+    if (rows.length > 0) await rebuildBalanceSnapshot(ctx);
+    return { removed: rows.length };
   },
 });
 
@@ -976,22 +976,27 @@ export const backfillWisdom = internalMutation({
     let updated = 0;
 
     for (const player of players) {
+      // statXp lives on the progress row (see playerProgress.ts); a player without one is skipped.
+      const progress = await readPlayerProgressOrNull(ctx, player._id);
       const needsWis = player.wis === undefined;
-      const needsWisXp = player.statXp?.wis === undefined;
+      const needsWisXp = progress !== null && progress.statXp?.wis === undefined;
 
       if (needsWis || needsWisXp) {
-        await ctx.db.patch(player._id, {
-          wis: player.wis ?? 1,
-          statXp: {
-            str: player.statXp?.str ?? 0,
-            dex: player.statXp?.dex ?? 0,
-            int: player.statXp?.int ?? 0,
-            luk: player.statXp?.luk ?? 0,
-            con: player.statXp?.con ?? 0,
-            wis: player.statXp?.wis ?? 0,
-          },
-          lastUpdated: Date.now(),
-        });
+        if (needsWis) {
+          await ctx.db.patch(player._id, { wis: 1, lastUpdated: Date.now() });
+        }
+        if (needsWisXp && progress) {
+          await patchPlayerProgress(ctx, progress, {
+            statXp: {
+              str: progress.statXp?.str ?? 0,
+              dex: progress.statXp?.dex ?? 0,
+              int: progress.statXp?.int ?? 0,
+              luk: progress.statXp?.luk ?? 0,
+              con: progress.statXp?.con ?? 0,
+              wis: 0,
+            },
+          });
+        }
         updated += 1;
       }
     }
@@ -1250,7 +1255,12 @@ export const applyPerformanceAndBalanceUpdate = internalMutation({
       { key: "rewardTierGrowth", value: DEFAULT_REWARD_TIER_GROWTH, description: "Reward multiplier per tier, on top of the linear per-tier reward" },
       { key: "autoRestBelowPercent", value: DEFAULT_AUTO_REST_BELOW_PERCENT, description: "Hunts stop to rest before a fight when HP is below this fraction of max (0 = never)" },
       { key: "autoRestUntilPercent", value: DEFAULT_AUTO_REST_UNTIL_PERCENT, description: "Fraction of max HP a resting hunter recovers to before fighting again" },
-      ...COMBAT_BALANCE_DEFAULTS.filter((entry) => entry.key === "weaponSpeedDamageExponent"),
+      ...COMBAT_BALANCE_DEFAULTS.filter(
+        (entry) =>
+          entry.key === "weaponSpeedDamageExponent" ||
+          entry.key === "monsterDefensePerTier" ||
+          entry.key === "bossDefenseMultiplier"
+      ),
     ];
     for (const entry of added) {
       const row = await ctx.db
@@ -1330,18 +1340,21 @@ export const backfillPlayerRecords = internalMutation({
       if (player.authSubject !== undefined) {
         await setPlayerOwner(ctx, player._id, player.authSubject);
       }
-      const wisdomXp = player.statXp?.wis ?? 0;
+      const progress = await readPlayerProgressOrNull(ctx, player._id);
+      const wisdomXp = progress?.statXp?.wis ?? 0;
       if (wisdomXp > 0) {
         const level = calculateWisdomLevel(wisdomXp, xpBase);
         if (level !== player.wis) {
           await ctx.db.patch(player._id, { wis: level });
         }
       }
-      await awardMetAchievements(ctx, player._id, {
-        maxTierReached: player.maxTierReached ?? player.currentTier,
-        totalExperience: player.totalExperience,
-        rebirthCount: player.rebirthCount,
-      });
+      if (progress) {
+        await awardMetAchievements(ctx, player._id, {
+          maxTierReached: player.maxTierReached ?? player.currentTier,
+          totalExperience: progress.totalExperience,
+          rebirthCount: player.rebirthCount,
+        });
+      }
       const upgrades = await ctx.db
         .query("playerUpgrades")
         .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
@@ -1358,5 +1371,130 @@ export const backfillPlayerRecords = internalMutation({
       });
     }
     return null;
+  },
+});
+
+/**
+ * Fields that moved off `players` into `playerProgress` (gold, XP, stat XP) and
+ * `playerHp` (HP). The narrowed schema no longer declares them, so they are
+ * typed here for this one migration only.
+ */
+type LegacyPlayerRowFields = {
+  gold?: number;
+  totalExperience?: number;
+  statXp?: Doc<"playerProgress">["statXp"];
+  currentHp?: number;
+  currentHpUpdatedAt?: number;
+};
+const LEGACY_PLAYER_FIELDS = [
+  "gold",
+  "totalExperience",
+  "statXp",
+  "currentHp",
+  "currentHpUpdatedAt",
+] as const;
+
+/**
+ * Split gold, XP, and HP off the `players` rows (widen, then this, then
+ * narrow). Each page copies a player's legacy values into `playerProgress` and
+ * `playerHp` when those rows are missing, then rewrites the player row without
+ * the legacy fields. Re-running is safe: a row is created only if it's absent.
+ *
+ * Run: pnpm run migrate:playerSplit. It pages itself until every player is done.
+ */
+export const splitPlayerRecord = internalMutation({
+  args: { cursor: v.optional(v.string()) },
+  handler: async (ctx, { cursor }) => {
+    const page = await ctx.db
+      .query("players")
+      .paginate({ numItems: 100, cursor: cursor ?? null });
+    for (const player of page.page) {
+      const legacy = player as typeof player & LegacyPlayerRowFields;
+      const progress = await readPlayerProgressOrNull(ctx, player._id);
+      if (progress === null) {
+        await insertPlayerProgress(ctx, player._id, {
+          gold: legacy.gold ?? 0,
+          totalExperience: legacy.totalExperience ?? 0,
+          statXp: legacy.statXp,
+          updatedAt: player.lastUpdated,
+        });
+      }
+      if (legacy.currentHp !== undefined || legacy.currentHpUpdatedAt !== undefined) {
+        const hp = await readPlayerHpOrNull(ctx, player._id);
+        if (hp === null) {
+          await ctx.db.insert("playerHp", {
+            playerId: player._id,
+            currentHp: legacy.currentHp,
+            currentHpUpdatedAt: legacy.currentHpUpdatedAt,
+          });
+        }
+      }
+      if (LEGACY_PLAYER_FIELDS.some((field) => field in player)) {
+        const {
+          _id,
+          _creationTime,
+          gold,
+          totalExperience,
+          statXp,
+          currentHp,
+          currentHpUpdatedAt,
+          ...stable
+        } = legacy;
+        await ctx.db.replace(player._id, stable);
+      }
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.migrations.splitPlayerRecord, {
+        cursor: page.continueCursor,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Agility rebalance: boots give AGI instead of DEX, sword/dagger/bow base
+ * damage is retuned, and heavy armor speed penalties are halved. Patches only
+ * those fields on seeded items, to their current seed values, so tuned rows
+ * elsewhere are left alone. Players need no backfill: a missing `agi` reads
+ * as 1. Rerunnable.
+ */
+export const applyAgilityRebalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    let patched = 0;
+    for (const seed of ALL_ITEMS) {
+      const row = await ctx.db
+        .query("items")
+        .withIndex("by_itemId", (q) => q.eq("itemId", seed.itemId))
+        .first();
+      if (!row) continue;
+      const patch: Partial<Doc<"items">> = {};
+      if (seed.baseDamage !== undefined && row.baseDamage !== seed.baseDamage) {
+        patch.baseDamage = seed.baseDamage;
+      }
+      if (seed.speedPenalty !== undefined && row.speedPenalty !== seed.speedPenalty) {
+        patch.speedPenalty = seed.speedPenalty;
+      }
+      if (seed.effectStat === "agi" && row.effectStat !== "agi") {
+        patch.effectStat = "agi";
+      }
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(row._id, { ...patch, updatedAt: now });
+        patched += 1;
+      }
+    }
+    const speedDefault = COMBAT_BALANCE_DEFAULTS.find(
+      (entry) => entry.key === "combatDexSpeedCoeff"
+    );
+    const speedRow = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "combatDexSpeedCoeff"))
+      .first();
+    if (speedRow && speedDefault && speedRow.description !== speedDefault.description) {
+      await ctx.db.patch(speedRow._id, { description: speedDefault.description, lastUpdated: now });
+    }
+    return { patched };
   },
 });

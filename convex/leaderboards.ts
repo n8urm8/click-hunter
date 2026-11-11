@@ -57,8 +57,19 @@ export const refreshLeaderboards = internalMutation({
   handler: async (ctx) => {
     // Over-read slightly so simulation characters can't shrink a board.
     const take = BOARD_SIZE + 10;
+    // Experience lives on the progress rows, so rank those and load each player for its name.
+    const experienceRows = await ctx.db
+      .query("playerProgress")
+      .withIndex("by_totalExperience")
+      .order("desc")
+      .take(take);
+    const experienceByPlayer = new Map(
+      experienceRows.map((row) => [row.playerId, row.totalExperience])
+    );
     const [byExperience, byTier, byRebirth] = await Promise.all([
-      ctx.db.query("players").withIndex("by_totalExperience").order("desc").take(take),
+      Promise.all(experienceRows.map((row) => ctx.db.get(row.playerId))).then((rows) =>
+        rows.filter((player): player is Doc<"players"> => player !== null)
+      ),
       ctx.db.query("players").withIndex("by_maxTierReached").order("desc").take(take),
       ctx.db.query("players").withIndex("by_rebirthCount").order("desc").take(take),
     ]);
@@ -72,7 +83,7 @@ export const refreshLeaderboards = internalMutation({
     await syncBoard(
       ctx,
       await ctx.db.query("leaderboardByExperience").take(BOARD_SIZE * 2),
-      top(byExperience, (player) => player.totalExperience),
+      top(byExperience, (player) => experienceByPlayer.get(player._id) ?? 0),
       (row: Doc<"leaderboardByExperience">) => row.totalExperience,
       {
         insert: (row, now) =>

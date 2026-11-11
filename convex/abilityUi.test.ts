@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -246,10 +247,10 @@ test("a raised slot cap unlocks the higher slots", async () => {
       description: "Maximum equipped ability slots",
       lastUpdated: 0,
     });
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing test player");
     // Enough wisdom for six slots (1 + one per 33 levels).
-    await ctx.db.patch(player._id, {
+    await patchPlayerWithRecords(ctx, player._id, {
       statXp: {
         str: 0,
         dex: 0,

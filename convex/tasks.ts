@@ -11,7 +11,12 @@ import {
   rollEncounter,
   type BattleContext,
 } from "./combat";
-import { resolveCurrentHp, readHpRegenBalance, writePlayerHp } from "./playerHp";
+import {
+  readHpRegenBalance,
+  readPlayerHpOrNull,
+  resolveCurrentHp,
+  writePlayerHp,
+} from "./playerHp";
 import { tickEquippedConsumables } from "./consumableSlots";
 import { settleAutoBattleBatch, type BatchFight, type LootSummary } from "./loot";
 import { getEquippedProfile } from "./items";
@@ -910,13 +915,14 @@ async function processAutoBattle(
   // One HP/combat-profile read per settlement: it serves the respawn-wait path
   // below, the fight loop, and the encounter that gets rolled for the next one.
   const hpPlayer = await getPlayer(ctx, playerId);
+  const storedHp = await readPlayerHpOrNull(ctx, playerId);
   const hpProfile = await readPlayerCombatProfile(ctx, hpPlayer, { now });
   const hpMax = Math.max(1, Math.ceil(hpProfile.combatStats.health));
   const regenBalance = await readHpRegenBalance(ctx);
   if (task.respawnUntil !== undefined && now < task.respawnUntil) {
     // Resting through a respawn wait: wall-clock CON regen applies.
     const rested = resolveCurrentHp(
-      hpPlayer,
+      storedHp,
       hpMax,
       hpProfile.effectiveStats.con,
       regenBalance,
@@ -964,7 +970,7 @@ async function processAutoBattle(
   // fights (below).
   const justRespawned = task.respawnUntil !== undefined;
   const hpState = resolveCurrentHp(
-    hpPlayer,
+    storedHp,
     hpMax,
     hpProfile.effectiveStats.con,
     regenBalance,
@@ -1155,7 +1161,7 @@ async function processAutoBattle(
     persistentMaxHp = projected.currentPlayerMaxHealth;
   } else if (fightsSettled === 0) {
     const rested = resolveCurrentHp(
-      { ...hpPlayer, currentHp: persistentHp, currentHpUpdatedAt: hpPlayer.currentHpUpdatedAt },
+      { currentHp: persistentHp, currentHpUpdatedAt: storedHp?.currentHpUpdatedAt },
       persistentMaxHp,
       hpProfile.effectiveStats.con,
       regenBalance,
@@ -1167,7 +1173,7 @@ async function processAutoBattle(
   }
   // A tick that settled nothing and left HP where it was has nothing to save, and
   // writing anyway would re-run every query reading this player.
-  if (fightsSettled > 0 || persistentHp !== hpPlayer.currentHp) {
+  if (fightsSettled > 0 || persistentHp !== storedHp?.currentHp) {
     await writePlayerHp(ctx, playerId, persistentHp, persistentMaxHp, now);
   }
 

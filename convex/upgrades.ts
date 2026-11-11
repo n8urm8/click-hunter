@@ -54,7 +54,7 @@ async function applyUpgradeEffect(
   upgrade: Doc<"upgrades">
 ) {
   if (upgrade.effectType !== "stat-boost" || !upgrade.effectStat || !upgrade.effectAmount) return;
-  const stat = upgrade.effectStat as "str" | "dex" | "int" | "luk" | "con";
+  const stat = upgrade.effectStat as "str" | "dex" | "int" | "luk" | "con" | "agi";
   const player = await ctx.db.get(playerId);
   if (!player) return;
   await ctx.db.patch(playerId, {

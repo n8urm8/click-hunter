@@ -4,7 +4,7 @@
  * See convex/seed.ts for data and convex/schema.ts for structure.
  */
 
-export type StatType = "str" | "dex" | "int" | "luk" | "con";
+export type StatType = "str" | "dex" | "int" | "luk" | "con" | "agi";
 export type UpgradeCategory = "stat-boost" | "weapon" | "armor" | "auto" | "special";
 export type MonsterType =
   | "rat"

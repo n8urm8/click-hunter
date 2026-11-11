@@ -1,4 +1,6 @@
 /// <reference types="vite/client" />
+import { projectCurrentHp } from "./hpProjection";
+import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -27,7 +29,7 @@ afterEach(() => {
 async function setup(overrides: Partial<Doc<"playerTasks">> = {}) {
   const t = convexTest(schema, modules).withIdentity({ subject: "timing-user" });
   const { playerId, taskId, itemId } = await t.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "test", name: "Test", authSubject: "timing-user",
       str: 1, dex: 1, int: 1, luk: 1, con: 1,
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
@@ -125,7 +127,7 @@ test("encounters are rolled once, early syncs preserve them and rewards settle e
   expect(simulate).toHaveBeenCalledTimes(1);
   expect(await t.run((ctx) => ctx.db.get(taskId)))
     .toMatchObject({ battleEncounter: encounter, onlineCreditMs: 30_000, completedBattles: 0 });
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 0 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ gold: 0 });
   for (const now of [40_000, 50_000]) {
     vi.setSystemTime(now);
     await t.mutation(api.tasks.heartbeat, { playerId, presenceOnly: true });
@@ -135,7 +137,7 @@ test("encounters are rolled once, early syncs preserve them and rewards settle e
   await t.mutation(api.tasks.sync, { playerId });
   expect(simulate).toHaveBeenCalledTimes(1);
   expect(await t.run((ctx) => ctx.db.get(taskId))).toBeNull();
-  expect(await t.run((ctx) => ctx.db.get(playerId)))
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId)))
     .toMatchObject({ gold: 50, totalExperience: 25 });
   expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(1);
   expect(await t.run((ctx) => ctx.db.query("taskPresence").collect())).toHaveLength(0);
@@ -170,7 +172,7 @@ test("ending a duration run mid-encounter grants no full-fight reward", async ()
   expect(queue.history[0]).toMatchObject({
     taskId, progressMs: 5_000, completedBattles: 0, status: "completed",
   });
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 0 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ gold: 0 });
   expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(0);
 });
 
@@ -192,7 +194,7 @@ test("defeat ends the hunt instead of recovering into the next encounter", async
   });
   expect(queue.history[0].result).toMatchObject({ reason: "Defeated" });
   // The loss is recorded and HP is left at zero for out-of-combat regen.
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ currentHp: 0 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ currentHp: 0 });
   expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(1);
 });
 
@@ -224,7 +226,7 @@ test("a mid-hunt defeat banks earned loot and stops the run", async () => {
     reason: "Defeated", battles: 2, losses: 1,
     goldEarned: 50, experienceEarned: 25,
   });
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({
     gold: 50, totalExperience: 25, currentHp: 0,
   });
   expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(2);
@@ -250,7 +252,7 @@ test("batch-limit continuation drains pending credit without duplicating fights"
     .toMatchObject({ completedBattles: 1, onlineCreditMs: 15_000 });
   await t.mutation(api.tasks.sync, { playerId });
   expect(await t.run((ctx) => ctx.db.get(taskId))).toBeNull();
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 100 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ gold: 100 });
   expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(2);
 });
 
@@ -268,7 +270,7 @@ test("long encounters accumulate partial progress beyond the spillover credit ca
     }
   }
   expect(await t.run((ctx) => ctx.db.get(taskId))).toBeNull();
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 50 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ gold: 50 });
 });
 
 test("offline work does not advance a following online-only task", async () => {
@@ -343,7 +345,7 @@ test("cancellation settles earned battle work and removes the presence record", 
   await t.mutation(api.tasks.sync, { playerId });
   vi.setSystemTime(10_000);
   await t.mutation(api.tasks.cancel, { playerId, taskId });
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 50 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ gold: 50 });
   const queue = await t.query(api.tasks.getQueue, { playerId });
   expect(queue.history[0]).toMatchObject({ status: "cancelled", completedBattles: 1 });
   expect(await t.run((ctx) => ctx.db.query("taskPresence").collect())).toHaveLength(0);
@@ -361,7 +363,7 @@ test("rebirth cancels saved and queued battles rather than retaining pre-reset e
   await t.mutation(api.players.rebirth, { playerId });
   expect(await t.run((ctx) => ctx.db.query("playerTasks").collect())).toHaveLength(0);
   expect(await t.run((ctx) => ctx.db.query("taskPresence").collect())).toHaveLength(0);
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ rebirthCount: 1 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ rebirthCount: 1 });
 });
 
 test("configuration defaults are idempotently seeded, validated and grace-clamped", async () => {
@@ -434,7 +436,7 @@ test("a long encounter settles once at its end instead of on a repeated timer", 
   }
   await t.mutation(api.tasks.sync, { playerId });
   expect(simulate).not.toHaveBeenCalled();
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 50 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ gold: 50 });
   expect(await t.run((ctx) => ctx.db.query("fightHistory").collect())).toHaveLength(1);
 });
 
@@ -479,7 +481,7 @@ test("the skill re-resolve gap caps how long a level-up can stay unapplied", asy
 
 test("heartbeats no longer refill the persistent HP bar; reads project it", async () => {
   const { t, playerId } = await setupSkill();
-  await t.run((ctx) => ctx.db.patch(playerId, { currentHp: 5, currentHpUpdatedAt: 0 }));
+  await t.run((ctx) => patchPlayerWithRecords(ctx, playerId, { currentHp: 5, currentHpUpdatedAt: 0 }));
   vi.setSystemTime(60_000);
   const metrics = await t.mutation(async (ctx) => {
     const result = await ctx.runMutation(api.tasks.sync, { playerId });
@@ -490,12 +492,14 @@ test("heartbeats no longer refill the persistent HP bar; reads project it", asyn
   // still does not persist the bar: the task, presence, skill row and granted
   // items are the only writes.
   expect(metrics.metrics.documentsWritten.used).toBe(4);
-  expect(await t.run((ctx) => ctx.db.get(playerId)))
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId)))
     .toMatchObject({ currentHp: 5, currentHpUpdatedAt: 0 });
   // The HUD still sees the healed bar.
-  const hp = await t.query(api.combat.getHpStatus, { playerId });
-  expect(hp.currentHp).toBeGreaterThan(5);
-  expect(hp.currentHp).toBeLessThanOrEqual(hp.maxHp);
+  const stats = await t.query(api.combat.getHpStatus, { playerId });
+  const live = await t.query(api.combat.getHpLive, { playerId });
+  const currentHp = projectCurrentHp(stats, live, 60_000);
+  expect(currentHp).toBeGreaterThan(5);
+  expect(currentHp).toBeLessThanOrEqual(stats.maxHp);
 });
 
 test("the scheduler plan carries deadlines without the history or battle stats", async () => {

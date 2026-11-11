@@ -115,6 +115,8 @@ export function statLabel(stat: string | undefined) {
       return "LUK";
     case "con":
       return "CON";
+    case "agi":
+      return "AGI";
     default:
       return null;
   }
@@ -346,7 +348,7 @@ export function AugmentationControls({
   ownedItem: OwnedItem | null;
   itemQuantities: Map<string, number>;
 }) {
-  const skillPanel = useSkillPanel(playerId);
+  const skillPanel = useSkillPanel(playerId, "augmentations");
   const enqueueSkillAction = useEnqueueSkillAction();
   const [activeAugmentation, setActiveAugmentation] = useState<string | null>(
     null
@@ -526,7 +528,7 @@ export function EnchantmentControls({
   ownedItem: OwnedItem | null;
   inventoryItems: OwnedItem[];
 }) {
-  const skillPanel = useSkillPanel(playerId);
+  const skillPanel = useSkillPanel(playerId, "augmentations");
   const enchantEquipment = useEnchantEquipment();
   const [isEnchanting, setIsEnchanting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);

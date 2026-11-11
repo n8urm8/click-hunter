@@ -4,7 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 
-export const REBIRTH_STAT_KEYS = ["str", "dex", "int", "luk", "con", "wis"] as const;
+export const REBIRTH_STAT_KEYS = ["str", "dex", "int", "luk", "con", "wis", "agi"] as const;
 export type RebirthStatKey = (typeof REBIRTH_STAT_KEYS)[number];
 
 // Validated fallback defaults for missing or malformed configuration.
@@ -24,6 +24,7 @@ const ZERO_BONUSES: RebirthStatBonuses = {
   luk: 0,
   con: 0,
   wis: 0,
+  agi: 0,
 };
 
 function readBonusCount(value: unknown): number {
@@ -127,6 +128,7 @@ export function getRebirthStatBonuses(
     luk: readBonusCount(stored.luk),
     con: readBonusCount(stored.con),
     wis: readBonusCount(stored.wis),
+    agi: readBonusCount(stored.agi),
   };
 }
 
@@ -237,6 +239,55 @@ export function rebirthAbilityMultiplier(
   return 1 + bonusPercent * Math.max(0, bonusCount);
 }
 
+/** Most of an ability's cooldown that rebirth bonuses may remove. */
+export const MAX_REBIRTH_ABILITY_COOLDOWN_REDUCTION = 0.5;
+
+/** What a player's banked rebirth bonuses do for one ability. */
+export type RebirthAbilityBonus = {
+  /** Multiplies the ability's power (damage, heal %, buff value). */
+  powerMultiplier: number;
+  /** Fraction of the cooldown removed, capped at 50%. */
+  cooldownReduction: number;
+  /** Multiplies wisdom XP earned by using the ability. */
+  wisdomXpMultiplier: number;
+};
+
+const NO_REBIRTH_ABILITY_BONUS: RebirthAbilityBonus = {
+  powerMultiplier: 1,
+  cooldownReduction: 0,
+  wisdomXpMultiplier: 1,
+};
+
+/**
+ * Read the rebirth ability rates once and return a lookup for each ability, so
+ * callers resolving several abilities pay one player read and three balance
+ * reads instead of one set per ability. Skips the balance reads for players
+ * with nothing banked.
+ */
+export async function readRebirthAbilityBonuses(
+  ctx: DatabaseCtx,
+  player: Doc<"players">
+): Promise<(abilityId: string) => RebirthAbilityBonus> {
+  const banked = getRebirthAbilityBonuses(player);
+  if (Object.keys(banked).length === 0) return () => NO_REBIRTH_ABILITY_BONUS;
+  const [powerPercent, cooldownPerBonus, wisdomXpPerBonus] = await Promise.all([
+    readRebirthAbilityBonusPercent(ctx),
+    readRebirthAbilityCooldownReductionPerBonus(ctx),
+    readRebirthAbilityWisdomXpBonusPerBonus(ctx),
+  ]);
+  return (abilityId) => {
+    const count = banked[abilityId] ?? 0;
+    if (count <= 0) return NO_REBIRTH_ABILITY_BONUS;
+    return {
+      powerMultiplier: rebirthAbilityMultiplier(count, powerPercent),
+      cooldownReduction: Math.min(
+        MAX_REBIRTH_ABILITY_COOLDOWN_REDUCTION,
+        cooldownPerBonus * count
+      ),
+      wisdomXpMultiplier: 1 + wisdomXpPerBonus * count,
+    };
+  };
+}
 
 export type RebirthRewardBonuses = {
   goldMultiplier: number;

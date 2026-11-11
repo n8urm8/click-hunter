@@ -2,6 +2,11 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { readBalanceMap } from "./balance";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  monsterBaseHealth,
+  monsterPhysicalAttack,
+  monsterTierDefense,
+} from "./monsterStats";
+import {
   computeAttackSpeed,
   getActiveCombatBoosts,
   getEquippedProfile,
@@ -19,7 +24,11 @@ import {
 } from "./rebirth";
 import { getActiveEventMultipliers } from "./loot";
 import { getGuildBonusesForPlayer } from "./guilds";
-import { conRegenPerSecond, readHpRegenBalance, resolveCurrentHp } from "./playerHp";
+import {
+  conRegenPerSecond,
+  readHpRegenBalance,
+  readPlayerHpOrNull,
+} from "./playerHp";
 import type { PvpEquipmentBundle } from "./pvpLoadout";
 import {
   abilityCastsLog,
@@ -31,7 +40,7 @@ import {
   type AbilityCombatState,
 } from "./abilityCombat";
 import { query } from "./_generated/server";
-import { requirePlayerRead } from "./playerAuth";
+import { requirePlayerOwner, requirePlayerRead } from "./playerAuth";
 import { v } from "convex/values";
 import {
   monstersInZone,
@@ -252,7 +261,7 @@ export async function readPlayerCombatProfile(
   ]);
   const weapon = resolved?.weapon ?? liveWeapon;
   const bonuses = resolved?.bonuses ?? equipped?.bonuses ?? {
-    str: 0, dex: 0, int: 0, luk: 0, con: 0,
+    str: 0, dex: 0, int: 0, luk: 0, con: 0, agi: 0,
   };
   const armor = resolved?.armor ?? equipped?.armor ?? { defense: 0, speedPenalty: 0 };
   const ward = resolved?.ward ?? equipped?.ward ?? {
@@ -275,7 +284,8 @@ export async function readPlayerCombatProfile(
     rebirthCounts.int +
     rebirthCounts.luk +
     rebirthCounts.con +
-    rebirthCounts.wis;
+    rebirthCounts.wis +
+    rebirthCounts.agi;
   const rebirthBonusPercent =
     bankedTotal > 0 ? await readRebirthStatBonusPercent(ctx) : 0;
   const rebirthRewards = await readRebirthRewardBonuses(ctx, player.rebirthCount);
@@ -288,6 +298,7 @@ export async function readPlayerCombatProfile(
     luk: (player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0)) * rebirthStatMultiplier(rebirthCounts.luk, rebirthBonusPercent) * guildStatMultiplier,
     con: (player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0)) * rebirthStatMultiplier(rebirthCounts.con, rebirthBonusPercent) * guildStatMultiplier,
     wis: (player.wis ?? 1) * rebirthStatMultiplier(rebirthCounts.wis, rebirthBonusPercent) * guildStatMultiplier,
+    agi: ((player.agi ?? 1) + (bonuses.agi ?? 0) + (passives.stats.agi ?? 0) + (boosts?.statBonus.agi ?? 0)) * rebirthStatMultiplier(rebirthCounts.agi, rebirthBonusPercent) * guildStatMultiplier,
   };
   const scalingStat = weapon?.damageStat === "dex"
     ? effectiveStats.dex
@@ -295,8 +306,9 @@ export async function readPlayerCombatProfile(
       ? effectiveStats.int
       : effectiveStats.str;
   const baseAttack = (weapon?.baseDamage ?? 2) + scalingStat * balance.statAttackCoeff;
-  // Real-time fights multiply damage by attack speed, so a slow weapon's hits land
-  // harder to keep its damage per second in line with a fast one.
+  // Every fight swings as often as attack speed allows (round fights too), so a
+  // slow weapon's hits land harder to keep its damage per second in line with a
+  // fast one.
   const weaponSpeedDamage = weapon && weapon.attackSpeed > 0
     ? Math.pow(1 / weapon.attackSpeed, balance.weaponSpeedDamageExponent)
     : 1;
@@ -306,12 +318,9 @@ export async function readPlayerCombatProfile(
   const combatStats = {
     health: Math.max(1, Math.max(balance.minPlayerHp, effectiveStats.con * 10) * (1 + passives.healthPercent)),
     attack: Math.max(1, baseAttack * damageMultiplier),
-    // Attack for round-based fights (arena, ranked, raids), where everyone swings
-    // once a round, so speed compensation would only reward slow weapons.
-    roundAttack: Math.max(1, (baseAttack * damageMultiplier) / weaponSpeedDamage),
     defense: Math.max(0, (armor.defense + effectiveStats.con * balance.physDefConCoeff) * (1 + passives.defensePercent)),
     magicalDefense: Math.max(0, effectiveStats.int * balance.magDefIntCoeff * (1 + passives.defensePercent)),
-    attackSpeed: computeAttackSpeed(weapon?.attackSpeed ?? 1, scalingStat, armor.speedPenalty, balance) *
+    attackSpeed: computeAttackSpeed(weapon?.attackSpeed ?? 1, effectiveStats.agi, armor.speedPenalty, balance) *
       (1 + passives.attackSpeedPercent),
     critChance: Math.min(1, Math.max(0, effectiveStats.luk * balance.lukCritChancePerPoint + passives.critChance + rebirthRewards.critChance)) * 100,
     critDamageMultiplier: balance.critDamageMultiplier,
@@ -611,13 +620,16 @@ export function rollEncounter(
     battle.minimumAttackMs
   );
   const isMagical = combatStats.damageType === "magical";
+  const monsterDefense = monsterTierDefense(tier, balance.monsterDefensePerTier);
+  // Every monster blunts magic at least as well as its tier defense.
   const monsterMagDef = Math.max(
-    0,
+    monsterDefense,
     monster.int * balance.monsterMagDefIntCoeff
   );
+  // Each damage type is blunted by its own monster defense before multipliers.
   const playerAttack = Math.max(
     1,
-    (isMagical ? Math.max(0, profile.baseAttack - monsterMagDef) : profile.baseAttack) *
+    Math.max(0, profile.baseAttack - (isMagical ? monsterMagDef : monsterDefense)) *
       profile.damageMultiplier
   );
   const playerHealth = combatStats.health;
@@ -627,11 +639,8 @@ export function rollEncounter(
       ? playerMaxHp
       : Math.min(playerMaxHp, Math.max(0, options.startingHp));
   const critChance = combatStats.critChance / 100;
-  const monsterHealth = Math.max(
-    1,
-    (monster.con * 10 + monster.int * 2) * monsterPower
-  );
-  const monsterPhysical = Math.max(1, monster.str * 1.2 + monster.dex * 0.5);
+  const monsterHealth = Math.max(1, monsterBaseHealth(monster) * monsterPower);
+  const monsterPhysical = monsterPhysicalAttack(monster);
   const monsterMagical = Math.max(
     0,
     monster.int * balance.monsterMagicCoeff
@@ -728,7 +737,7 @@ export function rollEncounter(
       state: abilityState,
       monster: {
         element: monster.element,
-        defense: 0,
+        defense: monsterDefense,
         magicalDefense: monsterMagDef,
       },
       monsterHealth,
@@ -847,9 +856,33 @@ export const getHpStatus = query({
   handler: async (ctx, { playerId }) => {
     const player = await requirePlayerRead(ctx, playerId);
     const now = Date.now();
-    const [profile, regenBalance, activeTask, bossSession] = await Promise.all([
+    const [profile, regenBalance] = await Promise.all([
       readPlayerCombatProfile(ctx, player, { now }),
       readHpRegenBalance(ctx),
+    ]);
+    const maxHp = Math.max(1, Math.ceil(profile.combatStats.health));
+    const conRegen = conRegenPerSecond(maxHp, profile.effectiveStats.con, regenBalance);
+    const boostRegen = profile.boosts?.regenPerSecond ?? 0;
+    return {
+      maxHp,
+      conRegenPerSecond: conRegen,
+      boostRegenPerSecond: boostRegen,
+      totalInCombatRegenPerSecond: conRegen + boostRegen,
+    };
+  },
+});
+
+/**
+ * Stored HP and whether a fight is running, for the hunt bar. Every settlement
+ * writes this, so it stays a small query: the HP row and the open task or boss
+ * session. The client projects regen from `storedAt` (see `useHpStatus`).
+ */
+export const getHpLive = query({
+  args: { playerId: v.id("players") },
+  handler: async (ctx, { playerId }) => {
+    await requirePlayerOwner(ctx, playerId);
+    const [hp, activeTask, bossSession] = await Promise.all([
+      readPlayerHpOrNull(ctx, playerId),
       ctx.db
         .query("playerTasks")
         .withIndex("by_playerId_and_status", (q) =>
@@ -863,28 +896,10 @@ export const getHpStatus = query({
         )
         .first(),
     ]);
-    const maxHp = Math.max(1, Math.ceil(profile.combatStats.health));
-    const inCombat = activeTask?.taskType === "battle" || bossSession !== null;
-    const state = resolveCurrentHp(
-      player,
-      maxHp,
-      profile.effectiveStats.con,
-      regenBalance,
-      now,
-      inCombat
-    );
-    const boostRegen = profile.boosts?.regenPerSecond ?? 0;
     return {
-      currentHp: Math.ceil(state.currentHp),
-      // The client ticks regen forward from this instant instead of re-running
-      // this query on a timer, so the query only runs when something changed.
-      asOf: now,
-      maxHp: state.maxHp,
-      inCombat,
-      conRegenPerSecond: conRegenPerSecond(maxHp, profile.effectiveStats.con, regenBalance),
-      boostRegenPerSecond: boostRegen,
-      totalInCombatRegenPerSecond:
-        conRegenPerSecond(maxHp, profile.effectiveStats.con, regenBalance) + boostRegen,
+      storedHp: hp?.currentHp ?? null,
+      storedAt: hp?.currentHpUpdatedAt ?? null,
+      inCombat: activeTask?.taskType === "battle" || bossSession !== null,
     };
   },
 });

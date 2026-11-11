@@ -8,6 +8,7 @@ import {
   type AdminConfigTable,
 } from "./adminConfig";
 import { createCharacterLevelLookup } from "./characterLevel";
+import { readPlayerProgress } from "./playerProgress";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
   ELEMENT_VALUES,
@@ -27,7 +28,7 @@ import {
 import { validateRecipeChain } from "./recipeValidation";
 import { isTaskSyncInterval, TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 
-const STAT_KEYS = new Set(["str", "dex", "int", "luk", "con"]);
+const STAT_KEYS = new Set(["str", "dex", "int", "luk", "con", "agi"]);
 const craftingConfigKindValidator = v.union(
   v.literal("skill"),
   v.literal("skill-tier"),
@@ -612,30 +613,38 @@ export const getPlayers = query({
     await requireAdmin(ctx, playerId);
 
     const players = await ctx.db.query("players").take(2000);
+    const progressRows = await ctx.db.query("playerProgress").take(2000);
+    const progressByPlayer = new Map(progressRows.map((row) => [row.playerId, row]));
     const characterLevelFor = await createCharacterLevelLookup(ctx);
     return players
       .sort(
         (left, right) =>
           left.name.localeCompare(right.name) || left.createdAt - right.createdAt
       )
-      .map((player) => ({
-        _id: player._id,
-        name: player.name,
-        anonymousId: player.anonymousId,
-        str: player.str,
-        dex: player.dex,
-        int: player.int,
-        luk: player.luk,
-        con: player.con,
-        characterLevel: characterLevelFor(player),
-        gold: player.gold,
-        totalExperience: player.totalExperience,
-        currentTier: player.currentTier,
-        maxTierReached: player.maxTierReached ?? player.currentTier,
-        rebirthCount: player.rebirthCount,
-        rebirthTierThreshold: player.rebirthTierThreshold,
-        lastUpdated: player.lastUpdated,
-      }));
+      .map((player) => {
+        const progress = progressByPlayer.get(player._id);
+        return {
+          _id: player._id,
+          name: player.name,
+          anonymousId: player.anonymousId,
+          str: player.str,
+          dex: player.dex,
+          int: player.int,
+          luk: player.luk,
+          con: player.con,
+          agi: player.agi ?? 1,
+          characterLevel: characterLevelFor(player),
+          gold: progress?.gold ?? 0,
+          totalExperience: progress?.totalExperience ?? 0,
+          currentTier: player.currentTier,
+          maxTierReached: player.maxTierReached ?? player.currentTier,
+          rebirthCount: player.rebirthCount,
+          rebirthTierThreshold: player.rebirthTierThreshold,
+          // Gold and XP change on settlements, stats on level-ups; the edit token
+          // covers both so a save over stale gold is refused.
+          lastUpdated: Math.max(player.lastUpdated, progress?.updatedAt ?? 0),
+        };
+      });
   },
 });
 
@@ -650,6 +659,8 @@ export const updatePlayer = mutation({
     int: v.number(),
     luk: v.number(),
     con: v.number(),
+    // Optional so older admin clients without the field can still save.
+    agi: v.optional(v.number()),
     gold: v.number(),
     totalExperience: v.number(),
     currentTier: v.number(),
@@ -665,7 +676,8 @@ export const updatePlayer = mutation({
       throw new Error("Player not found");
     }
 
-    if (player.lastUpdated !== args.expectedLastUpdated) {
+    const progress = await readPlayerProgress(ctx, args.targetPlayerId);
+    if (Math.max(player.lastUpdated, progress.updatedAt) !== args.expectedLastUpdated) {
       throw new Error(
         "Character data changed while you were editing. Reload the character before saving."
       );
@@ -677,6 +689,7 @@ export const updatePlayer = mutation({
     integerAtLeast(args.int, "INT", 1);
     integerAtLeast(args.luk, "LUK", 1);
     integerAtLeast(args.con, "CON", 1);
+    if (args.agi !== undefined) integerAtLeast(args.agi, "AGI", 1);
     integerAtLeast(args.gold, "Gold", 0);
     integerAtLeast(args.totalExperience, "Total experience", 0);
     integerAtLeast(args.currentTier, "Current tier", 1);
@@ -700,13 +713,18 @@ export const updatePlayer = mutation({
       int: args.int,
       luk: args.luk,
       con: args.con,
-      gold: args.gold,
-      totalExperience: args.totalExperience,
+      ...(args.agi === undefined ? {} : { agi: args.agi }),
       currentTier: args.currentTier,
       maxTierReached: args.maxTierReached,
       rebirthCount: args.rebirthCount,
       rebirthTierThreshold: args.rebirthTierThreshold,
       lastUpdated,
+    });
+    // Same stamp on both rows keeps the edit token equal to the value listed.
+    await ctx.db.patch(progress._id, {
+      gold: args.gold,
+      totalExperience: args.totalExperience,
+      updatedAt: lastUpdated,
     });
 
     return { playerId: player._id, lastUpdated };
@@ -960,7 +978,7 @@ export const updateUpgrade = mutation({
         ? undefined
         : requiredText(args.effectStat, "Effect stat", 50);
     if (effectStat && !STAT_KEYS.has(effectStat)) {
-      throw new Error("Effect stat must be STR, DEX, INT, LUK, or CON");
+      throw new Error("Effect stat must be STR, DEX, INT, LUK, CON, or AGI");
     }
 
     const effectAmount = optionalNumber(args.effectAmount, "Effect amount", 0);

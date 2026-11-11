@@ -6,8 +6,16 @@ import { convexQueryCacheOptions } from "../lib/queryCache";
 import { useTaskClock } from "./useTaskClock";
 import type { DerivedStats } from "../lib/statCalculations";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
+import { projectCurrentHp } from "../../convex/hpProjection";
+
+/** Gold and XP, read from `playerProgress` and merged in by `usePlayer`. */
+export type PlayerWallet = Pick<
+  Doc<"playerProgress">,
+  "gold" | "totalExperience" | "statXp"
+>;
 
 export type PlayerWithDerivedStats = Doc<"players"> &
+  PlayerWallet &
   DerivedStats & {
     level: number;
     critDamageMultiplier: number;
@@ -20,12 +28,17 @@ export type PlayerWithDerivedStats = Doc<"players"> &
       luk: number;
       con: number;
       wis?: number;
+      agi?: number;
     };
   };
 
 /**
  * Hook to fetch the caller's character with derived stats. Identity-derived
  * server-side; takes no ID. Pass "skip" behavior via `enabled`.
+ *
+ * Two queries feed one shape: the stable character (`getCurrentPlayer`) and
+ * the wallet (`getPlayerWallet`, gold and XP). Settlements change only the
+ * wallet, so the stats query doesn't re-run on every fight.
  */
 export function usePlayer(enabled: boolean = true) {
   const playerQuery = useQuery({
@@ -34,22 +47,40 @@ export function usePlayer(enabled: boolean = true) {
   });
 
   const player = playerQuery.data;
+  const playerId = player?._id ?? null;
+  const walletQuery = useQuery({
+    ...convexQuery(
+      api.players.getPlayerWallet,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
+  const wallet = walletQuery.data;
+
   // Base stat levels (player.str, player.dex, ...) are the source of truth
   // for levels, breakpoints, and XP. Rebirth bonuses never change them —
   // they only scale `effectiveStats`, which combat math consumes. Do NOT
   // spread effectiveStats over the base fields.
-  const data: PlayerWithDerivedStats | null | undefined = player
-    ? {
-        ...player,
-        ...player.combatStats,
-        autoAttackEnabled: true,
-        level: player.characterLevel,
-      }
-    : player;
+  let data: PlayerWithDerivedStats | null | undefined;
+  if (player && wallet) {
+    data = {
+      ...player,
+      ...wallet,
+      ...player.combatStats,
+      autoAttackEnabled: true,
+      level: player.characterLevel,
+    };
+  } else if (player === null) {
+    data = null;
+  }
 
   return {
     ...playerQuery,
     data,
+    // The wallet is part of the character, so it counts toward loading and errors.
+    isPending: playerQuery.isPending || (playerId !== null && walletQuery.isPending),
+    isError: playerQuery.isError || walletQuery.isError,
+    error: playerQuery.error ?? walletQuery.error,
   };
 }
 
@@ -147,32 +178,52 @@ export function useRecordFight() {
 /**
  * Hook for the persistent HP bar (CON regen + boost regen included).
  *
- * The query re-runs only when a fight, equipment, or boost changes. Out-of-combat
- * regen is ticked here from the last result, so the bar moves without re-reading
- * the combat profile on a timer.
+ * Two queries feed one shape. `getHpStatus` holds the numbers that only move
+ * with stats (max HP, regen rates) and doesn't re-run on fights. `getHpLive`
+ * holds the stored HP and whether a fight is running, and it re-runs on each
+ * settlement. Out-of-combat regen is projected here from the stored value, on
+ * the synced task clock, so the bar moves without a timer-driven query.
  */
 export function useHpStatus(playerId: Id<"players"> | null) {
-  const query = useQuery({
+  const statsQuery = useQuery({
     ...convexQuery(
       api.combat.getHpStatus,
       playerId ? { playerId } : "skip"
     ),
     ...convexQueryCacheOptions,
   });
-  const hp = query.data;
-  const regenerating = Boolean(hp && !hp.inCombat && hp.currentHp < hp.maxHp);
+  const liveQuery = useQuery({
+    ...convexQuery(
+      api.combat.getHpLive,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
+  const stats = statsQuery.data;
+  const live = liveQuery.data;
+  const regenerating = Boolean(
+    stats &&
+      live &&
+      !live.inCombat &&
+      live.storedHp !== null &&
+      live.storedHp < stats.maxHp
+  );
   const clockMs = useTaskClock(regenerating, 1_000);
-  if (!hp || !regenerating) return query;
-  const elapsedSeconds = Math.max(0, clockMs - hp.asOf) / 1_000;
+  const data =
+    stats && live
+      ? {
+          ...stats,
+          currentHp: projectCurrentHp(stats, live, clockMs),
+          inCombat: live.inCombat,
+          asOf: clockMs,
+        }
+      : undefined;
   return {
-    ...query,
-    data: {
-      ...hp,
-      currentHp: Math.min(
-        hp.maxHp,
-        Math.ceil(hp.currentHp + hp.conRegenPerSecond * elapsedSeconds)
-      ),
-    },
+    ...statsQuery,
+    data,
+    isPending: statsQuery.isPending || (playerId !== null && liveQuery.isPending),
+    isError: statsQuery.isError || liveQuery.isError,
+    error: statsQuery.error ?? liveQuery.error,
   };
 }
 

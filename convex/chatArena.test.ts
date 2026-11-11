@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -23,7 +24,7 @@ async function setup() {
   rateLimiterTest.register(base);
   const makePlayer = (subject: string, name: string) =>
     base.run((ctx) =>
-      ctx.db.insert("players", {
+      insertPlayerWithRecords(ctx, {
         anonymousId: `chat-${subject}`,
         name,
         authSubject: subject,

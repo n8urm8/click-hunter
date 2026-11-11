@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords, type TestPlayerInput } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -9,6 +10,8 @@ import schema from "./schema";
 import { readBalanceMap, readBalanceValue, rebuildBalanceSnapshot } from "./balance";
 import { getActiveEventMultipliers } from "./loot";
 import { loadBattleContext, monsterRewardScale, readPlayerCombatProfile, rollEncounter } from "./combat";
+import { calculateCharacterLevel } from "./characterLevel";
+import { readHpRegenBalance, readPlayerHpOrNull } from "./playerHp";
 import { awardWisdomXp } from "./wisdom";
 import { buildAbilityCombatState, castDueAbilities } from "./abilityCombat";
 
@@ -25,7 +28,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-type PlayerFields = Partial<Doc<"players">>;
+type PlayerFields = Partial<TestPlayerInput>;
 
 function playerFields(overrides: PlayerFields = {}) {
   return {
@@ -51,7 +54,7 @@ async function setup(player: PlayerFields = {}) {
   rateLimiterTest.register(base);
   const t = base.withIdentity({ subject: SUBJECT });
   const playerId = await t.run(async (ctx) => {
-    const id = await ctx.db.insert("players", playerFields(player));
+    const id = await insertPlayerWithRecords(ctx, playerFields(player));
     await ctx.db.insert("playerOwners", { playerId: id, authSubject: SUBJECT });
     await insertMonster(ctx);
     return id;
@@ -92,13 +95,150 @@ test("a batch of fights settles as one history row, with stats and rewards summe
   const stats = await t.run((ctx) => ctx.db.query("taskBattleStats").collect());
   expect(stats).toHaveLength(1);
   expect(stats[0].defeatedCount).toBe(15);
-  const player = await t.run((ctx) => ctx.db.get(playerId));
+  const player = await t.run((ctx) => playerWithRecords(ctx, playerId));
   expect(player?.gold).toBe(history[0].goldEarned);
   expect(player?.totalExperience).toBe(history[0].experienceEarned);
   expect(player?.gold).toBeGreaterThan(0);
   // Fifteen fights cost about what one does.
   expect(metrics.documentsRead.used).toBeLessThan(40);
   expect(metrics.documentsWritten.used).toBeLessThan(20);
+});
+
+// --- Read-set check: does a hunt batch re-run the stats and HP queries? -------
+// Convex re-runs a query when a document it read changes. convex-test has no
+// subscriptions, so these helpers record each query's document reads directly
+// and compare them with the documents the batch changed. Each reader mirrors
+// its query handler's reads (getCurrentPlayer, getHpStatus, getHpLive).
+
+type ReadSet = Set<string>;
+
+/** A MutationCtx whose db reads add each returned document id to `reads`. */
+function trackingCtx(ctx: MutationCtx, reads: ReadSet): MutationCtx {
+  const note = <T extends { _id: string } | null>(doc: T): T => {
+    if (doc) reads.add(doc._id);
+    return doc;
+  };
+  const noteAll = <T extends { _id: string }>(rows: T[]): T[] => {
+    for (const row of rows) reads.add(row._id);
+    return rows;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wrap = (query: any): any => ({
+    withIndex: (name: string, fn: (q: unknown) => unknown) => wrap(query.withIndex(name, fn)),
+    order: (direction: "asc" | "desc") => wrap(query.order(direction)),
+    filter: (fn: (q: unknown) => unknown) => wrap(query.filter(fn)),
+    first: async () => note(await query.first()),
+    unique: async () => note(await query.unique()),
+    take: async (n: number) => noteAll(await query.take(n)),
+    collect: async () => noteAll(await query.collect()),
+  });
+  return {
+    ...ctx,
+    db: {
+      get: async (id: Id<"players"> | Id<"playerProgress"> | Id<"playerHp">) => note(await ctx.db.get(id as Id<"players">)),
+      query: (table: string) => wrap(ctx.db.query(table as "players")),
+    },
+  } as unknown as MutationCtx;
+}
+
+/** Mirrors `players.getCurrentPlayer`: the stable row, equipment and skills. */
+async function currentPlayerReads(ctx: MutationCtx, subject: string) {
+  const player = await ctx.db
+    .query("players")
+    .withIndex("by_authSubject", (q) => q.eq("authSubject", subject))
+    .first();
+  if (!player) return;
+  await readPlayerCombatProfile(ctx, player);
+  await calculateCharacterLevel(ctx, player);
+}
+
+/** Mirrors `combat.getHpStatus`: the stable row, combat profile and regen rates. */
+async function hpStatusReads(ctx: MutationCtx, playerId: Id<"players">) {
+  const player = await ctx.db.get(playerId);
+  if (!player) return;
+  await readPlayerCombatProfile(ctx, player, { now: Date.now() });
+  await readHpRegenBalance(ctx);
+}
+
+/** Mirrors `combat.getHpLive`: the HP row plus the open task and boss session. */
+async function hpLiveReads(ctx: MutationCtx, playerId: Id<"players">) {
+  await readPlayerHpOrNull(ctx, playerId);
+  await ctx.db
+    .query("playerTasks")
+    .withIndex("by_playerId_and_status", (q) => q.eq("playerId", playerId).eq("status", "active"))
+    .first();
+  await ctx.db
+    .query("bossSessions")
+    .withIndex("by_playerId_and_status", (q) => q.eq("playerId", playerId).eq("status", "open"))
+    .first();
+}
+
+async function snapshotDocs(
+  t: Awaited<ReturnType<typeof setup>>["t"],
+  ids: string[]
+) {
+  return t.run(async (ctx) => {
+    const docs: Record<string, string> = {};
+    for (const id of ids) {
+      docs[id] = JSON.stringify(await ctx.db.get(id as Id<"players">));
+    }
+    return docs;
+  });
+}
+
+test("a hunt batch re-runs neither the stats query nor the HP status query", async () => {
+  // Characters are created with maxTierReached 1; without it the first batch would write the stable row.
+  const { t, playerId } = await setup({ maxTierReached: 1 });
+  await startHunt(t, playerId);
+  await t.mutation(api.tasks.sync, { playerId });
+  vi.setSystemTime(1_030_000);
+
+  const readSets = await t.run(async (ctx) => {
+    const currentPlayer: ReadSet = new Set();
+    const hpStatus: ReadSet = new Set();
+    const hpLive: ReadSet = new Set();
+    await currentPlayerReads(trackingCtx(ctx, currentPlayer), SUBJECT);
+    await hpStatusReads(trackingCtx(ctx, hpStatus), playerId);
+    await hpLiveReads(trackingCtx(ctx, hpLive), playerId);
+    return { currentPlayer: [...currentPlayer], hpStatus: [...hpStatus], hpLive: [...hpLive] };
+  });
+  const progressId = (await t.run((ctx) =>
+    ctx.db
+      .query("playerProgress")
+      .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+      .unique()
+  ))!._id;
+  const everyRead = [
+    ...new Set([
+      ...readSets.currentPlayer,
+      ...readSets.hpStatus,
+      ...readSets.hpLive,
+      progressId,
+    ]),
+  ];
+  const before = await snapshotDocs(t, everyRead);
+
+  vi.setSystemTime(1_060_000);
+  const metrics = await t.mutation(async (ctx) => {
+    await ctx.runMutation(api.tasks.sync, { playerId });
+    return ctx.meta.getTransactionMetrics();
+  });
+  const after = await snapshotDocs(t, everyRead);
+  const changed = (reads: string[]) =>
+    everyRead.filter((id) => reads.includes(id) && before[id] !== after[id]);
+
+  // The batch really fought: it settled rewards into the progress row and wrote HP.
+  expect(changed([progressId])).toEqual([progressId]);
+  expect(metrics.documentsWritten.used).toBeGreaterThan(0);
+
+  // The recorder saw each query's reads, including the stable row, so the checks below aren't vacuous.
+  expect(readSets.currentPlayer).toContain(playerId);
+  expect(readSets.hpStatus).toContain(playerId);
+  // Neither query's reads changed, so neither re-runs for this batch.
+  expect(changed(readSets.currentPlayer)).toEqual([]);
+  expect(changed(readSets.hpStatus)).toEqual([]);
+  // The live HP query is the one that re-runs: it reads the HP row the batch wrote.
+  expect(changed(readSets.hpLive).length).toBeGreaterThan(0);
 });
 
 test("a hunt settles on the batch interval, except when a defeat or its target is sooner", async () => {
@@ -144,7 +284,7 @@ test("a defeat inside a batch banks the wins before it and ends the hunt", async
   expect(await t.run((ctx) => ctx.db.get(taskId))).toBeNull();
   const queue = await t.query(api.tasks.getQueue, { playerId });
   expect(queue.history[0]).toMatchObject({ status: "failed" });
-  expect((await t.run((ctx) => ctx.db.get(playerId)))?.currentHp).toBe(0);
+  expect((await t.run((ctx) => playerWithRecords(ctx, playerId)))?.currentHp).toBe(0);
 });
 
 test("stacked drops grant once and full inventories overflow to pending rewards", async () => {
@@ -273,7 +413,7 @@ test("events past the first hundred still apply, and finished ones cost no reads
 test("wisdom XP raises the wisdom level combat reads", async () => {
   const { t, playerId } = await setup();
   await t.mutation((ctx) => awardWisdomXp(ctx, playerId, 60_000_000));
-  const player = await t.run((ctx) => ctx.db.get(playerId));
+  const player = await t.run((ctx) => playerWithRecords(ctx, playerId));
   expect(player?.wis ?? 1).toBeGreaterThan(1);
 });
 
@@ -283,7 +423,7 @@ test("fights have a floor, and rewards scale with the monster", async () => {
     key: "minFightDurationMs", value: 5_000, description: "Test", lastUpdated: 0,
   }));
   const encounter = await t.run(async (ctx) => {
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing player");
     return rollEncounter(await loadBattleContext(ctx, player, 1));
   });
@@ -307,7 +447,7 @@ test("ability cooldowns carry across fights", async () => {
     await ctx.db.insert("playerEquippedAbilities", { playerId, abilityId: "smite", slot: 0, equippedAt: 0 } as never);
   });
   const { first, second, third } = await t.run(async (ctx) => {
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing player");
     const battle = await loadBattleContext(ctx, player, 1);
     const first = rollEncounter(battle);
@@ -323,23 +463,33 @@ test("ability cooldowns carry across fights", async () => {
   expect(third.abilityCooldowns?.[0]?.remainingMs).toBe(4_000);
 });
 
-test("slow weapons hit harder in real-time fights but not in round-based ones", async () => {
+test("slow weapons hit harder per swing but match a fast weapon's damage per second", async () => {
   const { t, playerId } = await setup();
-  const attacks = await t.run(async (ctx) => {
-    const weaponId = await ctx.db.insert("items", {
-      itemId: "maul", name: "Maul", category: "equipment", description: "d",
-      stackable: false, maxStackSize: 1, allowedEquipmentSlots: ["mainHand"],
-      baseDamage: 10, attackSpeed: 0.5, damageStat: "str", damageType: "physical",
-      createdAt: 0, updatedAt: 0,
-    });
-    await ctx.db.insert("playerItems", {
-      playerId, itemId: weaponId, quantity: 1, equippedSlot: "mainHand", acquiredAt: 0, updatedAt: 0,
-    });
-    const player = await ctx.db.get(playerId);
-    if (!player) throw new Error("Missing player");
-    return (await readPlayerCombatProfile(ctx, player)).combatStats;
+  const { maul, sword } = await t.run(async (ctx) => {
+    const equip = async (itemId: string, attackSpeed: number) => {
+      for (const owned of await ctx.db
+        .query("playerItems")
+        .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+        .collect()) {
+        await ctx.db.delete(owned._id);
+      }
+      const weaponId = await ctx.db.insert("items", {
+        itemId, name: itemId, category: "equipment", description: "d",
+        stackable: false, maxStackSize: 1, allowedEquipmentSlots: ["mainHand"],
+        baseDamage: 10, attackSpeed, damageStat: "str", damageType: "physical",
+        createdAt: 0, updatedAt: 0,
+      });
+      await ctx.db.insert("playerItems", {
+        playerId, itemId: weaponId, quantity: 1, equippedSlot: "mainHand", acquiredAt: 0, updatedAt: 0,
+      });
+      const player = await playerWithRecords(ctx, playerId);
+      if (!player) throw new Error("Missing player");
+      return (await readPlayerCombatProfile(ctx, player)).combatStats;
+    };
+    return { maul: await equip("maul", 0.5), sword: await equip("sword", 1) };
   });
-  expect(attacks.attack).toBeCloseTo(attacks.roundAttack * 2);
+  expect(maul.attack).toBeCloseTo(sword.attack * 2);
+  expect(maul.attack * maul.attackSpeed).toBeCloseTo(sword.attack * sword.attackSpeed);
 });
 
 test("rebirth takes gold sheltered in the guild bank, and open buy orders block it", async () => {
@@ -379,16 +529,16 @@ test("rebirth takes gold sheltered in the guild bank, and open buy orders block 
   // 500 + 1,000 - 300 banked, minus the 700 this player sheltered.
   expect(guild?.gold).toBe(500);
   expect((await t.run((ctx) => ctx.db.query("guildMembers").first()))?.netGoldDeposited).toBe(0);
-  expect((await t.run((ctx) => ctx.db.get(playerId)))?.gold).toBe(0);
+  expect((await t.run((ctx) => playerWithRecords(ctx, playerId)))?.gold).toBe(0);
 });
 
 test("leaderboards fill from players and write nothing when nothing moved", async () => {
   const { t, playerId } = await setup({ totalExperience: 500, maxTierReached: 3, rebirthCount: 1, name: "Top" });
   await t.run(async (ctx) => {
-    await ctx.db.insert("players", playerFields({
+    await insertPlayerWithRecords(ctx, playerFields({
       anonymousId: "sim", authSubject: "sim-live:1", totalExperience: 9_999, maxTierReached: 9, rebirthCount: 9,
     }));
-    await ctx.db.insert("players", playerFields({
+    await insertPlayerWithRecords(ctx, playerFields({
       anonymousId: "fresh", authSubject: "fresh", totalExperience: 0, rebirthCount: 0, maxTierReached: 1, name: "Fresh",
     }));
   });
@@ -406,7 +556,7 @@ test("leaderboards fill from players and write nothing when nothing moved", asyn
   });
   expect(metrics.documentsWritten.used).toBe(0);
 
-  await t.run((ctx) => ctx.db.patch(playerId, { totalExperience: 800 }));
+  await t.run((ctx) => patchPlayerWithRecords(ctx, playerId, { totalExperience: 800 }));
   await t.mutation(internal.leaderboards.refreshLeaderboards, {});
   expect((await t.query(api.leaderboards.getTopByExperience, { limit: 10 }))[0].totalExperience).toBe(800);
 });
@@ -503,7 +653,7 @@ test("the update migration retunes defaults, keeps custom tuning, and backfills 
   expect((await t.run((ctx) => ctx.db.get(bossId)))?.str).toBe(196);
   const owner = await t.run((ctx) => ctx.db.query("playerOwners").first());
   expect(owner).toMatchObject({ playerId, authSubject: SUBJECT });
-  expect((await t.run((ctx) => ctx.db.get(playerId)))?.wis ?? 1).toBeGreaterThan(1);
+  expect((await t.run((ctx) => playerWithRecords(ctx, playerId)))?.wis ?? 1).toBeGreaterThan(1);
   const achievements = await t.run((ctx) => ctx.db.query("playerAchievements").collect());
   expect(achievements.map((row) => row.achievementId).sort()).toEqual(["first-kill", "tier-100-xp", "tier-5"]);
   const claimed = await t.run((ctx) => ctx.db.query("playerUpgrades").first());
@@ -539,7 +689,7 @@ async function insertChat(
 test("reports save the messages around them, and survive chat pruning", async () => {
   const { t, base, playerId } = await setup({ name: "Reporter", role: "admin" });
   const { targetId, messageId } = await t.run(async (ctx) => {
-    const targetId = await ctx.db.insert("players", playerFields({ anonymousId: "target", authSubject: "target", name: "Target" }));
+    const targetId = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "target", authSubject: "target", name: "Target" }));
     let messageId: Id<"chatMessages"> | null = null;
     for (let index = 0; index < 30; index += 1) {
       const id = await insertChat(ctx, targetId, "Target", index);
@@ -590,8 +740,8 @@ test("chat pruning keeps the last three days", async () => {
 test("a player can't report their own messages or a private chat they aren't in", async () => {
   const { t, playerId } = await setup();
   const { own, hidden } = await t.run(async (ctx) => {
-    const other = await ctx.db.insert("players", playerFields({ anonymousId: "o", authSubject: "o", name: "O" }));
-    const third = await ctx.db.insert("players", playerFields({ anonymousId: "t", authSubject: "t", name: "T" }));
+    const other = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "o", authSubject: "o", name: "O" }));
+    const third = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "t", authSubject: "t", name: "T" }));
     return {
       own: await insertChat(ctx, playerId, "Batch", 1),
       hidden: await insertChat(ctx, other, "O", 2, {
@@ -618,7 +768,7 @@ test("a hunter rests below the threshold instead of starting a fight", async () 
   const rested = await t.run((ctx) => ctx.db.get(taskId));
   expect(rested?.respawnUntil).toBeUndefined();
   expect(rested?.battleEncounter).toBeDefined();
-  expect((await t.run((ctx) => ctx.db.get(playerId)))?.currentHp).toBeGreaterThanOrEqual(450);
+  expect((await t.run((ctx) => playerWithRecords(ctx, playerId)))?.currentHp).toBeGreaterThanOrEqual(450);
 });
 
 test("weapons of every speed deal the same base damage per second", async () => {
@@ -631,7 +781,7 @@ test("weapons of every speed deal the same base damage per second", async () => 
         createdAt: 0, updatedAt: 0,
       });
       await ctx.db.insert("playerItems", { playerId, itemId, quantity: 1, equippedSlot: "mainHand", acquiredAt: 0, updatedAt: 0 });
-      const player = await ctx.db.get(playerId);
+      const player = await playerWithRecords(ctx, playerId);
       if (!player) throw new Error("Missing player");
       const { combatStats } = await readPlayerCombatProfile(ctx, player);
       return combatStats.attack * combatStats.attackSpeed;
@@ -652,7 +802,7 @@ test("rebirth milestones apply gold, XP, stat and crit rewards", async () => {
     }
   });
   const profile = await t.run(async (ctx) => {
-    const player = await ctx.db.get(playerId);
+    const player = await playerWithRecords(ctx, playerId);
     if (!player) throw new Error("Missing player");
     return readPlayerCombatProfile(ctx, player);
   });
@@ -688,4 +838,38 @@ test("modules the client imports never register Convex functions", () => {
   for (const source of Object.values(sources)) {
     expect(source).not.toMatch(/^import \{[^}]*\} from "\.\/_generated\/server"/m);
   }
+});
+
+test("agility speeds up every weapon, and DEX no longer does", async () => {
+  const { t, playerId } = await setup({ dex: 10, agi: 10 });
+  const speeds = await t.run(async (ctx) => {
+    const read = async () => {
+      const player = await playerWithRecords(ctx, playerId);
+      if (!player) throw new Error("Missing player");
+      return (await readPlayerCombatProfile(ctx, player)).combatStats.attackSpeed;
+    };
+    const slow = await read();
+    await patchPlayerWithRecords(ctx, playerId, { dex: 110 });
+    const highDex = await read();
+    await patchPlayerWithRecords(ctx, playerId, { agi: 110 });
+    return { slow, highDex, fast: await read() };
+  });
+  expect(speeds.highDex).toBe(speeds.slow);
+  // 100 AGI above 10 at +0.5% each is +50% speed, bare-handed (STR) too.
+  expect(speeds.fast / speeds.slow).toBeCloseTo(1.5);
+});
+
+test("regular monsters have a point of physical defense per tier", async () => {
+  const { t, playerId } = await setup();
+  const hits = await t.run(async (ctx) => {
+    const player = await playerWithRecords(ctx, playerId);
+    if (!player) throw new Error("Missing player");
+    const hit = async (tier: number) =>
+      rollEncounter(await loadBattleContext(ctx, player, tier)).attackTiming
+        ?.playerDamagePerHit ?? 0;
+    return { tier1: await hit(1), tier4: await hit(4) };
+  });
+  // STR 50 bare-handed: base attack 2 + 50 × 1.2 = 62, minus 1 defense at
+  // tier 1 and 4 at tier 4.
+  expect(hits.tier4 / hits.tier1).toBeCloseTo(58 / 61, 5);
 });

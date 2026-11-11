@@ -41,7 +41,7 @@ import {
   useEnqueueAutoBattle,
   useTaskQueue,
 } from "~/hooks/useTasks";
-import { useStartBossFight } from "~/hooks/useBossFight";
+import { useBossRequirements, useStartBossFight } from "~/hooks/useBossFight";
 import { usePlayerInventory } from "~/hooks/useInventory";
 import { formatNumber } from "~/lib/utils";
 import type { PlayerWithDerivedStats } from "~/hooks/usePlayer";
@@ -109,13 +109,19 @@ type BattleTask = QueueTask & {
 
 export function BossKeyStatus({ playerId, tier }: { playerId: Id<"players">; tier: number }) {
   const inventory = usePlayerInventory(playerId);
+  const requirements = useBossRequirements(playerId, tier);
   if (inventory.isPending || !inventory.data) return null;
   const keySlug = `boss-key-tier-${tier}`;
   const keyCount = inventory.data.inventory
     .filter((row) => row.item.itemId === keySlug)
     .reduce((total, row) => total + row.quantity, 0);
+  const clearsDone = requirements.data !== undefined && requirements.data.missingNames.length === 0;
   return (
     <p className="text-xs text-muted-foreground" role="status">
+      {requirements.data && !clearsDone ? (
+        <>Boss T{tier} locked: defeat {requirements.data.missingNames.length} more monster
+        {requirements.data.missingNames.length === 1 ? "" : "s"} ({requirements.data.missingNames.join(", ")}) · </>
+      ) : null}
       {keyCount > 0 ? (
         <>Boss Key T{tier} ×{keyCount} · consumed on start</>
       ) : (

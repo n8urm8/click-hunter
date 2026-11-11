@@ -15,22 +15,30 @@ import {
 } from "./abilityCombat";
 import {
   runRoundExchange,
+  swingsInRound,
   type RoundFighter,
   type RoundSide,
   type RoundSwing,
 } from "./roundCombat";
 import { ensureBossForTier, bossElementForTier } from "./bossData";
+import {
+  bossTierDefense,
+  monsterBaseHealth,
+  monsterPhysicalAttack,
+} from "./monsterStats";
 import { rollAttackHit, rollPowerHit } from "./hitRoll";
 import { fightHistoryKey, recordFightHistory } from "./fightHistory";
 import { readBalanceMap } from "./balance";
 import {
   getActiveEventMultipliers,
-  awardCombatStatXp,
+  applyStatLevels,
+  planCombatStatXp,
   rollBossLoot,
 } from "./loot";
-import { getActiveCombatBoosts } from "./items";
+import { getActiveCombatBoosts, readCombatBalance } from "./items";
 import { getPassiveBonuses } from "./passiveTree";
 import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
+import { patchPlayerProgress } from "./playerProgress";
 import { progressWeeklyObjectives } from "./guildObjectives";
 import { grantItemToGuildStash } from "./guildStash";
 
@@ -495,6 +503,16 @@ async function wipeDamageTotal(
   return total;
 }
 
+/** A raid dragon's defense: boss defense for its tier. */
+async function readRaidDragonDefense(ctx: MutationCtx, tier: number) {
+  const balance = await readCombatBalance(ctx);
+  return bossTierDefense(
+    tier,
+    balance.monsterDefensePerTier,
+    balance.bossDefenseMultiplier
+  );
+}
+
 async function getRaidDragon(ctx: MutationCtx, tier: number, power: number) {
   const boss = await ensureBossForTier(ctx, tier);
   if (!boss) throw new Error("Boss is not configured for this tier");
@@ -505,8 +523,9 @@ async function getRaidDragon(ctx: MutationCtx, tier: number, power: number) {
   const con = scale(boss.con);
   return {
     boss,
-    maxHp: Math.max(1, Math.ceil(con * 10 + int * 2)),
-    attack: Math.max(1, str * 1.2 + dex * 0.5),
+    maxHp: Math.max(1, Math.ceil(monsterBaseHealth({ str, dex, con, int }))),
+    attack: monsterPhysicalAttack({ str, dex, con, int }),
+    defense: await readRaidDragonDefense(ctx, tier),
     element: bossElementForTier(tier),
   };
 }
@@ -659,12 +678,14 @@ async function settleRaidXp(
           guildXpMult
       )
     );
-    await ctx.db.patch(member.playerId, {
-      gold: player.gold + gold,
-      totalExperience: player.totalExperience + xp,
-      lastUpdated: now,
+    // One progress read and one patch: gold, XP and stat pools land together.
+    const plan = await planCombatStatXp(ctx, member.playerId, xp);
+    await patchPlayerProgress(ctx, plan.progress, {
+      gold: plan.progress.gold + gold,
+      totalExperience: plan.progress.totalExperience + xp,
+      statXp: plan.statXp,
     });
-    await awardCombatStatXp(ctx, member.playerId, xp);
+    await applyStatLevels(ctx, member.playerId, plan.levels);
     await accrueGuildXpFromEarned(ctx, member.playerId, xp);
     await progressWeeklyObjectives(ctx, member.playerId, {
       wins: killed ? 1 : 0,
@@ -978,8 +999,7 @@ export const beginRaid = mutation({
         ctx,
         p.playerId,
         abilityWeaponFrom(profile.weapon),
-        { unit: "rounds", roundIntervalMs: tuning.roundIntervalMs },
-        { includeAlly: true }
+        { unit: "rounds", roundIntervalMs: tuning.roundIntervalMs }
       );
       participants.push({
         playerId: p.playerId,
@@ -991,7 +1011,8 @@ export const beginRaid = mutation({
         magicalDefense: Math.max(0, profile.combatStats.magicalDefense),
         ward: Math.max(0, profile.ward[dragon.element] ?? 0),
         alive: true,
-        attack: Math.max(1, profile.combatStats.roundAttack),
+        attack: Math.max(1, profile.combatStats.attack),
+        attackSpeed: profile.combatStats.attackSpeed,
         critChance: Math.max(0, profile.combatStats.critChance),
         critMultiplier: Math.max(1, profile.combatStats.critDamageMultiplier),
         ...(abilityState.runtimes.length > 0 ? { abilityState } : {}),
@@ -1012,6 +1033,7 @@ export const beginRaid = mutation({
       // Frozen for the fight: ticks never re-read gameBalance or bosses.
       raidTuning: tuning,
       dragonAttack: dragon.attack,
+      dragonDefense: dragon.defense,
       expiresAt: now + tuning.durationHours * 60 * 60 * 1000,
     });
     return await ctx.db.get(raidId);
@@ -1114,6 +1136,8 @@ export const tickRaid = mutation({
     const dragonAttack =
       raid.dragonAttack ??
       (await getRaidDragon(ctx, raid.tier, tuning.powerMultiplier)).attack;
+    // Rows begun before dragons had defense keep fighting without it.
+    const dragonDefense = raid.dragonDefense ?? 0;
     // Backfill snapshots for rows begun before snapshots existed.
     const participants = [...raid.participants];
     for (let i = 0; i < participants.length; i += 1) {
@@ -1129,8 +1153,7 @@ export const tickRaid = mutation({
           ctx,
           p.playerId,
           abilityWeaponFrom(profile.weapon),
-          { unit: "rounds", roundIntervalMs: interval },
-          { includeAlly: true }
+          { unit: "rounds", roundIntervalMs: interval }
         ));
       participants[i] = {
         ...p,
@@ -1143,7 +1166,13 @@ export const tickRaid = mutation({
           p.ward ??
           Math.max(0, profile.ward[bossElementForTier(raid.tier)] ?? 0),
         alive: p.alive ?? true,
-        attack: p.attack ?? Math.max(1, profile.combatStats.roundAttack),
+        // Rows begun before speed counted keep their once-a-round attack.
+        ...(p.attack !== undefined
+          ? { attack: p.attack }
+          : {
+              attack: Math.max(1, profile.combatStats.attack),
+              attackSpeed: profile.combatStats.attackSpeed,
+            }),
         critChance: p.critChance ?? Math.max(0, profile.combatStats.critChance),
         critMultiplier:
           p.critMultiplier ??
@@ -1179,16 +1208,20 @@ export const tickRaid = mutation({
         hp: bossHp,
         maxHp: raid.bossMaxHp,
         alive: bossHp > 0,
-        defense: 0,
-        magicalDefense: 0,
-        // Tough skin: the dragon takes a cut of every incoming hit.
-        reduceIncoming: (damage) =>
-          skinActive
+        defense: dragonDefense,
+        magicalDefense: dragonDefense,
+        // Defense comes off each buffed swing (at least 1 gets through), then
+        // tough skin takes a cut of what's left.
+        reduceIncoming: (incoming) => {
+          const damage =
+            dragonDefense > 0 ? Math.max(1, incoming - dragonDefense) : incoming;
+          return skinActive
             ? Math.max(
                 1,
                 Math.floor((damage * (100 - tuning.skinReduction)) / 100)
               )
-            : damage,
+            : damage;
+        },
         planSwing: (opponents) => {
           dragonAction = pickDragonAction(round, tuning);
           return planDragonSwing(opponents, dragonAction, dragonAttack, tuning);
@@ -1209,16 +1242,22 @@ export const tickRaid = mutation({
           ...(m.abilityState ? { abilityState: m.abilityState } : {}),
           // Tough skin also scales the party's ability damage.
           abilityDamageMultiplier: skinMultiplier,
-          planSwing: () => {
-            const raw = rollAttackHit({
-              attack: m.attack ?? 1,
-              critChance: m.critChance ?? 0,
-              critMultiplier: m.critMultiplier ?? 1,
-            });
-            return [
-              { target: bossFighter, damage: raw.damage, isCrit: raw.isCrit },
-            ];
-          },
+          planSwing: (_opponents, swingRound) =>
+            Array.from(
+              { length: swingsInRound(swingRound, m.attackSpeed, interval) },
+              () => {
+                const raw = rollAttackHit({
+                  attack: m.attack ?? 1,
+                  critChance: m.critChance ?? 0,
+                  critMultiplier: m.critMultiplier ?? 1,
+                });
+                return {
+                  target: bossFighter,
+                  damage: raw.damage,
+                  isCrit: raw.isCrit,
+                };
+              }
+            ),
         });
       }
       // Auto-cast abilities fire before the party's swings. Ally heals route

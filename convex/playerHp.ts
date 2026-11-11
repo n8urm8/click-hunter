@@ -1,6 +1,22 @@
 import { readBalanceMap } from "./balance";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+
+/** Stored HP fields, read from the `playerHp` row (absent until first write). */
+export type StoredHp = {
+  currentHp?: number;
+  currentHpUpdatedAt?: number;
+};
+
+export async function readPlayerHpOrNull(
+  ctx: QueryCtx | MutationCtx,
+  playerId: Id<"players">
+): Promise<Doc<"playerHp"> | null> {
+  return await ctx.db
+    .query("playerHp")
+    .withIndex("by_playerId", (q) => q.eq("playerId", playerId))
+    .unique();
+}
 
 export const HP_REGEN_BALANCE_DEFAULTS = [
   {
@@ -77,7 +93,7 @@ export function conRegenPerSecond(
  * Returns current HP clamped to [0, maxHp]. Does not write; caller persists.
  */
 export function resolveCurrentHp(
-  player: Doc<"players">,
+  hp: StoredHp | null,
   maxHp: number,
   conTotal: number,
   regenBalance: { base: number; perPoint: number; cap: number },
@@ -85,8 +101,8 @@ export function resolveCurrentHp(
   inCombat: boolean
 ): { currentHp: number; maxHp: number } {
   const safeMax = Math.max(1, Math.ceil(maxHp));
-  const stored = player.currentHp;
-  const storedAt = player.currentHpUpdatedAt;
+  const stored = hp?.currentHp;
+  const storedAt = hp?.currentHpUpdatedAt;
   let current =
     typeof stored === "number" && Number.isFinite(stored)
       ? Math.min(safeMax, Math.max(0, stored))
@@ -108,17 +124,22 @@ export function resolveCurrentHp(
 
 export async function writePlayerHp(
   ctx: MutationCtx,
-  playerId: Doc<"players">["_id"],
+  playerId: Id<"players">,
   currentHp: number,
   maxHp: number,
   now: number
 ) {
   const safeMax = Math.max(1, Math.ceil(maxHp));
   const clamped = Math.min(safeMax, Math.max(0, currentHp));
-  await ctx.db.patch(playerId, {
-    currentHp: clamped,
-    currentHpUpdatedAt: now,
-    lastUpdated: now,
-  });
+  const row = await readPlayerHpOrNull(ctx, playerId);
+  if (row) {
+    await ctx.db.patch(row._id, { currentHp: clamped, currentHpUpdatedAt: now });
+  } else {
+    await ctx.db.insert("playerHp", {
+      playerId,
+      currentHp: clamped,
+      currentHpUpdatedAt: now,
+    });
+  }
   return clamped;
 }

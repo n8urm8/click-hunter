@@ -10,6 +10,7 @@ export interface PlayerSummaryStats extends DerivedStats {
   luk: number;
   con: number;
   wis?: number;
+  agi?: number;
   effectiveStats?: {
     str: number;
     dex: number;
@@ -17,6 +18,7 @@ export interface PlayerSummaryStats extends DerivedStats {
     luk: number;
     con: number;
     wis?: number;
+    agi?: number;
   };
   totalExperience: number;
   currentTier: number;
@@ -38,8 +40,8 @@ export function PlayerStatsSummary({
   // Base levels stay integers; effectiveness (rebirth multipliers, gear,
   // etc.) flows into derived combat stats. Show the effective value only
   // when it differs from the base level.
-  const attributeValue = (key: "str" | "dex" | "int" | "luk" | "con" | "wis"): string | number => {
-    const base = key === "wis" ? (player.wis ?? 1) : player[key];
+  const attributeValue = (key: "str" | "dex" | "int" | "luk" | "con" | "wis" | "agi"): string | number => {
+    const base = key === "wis" || key === "agi" ? (player[key] ?? 1) : player[key];
     const baseLevel = Number.isFinite(base) ? Math.floor(base) : 1;
     const effective = player.effectiveStats?.[key];
     if (
@@ -58,6 +60,7 @@ export function PlayerStatsSummary({
       stats: [
         { label: "Strength", shortLabel: "STR", value: attributeValue("str") },
         { label: "Dexterity", shortLabel: "DEX", value: attributeValue("dex") },
+        { label: "Agility", shortLabel: "AGI", value: attributeValue("agi") },
         { label: "Intelligence", shortLabel: "INT", value: attributeValue("int") },
         { label: "Luck", shortLabel: "LUK", value: attributeValue("luk") },
         { label: "Constitution", shortLabel: "CON", value: attributeValue("con") },

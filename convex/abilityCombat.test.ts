@@ -65,12 +65,21 @@ describe("buff math", () => {
     expect(mitigateWithBuffs(10, buffs, 10)).toBe(10);
   });
 
-  test("the first active buff of a kind wins (matches the auto-battle loop)", () => {
+  test("the strongest active buff of a kind wins, wherever it sits in the list", () => {
     const stacked: AbilityBuffState[] = [
       { kind: "damage", value: 50, percent: true, until: 10 },
       { kind: "damage", value: 999, percent: true, until: 10 },
+      { kind: "defense", value: 2, percent: false, until: 10 },
+      { kind: "defense", value: 50, percent: true, until: 10 },
     ];
-    expect(damageWithBuffs(100, stacked, 5)).toBe(150);
+    expect(damageWithBuffs(100, stacked, 5)).toBe(1099);
+    expect(mitigateWithBuffs(10, stacked, 5)).toBe(5);
+    // Buffs don't stack: two copies of the same buff count once.
+    const duplicate: AbilityBuffState[] = [
+      { kind: "damage", value: 50, percent: true, until: 10 },
+      { kind: "damage", value: 50, percent: true, until: 10 },
+    ];
+    expect(damageWithBuffs(100, duplicate, 5)).toBe(150);
   });
 });
 
@@ -290,6 +299,43 @@ describe("castDueAbilities", () => {
     expect(out.enemyHp).toBe(0);
     // Only the first ability resolved; the second saw a dead enemy.
     expect(state.runtimes[1].casts).toBe(0);
+  });
+});
+
+describe("rebirth ability power", () => {
+  test("a runtime's power multiplier scales attack damage and heals", () => {
+    const bolt = ability({ abilityId: "bolt", type: "attack", basePower: 40 });
+    const plain = stateFor([{ doc: bolt, cooldown: 1_000 }]);
+    const boosted = stateFor([{ doc: bolt, cooldown: 1_000 }]);
+    boosted.runtimes[0].powerMultiplier = 1.5;
+    const cast = (state: AbilityCombatState) =>
+      castDueAbilities({
+        state,
+        at: 0,
+        retryAt: 1,
+        playerHp: 100,
+        playerMaxHp: 100,
+        enemyHp: 1_000,
+        enemyStats,
+        weapon: null,
+      }).damageDealt;
+    expect(cast(plain)).toBe(40);
+    expect(cast(boosted)).toBe(60);
+
+    const heal = ability({ abilityId: "mend", type: "heal", basePower: 10 });
+    const healState = stateFor([{ doc: heal, cooldown: 1_000 }]);
+    healState.runtimes[0].powerMultiplier = 2;
+    const outcome = castDueAbilities({
+      state: healState,
+      at: 0,
+      retryAt: 1,
+      playerHp: 10,
+      playerMaxHp: 100,
+      enemyHp: 1_000,
+      enemyStats,
+      weapon: null,
+    });
+    expect(outcome.healing).toBe(20);
   });
 });
 

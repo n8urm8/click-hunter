@@ -316,6 +316,7 @@ type AdminPlayer = {
   int: number;
   luk: number;
   con: number;
+  agi?: number;
   gold: number;
   totalExperience: number;
   currentTier: number;
@@ -332,6 +333,7 @@ type CharacterForm = {
   int: string;
   luk: string;
   con: string;
+  agi: string;
   gold: string;
   totalExperience: string;
   currentTier: string;
@@ -340,7 +342,7 @@ type CharacterForm = {
   rebirthTierThreshold: string;
 };
 
-const characterStatFields = ["str", "dex", "int", "luk", "con"] as const;
+const characterStatFields = ["str", "dex", "int", "luk", "con", "agi"] as const;
 
 function characterForm(player?: AdminPlayer | null): CharacterForm {
   return {
@@ -350,6 +352,7 @@ function characterForm(player?: AdminPlayer | null): CharacterForm {
     int: String(player?.int ?? 1),
     luk: String(player?.luk ?? 1),
     con: String(player?.con ?? 1),
+    agi: String(player?.agi ?? 1),
     gold: String(player?.gold ?? 0),
     totalExperience: String(player?.totalExperience ?? 0),
     currentTier: String(player?.currentTier ?? 1),
@@ -541,7 +544,7 @@ function PassiveNodeEditor({
       <Field label="Effect stat">
         <TextInput
           value={form.effectStat}
-          placeholder="str, dex, int, luk, con"
+          placeholder="str, dex, int, luk, con, agi"
           onChange={(event) =>
             setForm({ ...form, effectStat: event.currentTarget.value })
           }
@@ -776,6 +779,7 @@ function CharacterEditorCard({
     int: Number(form.int),
     luk: Number(form.luk),
     con: Number(form.con),
+    agi: Number(form.agi),
   };
   const hasValidStats = Object.values(statValues).every(Number.isFinite);
   const derivedStats = hasValidStats
@@ -800,7 +804,8 @@ function CharacterEditorCard({
           selectedPlayer.int,
           selectedPlayer.luk,
           selectedPlayer.con
-        )
+        ) -
+        (selectedPlayer.agi ?? 1)
       : 0;
   const derivedLevel = hasValidStats
     ? calculateCombatLevel(
@@ -809,7 +814,7 @@ function CharacterEditorCard({
         statValues.int,
         statValues.luk,
         statValues.con
-      ) + skillLevelContribution
+      ) + statValues.agi + skillLevelContribution
     : null;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -837,6 +842,7 @@ function CharacterEditorCard({
         int: requiredInteger(form.int, "INT", 1),
         luk: requiredInteger(form.luk, "LUK", 1),
         con: requiredInteger(form.con, "CON", 1),
+        agi: requiredInteger(form.agi, "AGI", 1),
         gold: requiredInteger(form.gold, "Gold"),
         totalExperience: requiredInteger(
           form.totalExperience,
@@ -986,7 +992,7 @@ function CharacterEditorCard({
                       Base stats
                     </h4>
                     <p className="text-xs text-muted-foreground">
-                      Set the five attributes used to derive level and combat
+                      Set the attributes used to derive level and combat
                       values.
                     </p>
                   </div>
@@ -2475,7 +2481,7 @@ function UpgradeEditor({
       </Field>
       <Field label="Effect stat">
         <TextInput
-          placeholder="str, dex, int, luk, con"
+          placeholder="str, dex, int, luk, con, agi"
           value={form.effectStat}
           onChange={(event) =>
             setForm({ ...form, effectStat: event.currentTarget.value })

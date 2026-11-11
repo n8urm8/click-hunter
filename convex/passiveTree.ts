@@ -59,7 +59,7 @@ export const PASSIVE_POINT_GAP_STEP_DEFAULT = {
     "Triangular point pacing: each successive passive point costs this many more effective levels than the last (point n costs step × n levels above the starting-level baseline)",
 } as const;
 
-const DEFAULT_STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1 };
+const DEFAULT_STARTING_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1, agi: 1 };
 const MAX_PASSIVE_ROWS = 500;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -145,9 +145,11 @@ export function nextPointGapForSchedule(
 }
 
 function readStartingStatSum(value: unknown) {
-  if (!isRecord(value)) return 5;
+  if (!isRecord(value)) return 6;
   let sum = 0;
-  for (const stat of ["str", "dex", "int", "luk", "con"]) {
+  // Agility counts toward character level, so it counts toward the baseline
+  // too; a missing entry reads as 1, like every new player's agility.
+  for (const stat of ["str", "dex", "int", "luk", "con", "agi"]) {
     const entry = value[stat];
     sum +=
       typeof entry === "number" && Number.isFinite(entry) && entry >= 1
@@ -202,7 +204,7 @@ export async function getPassivePoints(
 }
 
 export type PassiveBonuses = {
-  stats: { str: number; dex: number; int: number; luk: number; con: number };
+  stats: { str: number; dex: number; int: number; luk: number; con: number; agi: number };
   damagePercent: number;
   attackSpeedPercent: number;
   defensePercent: number;
@@ -217,7 +219,7 @@ export type PassiveBonuses = {
 };
 
 export const EMPTY_PASSIVE_BONUSES: PassiveBonuses = {
-  stats: { str: 0, dex: 0, int: 0, luk: 0, con: 0 },
+  stats: { str: 0, dex: 0, int: 0, luk: 0, con: 0, agi: 0 },
   damagePercent: 0,
   attackSpeedPercent: 0,
   defensePercent: 0,
@@ -237,7 +239,8 @@ function isStatKey(value: unknown): value is keyof PassiveBonuses["stats"] {
     value === "dex" ||
     value === "int" ||
     value === "luk" ||
-    value === "con"
+    value === "con" ||
+    value === "agi"
   );
 }
 
@@ -354,7 +357,7 @@ type SeedNode = {
   name: string;
   description: string;
   effectType: PassiveEffectType;
-  effectStat?: "str" | "dex" | "int" | "luk" | "con";
+  effectStat?: "str" | "dex" | "int" | "luk" | "con" | "agi";
   effectScope?: "all" | "gathering" | "crafting";
   element?: ElementKind;
   effectAmount: number;

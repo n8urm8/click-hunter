@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, expect, test, vi } from "vitest";
@@ -14,7 +15,7 @@ async function setup() {
   rateLimiterTest.register(base);
   const t = base.withIdentity({ subject: SUBJECT });
   const ids = await t.run(async (ctx) => {
-    const playerId = await ctx.db.insert("players", {
+    const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "audit", name: "Audit", authSubject: SUBJECT,
       str: 1, dex: 1, int: 1, luk: 1, con: 10,
       gold: 0, totalExperience: 0, rebirthCount: 0,
@@ -96,7 +97,7 @@ test("hidden spots only grant their own configured reward", async () => {
 
 test("tiers cannot be skipped and keys cannot cross players", async () => {
   const { t, playerId } = await setup();
-  const other = await t.run(async (ctx) => ctx.db.insert("players", {
+  const other = await t.run(async (ctx) => insertPlayerWithRecords(ctx, {
     anonymousId: "victim", name: "Victim", authSubject: "victim-user",
     str: 1, dex: 1, int: 1, luk: 1, con: 1,
     gold: 0, totalExperience: 0, rebirthCount: 0,
@@ -126,7 +127,7 @@ test("forged boss wins settle nothing; server strikes do", async () => {
     playerId, monsterTier: 1, monsterType: "boss1", isBoss: true, won: true,
     settlementKey: `${playerId}:boss:boss1:1:0`,
   })).rejects.toThrow("strikeBoss");
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({ gold: 0 });
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({ gold: 0 });
 
   const session = await t.run(async (ctx) => {
     const now = Date.now();
@@ -179,10 +180,10 @@ test("forged boss wins settle nothing; server strikes do", async () => {
     ).status;
   }
   expect(status).toBe("won");
-  expect(await t.run((ctx) => ctx.db.get(playerId))).toMatchObject({
+  expect(await t.run((ctx) => playerWithRecords(ctx, playerId))).toMatchObject({
     gold: expect.any(Number),
   });
-  const gold = (await t.run((ctx) => ctx.db.get(playerId)))?.gold ?? 0;
+  const gold = (await t.run((ctx) => playerWithRecords(ctx, playerId)))?.gold ?? 0;
   expect(gold).toBeGreaterThan(0);
 
   // Re-reporting the same victory is an idempotent duplicate, not double pay.
@@ -191,7 +192,7 @@ test("forged boss wins settle nothing; server strikes do", async () => {
     sessionId: fightSession.sessionId,
   });
   expect(again.duplicate).toBe(true);
-  expect((await t.run((ctx) => ctx.db.get(playerId)))?.gold).toBe(gold);
+  expect((await t.run((ctx) => playerWithRecords(ctx, playerId)))?.gold).toBe(gold);
 });
 
 test("direct currency/stat cheats are no longer public", async () => {

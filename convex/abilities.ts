@@ -3,8 +3,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
 import { requirePlayer, requirePlayerRead } from "./playerAuth";
-import { readWisdomBalance, getPlayerMaxEquippedAbilities, getWisdomPowerMultiplier, getEffectiveWisdom } from "./wisdom";
-import { readBalanceValue } from "./balance";
+import { getPlayerMaxEquippedAbilities } from "./wisdom";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 type PlayerId = Id<"players">;
@@ -565,24 +564,22 @@ export async function getCombatAbilities(
   level: number;
   cooldownMs: number;
 }>> {
-  const [equipped, wisdomLevel] = await Promise.all([
-    getPlayerEquippedAbilities(ctx, playerId),
-    // Effectiveness, not level: banked WIS rebirth bonuses scale ability
-    // power via effective wisdom while slots/breakpoints stay on base level.
-    getEffectiveWisdom(ctx, playerId),
-  ]);
-  const wisdomMultiplier = getWisdomPowerMultiplier(wisdomLevel, await readWisdomBalance(ctx));
+  const equipped = await getPlayerEquippedAbilities(ctx, playerId);
+  const rows = await Promise.all(
+    equipped.map((eq) =>
+      Promise.all([
+        getAbilityDefinition(ctx, eq.abilityId),
+        getPlayerAbility(ctx, playerId, eq.abilityId),
+      ])
+    )
+  );
 
   const results = [];
-  for (const eq of equipped) {
-    const ability = await getAbilityDefinition(ctx, eq.abilityId);
-    if (!ability || !ability.enabled) continue;
-
-    const playerAbility = await getPlayerAbility(ctx, playerId, eq.abilityId);
-    if (!playerAbility) continue;
-
+  for (let index = 0; index < equipped.length; index += 1) {
+    const [ability, playerAbility] = rows[index];
+    if (!ability || !ability.enabled || !playerAbility) continue;
     results.push({
-      slot: eq.slot,
+      slot: equipped[index].slot,
       ability,
       level: playerAbility.level,
       cooldownMs: getAbilityCooldown(ability, playerAbility.level),
@@ -638,64 +635,6 @@ export async function hasAbilityAtLevel(
   return abilities
     .filter((a) => a.level >= level)
     .map((a) => a.abilityId);
-}
-
-/**
- * Calculate rebirth ability bonuses multiplier.
- * Each banked bonus adds rebirthAbilityBonusPercent (default 3%).
- */
-export async function getRebirthAbilityMultiplier(
-  ctx: DatabaseCtx,
-  playerId: PlayerId,
-  abilityId: string
-): Promise<number> {
-  const player = await ctx.db.get(playerId);
-  if (!player) return 1;
-
-  const bonusCount = player.rebirthAbilityBonuses?.[abilityId] ?? 0;
-  if (bonusCount <= 0) return 1;
-
-  const bonusPercent = await readBalanceValue(ctx, "rebirthAbilityBonusPercent");
-  const percent = typeof bonusPercent === "number" && bonusPercent > 0 ? bonusPercent : 0.03;
-  return 1 + percent * bonusCount;
-}
-
-/**
- * Get cooldown reduction from rebirth ability bonuses.
- */
-export async function getRebirthAbilityCooldownReduction(
-  ctx: DatabaseCtx,
-  playerId: PlayerId,
-  abilityId: string
-): Promise<number> {
-  const player = await ctx.db.get(playerId);
-  if (!player) return 0;
-
-  const bonusCount = player.rebirthAbilityBonuses?.[abilityId] ?? 0;
-  if (bonusCount <= 0) return 0;
-
-  const reductionPerBonus = await readBalanceValue(ctx, "rebirthAbilityCooldownReductionPerBonus");
-  const reduction = typeof reductionPerBonus === "number" ? reductionPerBonus : 0.02;
-  return Math.min(0.5, reduction * bonusCount); // Cap at 50% reduction
-}
-
-/**
- * Get wisdom XP bonus from rebirth ability bonuses.
- */
-export async function getRebirthAbilityWisdomXpBonus(
-  ctx: DatabaseCtx,
-  playerId: PlayerId,
-  abilityId: string
-): Promise<number> {
-  const player = await ctx.db.get(playerId);
-  if (!player) return 0;
-
-  const bonusCount = player.rebirthAbilityBonuses?.[abilityId] ?? 0;
-  if (bonusCount <= 0) return 0;
-
-  const bonusPerLevel = await readBalanceValue(ctx, "rebirthAbilityWisdomXpBonusPerBonus");
-  const bonus = typeof bonusPerLevel === "number" ? bonusPerLevel : 0.05;
-  return bonus * bonusCount;
 }
 
 /**

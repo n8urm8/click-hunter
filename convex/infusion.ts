@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requirePlayer, requirePlayerOwner } from "./playerAuth";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
+import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 import { consumeItems } from "./items";
 import { grantItemToInventory } from "./items";
 import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
@@ -304,8 +305,7 @@ export const enchantEquipment = mutation({
     }
 
     // Read after settling: the settlement above may have just paid gold.
-    const payer = await ctx.db.get(playerId);
-    if (!payer) throw new Error("Player not found");
+    const payer = await readPlayerProgress(ctx, playerId);
     const goldCost = Math.ceil(balance.enchantGoldPerLevel * next);
     if (payer.gold < goldCost) {
       throw new Error(`Enchanting to +${next} costs ${goldCost} gold`);
@@ -315,7 +315,7 @@ export const enchantEquipment = mutation({
       { itemId: essence._id, quantity: balance.enchantEssenceQty },
     ]);
     if (goldCost > 0) {
-      await ctx.db.patch(playerId, { gold: payer.gold - goldCost, lastUpdated: now });
+      await patchPlayerProgress(ctx, payer, { gold: payer.gold - goldCost });
     }
 
     const skillRow = await ensureInfusionSkillRow(ctx, playerId, now);
