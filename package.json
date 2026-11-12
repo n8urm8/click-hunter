@@ -2,6 +2,9 @@
   "name": "click-hunter",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=26.13.1"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "test -f ./docker/.env.selfhosted || (echo 'Missing docker/.env.selfhosted - copy docker/.env.selfhosted.example (see docs/self-hosting.md)' && exit 1); set -a; . ./docker/.env.selfhosted; set +a; convex dev --env-file ./docker/.env.selfhosted --start 'vite'",

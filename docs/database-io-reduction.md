@@ -197,7 +197,7 @@ Postgres, disk, backups, upgrades, and tail latency. Fix the queries
 above first — self-hosting moves the cost from Convex billing to your
 CPU/RAM/disk, it does not make full scans free.
 
-1. Prerequisites: Docker + Docker Compose, Node 20+, `npx convex` CLI,
+1. Prerequisites: Docker + Docker Compose, Node 26.13.1+, `npx convex` CLI,
    a `INSTANCE_SECRET` (32+ random bytes).
 2. Start local backend (SQLite volume for quick local dev):
    ```bash

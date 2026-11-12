@@ -1,8 +1,9 @@
 # Click Hunter web app image: Vite SPA served by nginx.
 # Point the build at a reachable Convex backend (defaults suit `docker compose up`):
 #   docker build --build-arg VITE_CONVEX_URL=https://convex.example.com -t click-hunter-web .
-FROM node:24-alpine AS build
-RUN corepack enable && corepack prepare pnpm@10 --activate
+FROM node:26-alpine AS build
+# Node 25+ no longer ships Corepack, so install pnpm straight from npm.
+RUN npm install -g pnpm@10
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
