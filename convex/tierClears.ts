@@ -1,10 +1,11 @@
+import { monsterNameForTier, monstersForTier } from "./biomes";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 
 /**
  * Which monster types a player has defeated on each tier. A boss on a tier
  * needs every monster in the roster beaten there first, so the boss gate reads
- * one `playerTierClears` row plus the monster catalog.
+ * one `playerTierClears` row plus that tier's biome roster.
  *
  * Helpers only: this module registers no Convex functions, so client code that
  * imports gameplay modules stays clean.
@@ -60,7 +61,7 @@ export async function getTierClearStatus(
   playerId: Id<"players">,
   tier: number
 ): Promise<TierClearStatus> {
-  const [row, monsters] = await Promise.all([
+  const [row, catalog] = await Promise.all([
     ctx.db
       .query("playerTierClears")
       .withIndex("by_playerId_and_tier", (q) =>
@@ -69,11 +70,13 @@ export async function getTierClearStatus(
       .first(),
     ctx.db.query("monsters").take(MONSTER_CATALOG_LIMIT),
   ]);
+  // Only this tier's roster counts toward its boss.
+  const monsters = monstersForTier(catalog, tier);
   const cleared = new Set(row?.monsterTypes ?? []);
   const missing = monsters.filter((monster) => !cleared.has(monster.type));
   return {
     total: monsters.length,
     defeated: monsters.length - missing.length,
-    missingNames: missing.map((monster) => monster.name),
+    missingNames: missing.map((monster) => monsterNameForTier(monster, tier)),
   };
 }

@@ -1,5 +1,5 @@
 import type { MutationCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import { SKILL_XP_BALANCE_DEFAULT } from "./skillProgression";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { COMBAT_BALANCE_DEFAULTS } from "./items";
@@ -10,6 +10,21 @@ import {
 } from "./leatherwork";
 import { ELEMENT_VALUES } from "./itemTypes";
 import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
+import { ENDGAME_GATE_BALANCE_DEFAULTS } from "./endgameGate";
+import { BOSS_REWARD_BALANCE_DEFAULTS } from "./bossData";
+import {
+  BIOMES,
+  RIFT_FIRST_TIER,
+  allMaterialSeeds,
+  biomeMonsterSeeds,
+  bossKeyTrophyItemId,
+  materialItemId,
+  materialItemIdForTier,
+  monsterDropsForTier,
+  RIFT_ARCHETYPES,
+  RIFT_SHARD_ITEM_ID,
+  type MaterialKind,
+} from "./biomes";
 
 type SeedItem = {
   itemId: string;
@@ -408,6 +423,29 @@ const CONSUMABLE_ITEMS: Array<
   { ...craftingItem("wisdom-elixir", "Wisdom Elixir", "Every scar is a lesson.", "alchemy-wisdom", "alchemy", 7, 1000), ...{ effectType: "combat-xp-multiplier", effectAmount: 2.0, effectDurationMs: 45 * MIN } as ConsumableEffect, tier: 7, family: "alchemy-wisdom", variant: "advanced" },
 ];
 
+// Greater brews: a stronger copy of each combat brew (double effect), brewed
+// from that brew plus Blighted ichor. One per crafting tier.
+const GREATER_BREWS = CONSUMABLE_ITEMS.filter(
+  (item) => item.family === "alchemy-might"
+).map((item) => ({
+  itemId: `greater-${item.itemId}`,
+  name: `Greater ${item.name}`,
+  tier: item.tier,
+  baseItemId: item.itemId,
+  item: {
+    ...item,
+    itemId: `greater-${item.itemId}`,
+    name: `Greater ${item.name}`,
+    description: `${item.description} Twice as strong, thanks to Blighted ichor.`,
+    itemFamily: "alchemy-greater",
+    rarityLevel: item.rarityLevel + 10,
+    effectAmount:
+      item.effectAmount === undefined ? undefined : item.effectAmount * 2,
+    family: "alchemy-greater",
+    variant: "base" as const,
+  },
+}));
+
 // ─── Forged gear (7 pieces × 8 tiers) ───────────────────────────────────────
 
 const FORGE_SETS = [
@@ -483,17 +521,75 @@ const WOODWORKING_ITEMS: SeedItem[] = TIERS.flatMap((tier) => {
   ];
 });
 
+// ─── Blighted gear (forged + woodworked, tiers 9–16) ────────────────────────
+// The endgame power ladder. Tier 9+N regrows the tier 8 piece in Blighted
+// biome N's bone (forged) or hide (woodworked): each tier is the previous
+// piece plus Blighted materials and the previous tier's boss token, so each
+// boss kill unlocks the next gear tier. Damage, defense and the stat bonus all
+// grow: tier 9 is BLIGHTED_GEAR_FIRST_STEP× tier 8 (it absorbs the tier 9
+// jump), then each tier is BLIGHTED_GEAR_GROWTH×, matching the 1.4× monster
+// step. Growing the stat bonus matters: player HP only comes from CON, so
+// without it monster damage outruns survivability. Tuned with the balance sim
+// (convex/balanceSim.test.ts) so a Blighted tier plays like a main tier: gear
+// of the tier clears its easy and full zones, wins most hard-zone fights and
+// beats its boss; gear a tier behind can't beat the boss.
+
+export const BLIGHTED_GEAR_GROWTH = 1.4;
+/** Tier 9 over tier 8: the first Blighted piece absorbs the tier 9 jump. */
+export const BLIGHTED_GEAR_FIRST_STEP = 8;
+export const BLIGHTED_GEAR_TIERS = [9, 10, 11, 12, 13, 14, 15, 16] as const;
+/** Skill level for every Blighted tier: the materials are the real gate. */
+const BLIGHTED_GEAR_LEVEL = 95;
+const BLIGHTED_GEAR_DROP_QTY = 4;
+const BLIGHTED_GEAR_REFINED_QTY = 3;
+
+export function blightedGearItemId(baseItemId: string, tier: number) {
+  return `${baseItemId}-t${tier}`;
+}
+
+function blightedGearItem(base: SeedItem, tier: number): SeedItem {
+  const growth = BLIGHTED_GEAR_FIRST_STEP * Math.pow(BLIGHTED_GEAR_GROWTH, tier - 9);
+  const grow = (value: number) => Math.round(value * growth * 100) / 100;
+  const biome = BIOMES[tier - 9];
+  const kind = base.craftingSkillId === "forging" ? "bone" : "hide";
+  const name = `${biome.blight.label} ${base.name}`;
+  return {
+    ...base,
+    itemId: blightedGearItemId(base.itemId, tier),
+    name,
+    description: `${name}: tier 8 gear regrown in Blighted ${biome.name} ${kind}. Tier ${tier}.`,
+    rarityLevel: tier * 10,
+    craftingTier: tier,
+    ...(base.effectAmount === undefined ? {} : { effectAmount: Math.round(base.effectAmount * growth) }),
+    ...(base.baseDamage === undefined ? {} : { baseDamage: grow(base.baseDamage) }),
+    ...(base.baseDefense === undefined ? {} : { baseDefense: grow(base.baseDefense) }),
+  };
+}
+
+/** The tier 8 pieces each Blighted ladder starts from. */
+const BLIGHTED_GEAR_BASES: SeedItem[] = [...FORGING_ITEMS, ...WOODWORKING_ITEMS].filter(
+  (item) => item.craftingTier === TIERS.length
+);
+
+const BLIGHTED_GEAR_ITEMS: SeedItem[] = BLIGHTED_GEAR_BASES.flatMap((base) =>
+  BLIGHTED_GEAR_TIERS.map((tier) => blightedGearItem(base, tier))
+);
+
 // ─── Leatherwork (leathercrafting skill: belts, bags, leather armor) ─────────
-// Medium-difficulty monsters supply the hides: troll → str, wyvern → dex,
-// dragon → int. Leather is tier-marked per monster and upgrades stepwise
-// (tier N cures from tier N-1 + fresh hides), so the line extends to any
-// future tier as data-only rows: formulas below are linear in tier with no
-// 8-cap in code, validation, or the recipes table.
-const LEATHER_SOURCES = [
-  { monster: "troll", hideItemId: "troll-moss-hide", prefix: "trollhide", name: "Trollhide", stat: "str" },
-  { monster: "wyvern", hideItemId: "wyvern-moon-scale", prefix: "wyvernscale", name: "Wyvernscale", stat: "dex" },
-  { monster: "dragon", hideItemId: "dragon-ember-scale", prefix: "dragonhide", name: "Dragonhide", stat: "int" },
-] as const;
+// Three leather lines, one per damage stat. Tier N leather cures from the
+// tier N biome's hide (convex/biomes.ts) plus the tier N-1 leather; each line
+// also takes one other biome material, so every hunt feeds some leather.
+const LEATHER_SOURCES: ReadonlyArray<{
+  monster: string;
+  prefix: string;
+  name: string;
+  stat: EffectStat;
+  extra: MaterialKind;
+}> = [
+  { monster: "brawler", prefix: "brawler", name: "Brawler", stat: "str", extra: "bone" },
+  { monster: "ranger", prefix: "ranger", name: "Ranger", stat: "dex", extra: "hide" },
+  { monster: "mystic", prefix: "mystic", name: "Mystic", stat: "int", extra: "ichor" },
+];
 
 const LEATHER_ARMOR_PIECES = [
   { suffix: "cap", slot: "head", name: "Cap", defense: 1 },
@@ -512,7 +608,7 @@ function leatherItem(
     ...craftingItem(
       itemId,
       name,
-      `Cured tier ${craftingTier} leather from ${monster} hides. Upgrades with the tiers.`,
+      `Cured tier ${craftingTier} ${monster} leather. Upgrades with the tiers.`,
       `leather-${monster}`,
       "leathercrafting",
       craftingTier
@@ -531,7 +627,7 @@ function beltItem(
     itemId,
     name,
     category: "equipment",
-    description: `${name}: holds alchemy brews at the hip (tier ${craftingTier} belts unlock more consumable slots) and carries the strength of the ${monster}.`,
+    description: `${name}: holds alchemy brews at the hip (tier ${craftingTier} belts unlock more consumable slots) and carries the ${effectStat.toUpperCase()} of the ${monster}.`,
     stackable: false,
     maxStackSize: 1,
     allowedEquipmentSlots: ["belt"],
@@ -685,11 +781,14 @@ function buildLeatherRecipes(bagSlotsPerTier: number): LeatherRecipeSeed[] {
         name: `Cure ${source.name} Leather T${tier}`,
         description:
           tier === 1
-            ? `Cure ${source.hideItemId} hides into workable tier 1 leather.`
-            : `Upgrade ${source.name} leather to tier ${tier} with fresh hides.`,
+            ? `Cure ${BIOMES[0].materials.hide} into workable tier 1 leather.`
+            : `Upgrade ${source.name} leather to tier ${tier} with fresh ${BIOMES[tier - 1].materials.hide}.`,
         outputFamily: `leather-${source.monster}`,
         ingredients: [
-          { itemId: source.hideItemId, quantity: 3 },
+          { itemId: materialItemId(tier, "hide"), quantity: source.extra === "hide" ? 4 : 3 },
+          ...(source.extra === "hide"
+            ? []
+            : [{ itemId: materialItemId(tier, source.extra), quantity: 1 }]),
           ...(tier === 1
             ? []
             : [
@@ -706,7 +805,7 @@ function buildLeatherRecipes(bagSlotsPerTier: number): LeatherRecipeSeed[] {
         outputItemId: beltId,
         tier,
         name: `Stitch ${source.name} Belt T${tier}`,
-        description: `Stitch a tier ${tier} ${source.monster}-hide belt. Higher tiers hold more consumables.`,
+        description: `Stitch a tier ${tier} ${source.monster} belt. Higher tiers hold more consumables.`,
         outputFamily: `leather-belt-${source.monster}`,
         ingredients: [
           { itemId: leatherId, quantity: 2 },
@@ -727,7 +826,7 @@ function buildLeatherRecipes(bagSlotsPerTier: number): LeatherRecipeSeed[] {
           outputItemId: armorId,
           tier,
           name: `Stitch ${source.name} ${piece.name} T${tier}`,
-          description: `Stitch tier ${tier} ${source.monster}-hide ${piece.name.toLowerCase()} from cured leather.`,
+          description: `Stitch tier ${tier} ${source.monster} ${piece.name.toLowerCase()} from cured leather.`,
           outputFamily: `leather-armor-${source.monster}-${piece.slot}`,
           ingredients: [
             { itemId: leatherId, quantity: 2 },
@@ -765,13 +864,9 @@ function buildLeatherRecipes(bagSlotsPerTier: number): LeatherRecipeSeed[] {
   return recipes;
 }
 
-const LEATHER_HIDE_ITEM_IDS = new Set<string>(
-  LEATHER_SOURCES.map((source) => source.hideItemId)
-);
-
 const OUTPUT_ITEMS: SeedItem[] = [
   ...REFINED_ITEMS,
-  ...CONSUMABLE_ITEMS.map(
+  ...[...CONSUMABLE_ITEMS, ...GREATER_BREWS.map((brew) => brew.item)].map(
     ({ tier: _tier, family: _family, variant, ...item }) => ({
       ...item,
       buffVariant: variant,
@@ -936,107 +1031,19 @@ export const STARTER_KITS: Record<string, { weapon: string; chest: string }> = {
   staff: { weapon: "worn-staff", chest: "worn-robe" },
 };
 
-const MONSTER_DROP_ITEMS: SeedItem[] = [
-  {
-    itemId: "moonlit-rat-fang",
-    name: "Moonlit Rat Fang",
-    category: "crafting",
-    description: "A sharp fang stained by the moonlit burrows beneath the forest.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 10,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "goblin-thorn-charm",
-    name: "Goblin Thorn Charm",
-    category: "crafting",
-    description: "A crooked charm cut from a goblin's stolen thornwood.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 10,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "orc-heartwood-shard",
-    name: "Orc Heartwood Shard",
-    category: "crafting",
-    description: "A splinter of heartwood carried by orc chieftains.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 20,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "troll-moss-hide",
-    name: "Troll Moss Hide",
-    category: "crafting",
-    description: "Tough hide covered in the moss of a troll's den.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 20,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "wyvern-moon-scale",
-    name: "Wyvern Moon Scale",
-    category: "crafting",
-    description: "A scale that catches moonlight even in a closed pouch.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 30,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "dragon-ember-scale",
-    name: "Dragon Ember Scale",
-    category: "crafting",
-    description: "A warm scale that remembers the color of a dragon's fire.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 30,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "demon-ash-seed",
-    name: "Demon Ash Seed",
-    category: "crafting",
-    description: "A seed that refuses to sprout unless fed a spark of shadow.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 30,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "nightmare-dreamleaf",
-    name: "Nightmare Dreamleaf",
-    category: "crafting",
-    description: "A leaf plucked from the edge of a nightmare.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 30,
-    itemFamily: "monster-augmentation",
-  },
-  {
-    itemId: "archfiend-horn",
-    name: "Archfiend Horn",
-    category: "crafting",
-    description: "A horn whose black grain twists toward forbidden paths.",
-    stackable: true,
-    maxStackSize: 1000,
-    allowedEquipmentSlots: [],
-    rarityLevel: 30,
-    itemFamily: "monster-augmentation",
-  },
-];
+// Combat materials (convex/biomes.ts): hide, bone, ichor and trophy for each
+// biome, their Blighted grades, and Rift Shards.
+const BIOME_MATERIAL_ITEMS: SeedItem[] = allMaterialSeeds().map((material) => ({
+  itemId: material.itemId,
+  name: material.name,
+  category: "crafting",
+  description: material.description,
+  stackable: true,
+  maxStackSize: 10000,
+  allowedEquipmentSlots: [],
+  rarityLevel: material.rarityLevel,
+  itemFamily: "monster-drop",
+}));
 
 const BOSS_TOKEN_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
   itemId: `forest-boss-token-${tier}`,
@@ -1048,6 +1055,26 @@ const BOSS_TOKEN_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
   allowedEquipmentSlots: [],
   rarityLevel: 30,
   itemFamily: "boss-catalyst",
+}));
+
+// Raid-only guild building materials (convex/guildBuildings.ts). Raid kills
+// put them in the guild stash, one grade per tier band.
+const DRAGON_SCALE_ITEMS: SeedItem[] = (
+  [
+    ["dragon-scale", "Dragon Scale", "tiers 1–8", 40],
+    ["blighted-dragon-scale", "Blighted Dragon Scale", "tiers 9–16", 90],
+    ["rift-dragon-scale", "Rift Dragon Scale", "tiers 17–20", 170],
+  ] as const
+).map(([itemId, name, band, rarityLevel]) => ({
+  itemId,
+  name,
+  category: "crafting",
+  description: `Shed by a raid dragon (${band}). Guild officers spend it on guild buildings.`,
+  stackable: true,
+  maxStackSize: 10000,
+  allowedEquipmentSlots: [],
+  rarityLevel,
+  itemFamily: "raid-material",
 }));
 
 const ESSENCE_ITEMS: SeedItem[] = INFUSION_TIERS.map((tier) => ({
@@ -1104,44 +1131,44 @@ function talismanItem(
   };
 }
 
-// Trophy talismans: obscene-quantity sinks (1000 each) for the monster drops
-// with no other use. Mid-to-high-tier accessories, one standout stat each.
-const TALISMAN_ITEMS: SeedItem[] = [
-  talismanItem(
-    "rat-fang-talisman",
-    "Rat Fang Talisman",
-    "A thousand moonlit fangs braided into a luck-thief's charm.",
-    4, "luk", 6
-  ),
-  talismanItem(
-    "goblin-thorn-talisman",
-    "Goblin Thorn Talisman",
-    "A thousand stolen thorns set in stormsilver, quick as theft.",
-    5, "dex", 8
-  ),
-  talismanItem(
-    "heartwood-talisman",
-    "Heartwood Talisman",
-    "A thousand heartwood splinters bound around voidquartz. It hits back.",
-    6, "str", 9
-  ),
-  talismanItem(
-    "ember-scale-talisman",
-    "Ember Scale Talisman",
-    "A thousand ember scales over nightsteel. Warm as blood, hard as war.",
-    7, "con", 11
-  ),
-];
+// Trophy talismans: four stat lines, one per tier. Tier N is forged from the
+// tier N biome trophy, tier N ingots and the tier N-1 talisman of the line.
+const TALISMAN_LINES = [
+  { line: "hunter", name: "Hunter's Talisman", stat: "luk", blurb: "A charm of lucky finds." },
+  { line: "swiftwind", name: "Swiftwind Talisman", stat: "dex", blurb: "Quick as a gust through leaves." },
+  { line: "warlord", name: "Warlord Talisman", stat: "str", blurb: "It hits back." },
+  { line: "bulwark", name: "Bulwark Talisman", stat: "con", blurb: "Hard as old roots." },
+] as const;
+
+function talismanItemId(line: string, tier: number) {
+  return `talisman-${line}-t${tier}`;
+}
+
+const TALISMAN_ITEMS: SeedItem[] = TALISMAN_LINES.flatMap((line) =>
+  TIERS.map((tier) => ({
+    ...talismanItem(
+      talismanItemId(line.line, tier),
+      `${line.name} T${tier}`,
+      `${line.blurb} Set with a ${BIOMES[tier - 1].materials.trophy}.`,
+      tier,
+      line.stat as EffectStat,
+      Math.round(tier * 1.5)
+    ),
+    itemFamily: `forging-talisman-${line.line}`,
+  }))
+);
 
 export const ALL_ITEMS = [
   ...RESOURCE_ITEMS,
   ...OUTPUT_ITEMS,
   ...STARTER_ITEMS,
-  ...MONSTER_DROP_ITEMS,
+  ...BIOME_MATERIAL_ITEMS,
   ...BOSS_TOKEN_ITEMS,
+  ...DRAGON_SCALE_ITEMS,
   ...ESSENCE_ITEMS,
   ...BOSS_KEY_ITEMS,
   ...TALISMAN_ITEMS,
+  ...BLIGHTED_GEAR_ITEMS,
 ];
 
 const SKILLS = [
@@ -1203,16 +1230,9 @@ const SKILLS = [
   },
 ];
 
-const MONSTER_DROPS = [
-  ["rat", "moonlit-rat-fang"],
-  ["goblin", "goblin-thorn-charm"],
-  ["orc", "orc-heartwood-shard"],
-  ["troll", "troll-moss-hide"],
-  ["wyvern", "wyvern-moon-scale"],
-  ["dragon", "dragon-ember-scale"],
-  ["demon", "demon-ash-seed"],
-  ["nightmare", "nightmare-dreamleaf"],
-  ["archfiend", "archfiend-horn"],
+// Monster types from before the biome roster; their augmentations stay disabled.
+const LEGACY_MONSTER_IDS = [
+  "rat", "goblin", "orc", "troll", "wyvern", "dragon", "demon", "nightmare", "archfiend",
 ] as const;
 
 // Retired content: recipes are disabled (items stay for existing inventories).
@@ -1240,237 +1260,84 @@ const RETIRED_RECIPE_IDS = [
   "root-iron-blade",
 ];
 
-function itemIdFor(itemById: Map<string, Id<"items">>, itemId: string) {
-  const id = itemById.get(itemId);
-  if (!id) throw new Error(`Seed item ${itemId} was not created`);
-  return id;
-}
+// ─── Seed plans (pure data) ─────────────────────────────────────────────────
+// Everything the crafting seed writes is described here as plain data, so
+// the plans can be inspected and tested without a database, and the writers
+// below only have to diff and upsert.
 
-export async function seedForestCraftingContent(ctx: MutationCtx) {
-  const now = Date.now();
-  const itemById = new Map<string, Id<"items">>();
-  const leatherBalance = await readLeatherBalance(ctx);
+/** One recipe row plus its ingredient and output rows. */
+export type RecipePlan = {
+  recipeId: string;
+  skillId: string;
+  tier: number;
+  name: string;
+  description: string;
+  outputFamily: string;
+  /** Absent on legacy (stageless) recipes: boss keys, talismans, leather. */
+  stage?: "refinement" | "product" | "consumable";
+  requiresMonsterDrop?: boolean;
+  ingredients: Array<{ itemId: string; quantity: number }>;
+  outputItemId: string;
+};
 
-  for (const item of ALL_ITEMS) {
-    const existing = await ctx.db
-      .query("items")
-      .withIndex("by_itemId", (q) => q.eq("itemId", item.itemId))
-      .first();
-    const values = {
-      ...leatherSeedValues(item, leatherBalance.bagSlotsPerTier),
-      updatedAt: now,
-    };
-    if (existing) {
-      await ctx.db.patch(existing._id, values);
-      itemById.set(item.itemId, existing._id);
-    } else {
-      const id = await ctx.db.insert("items", {
-        ...values,
-        createdAt: now,
-      });
-      itemById.set(item.itemId, id);
-    }
-  }
+/** Gathering activities: [activityId, skillId, tier, name, outputItemId, minYield, maxYield]. */
+const GATHERING_ACTIVITIES = [
+  ["harvest-herbs", "harvesting", 1, "Harvest Moonlit Herbs", "moonlit-herb", 1, 3],
+  ["gather-silverdew", "harvesting", 1, "Gather Silverdew Leaves", "silverdew-leaf", 1, 3],
+  ["gather-starlight-moss", "harvesting", 1, "Gather Starlight Moss", "starlight-moss", 1, 3],
+  ["harvest-mushrooms", "harvesting", 2, "Gather Glimmering Mushrooms", "glimmering-mushroom", 1, 2],
+  ["gather-sunveil", "harvesting", 2, "Gather Sunveil Blooms", "sunveil-bloom", 1, 2],
+  ["gather-dreamcap", "harvesting", 2, "Gather Dreamcap Spores", "dreamcap-spore", 1, 2],
+  ["harvest-flowers", "harvesting", 3, "Gather Whispering Flowers", "whispering-flower", 1, 2],
+  ["gather-astral-orchids", "harvesting", 3, "Gather Astral Orchids", "astral-orchid", 1, 2],
+  ["gather-elderroot", "harvesting", 3, "Gather Elderroot", "elderroot", 1, 2],
+  ["harvest-emberleaf", "harvesting", 4, "Gather Emberleaf", "emberleaf", 1, 2],
+  ["harvest-frostcap", "harvesting", 4, "Gather Frostcap", "frostcap", 1, 2],
+  ["harvest-thornbloom", "harvesting", 4, "Gather Thornbloom", "thornbloom", 1, 2],
+  ["harvest-tidepetal", "harvesting", 5, "Gather Tidepetal", "tidepetal", 1, 2],
+  ["harvest-stormspore", "harvesting", 5, "Gather Stormspore", "stormspore", 1, 2],
+  ["harvest-glowroot", "harvesting", 5, "Gather Glowroot", "glowroot", 1, 2],
+  ["harvest-voidfern", "harvesting", 6, "Gather Voidfern", "voidfern", 1, 2],
+  ["harvest-sunscale", "harvesting", 6, "Gather Sunscale Lichen", "sunscale-lichen", 1, 2],
+  ["harvest-hexbark", "harvesting", 6, "Gather Hexbark Blossom", "hexbark-blossom", 1, 2],
+  ["harvest-nightshade", "harvesting", 7, "Gather Nightshade Crown", "nightshade-crown", 1, 2],
+  ["harvest-wraithvine", "harvesting", 7, "Gather Wraithvine", "wraithvine", 1, 2],
+  ["harvest-doomorchid", "harvesting", 7, "Gather Doomorchid", "doomorchid", 1, 2],
+  ["harvest-starforged-seed", "harvesting", 8, "Gather Starforged Seed", "starforged-seed", 1, 2],
+  ["harvest-dawnpetal", "harvesting", 8, "Gather Dawnpetal", "dawnpetal", 1, 2],
+  ["harvest-eternalmoss", "harvesting", 8, "Gather Eternalmoss", "eternalmoss", 1, 2],
+  ["cut-moonwood", "woodcutting", 1, "Cut Moonwood", "moonwood-log", 1, 3],
+  ["strip-bark", "woodcutting", 2, "Strip Living Bark", "living-bark", 1, 2],
+  ["bind-thornvine", "woodcutting", 3, "Bind Thornvine", "thornvine-bundle", 1, 2],
+  ["cut-emberwood", "woodcutting", 4, "Cut Emberwood", "emberwood-log", 1, 2],
+  ["cut-tidewood", "woodcutting", 5, "Cut Tidewood", "tidewood-log", 1, 2],
+  ["cut-voidwood", "woodcutting", 6, "Cut Voidwood", "voidwood-log", 1, 2],
+  ["cut-dreadwood", "woodcutting", 7, "Cut Dreadwood", "dreadwood-log", 1, 2],
+  ["cut-worldheart", "woodcutting", 8, "Cut Worldheart", "worldheart-log", 1, 2],
+  ["mine-moonstone", "mining", 1, "Mine Moonstone", "moonstone-shard", 1, 3],
+  ["mine-amber", "mining", 2, "Mine Root Amber", "root-amber", 1, 2],
+  ["mine-root-iron", "mining", 3, "Mine Root-Iron", "root-iron-ore", 1, 2],
+  ["mine-emberstone", "mining", 4, "Mine Emberstone", "emberstone-shard", 1, 2],
+  ["mine-stormsilver", "mining", 5, "Mine Stormsilver", "stormsilver-ore", 1, 2],
+  ["mine-voidquartz", "mining", 6, "Mine Voidquartz", "voidquartz-ore", 1, 2],
+  ["mine-nightsteel", "mining", 7, "Mine Nightsteel", "nightsteel-ore", 1, 2],
+  ["mine-starforged", "mining", 8, "Mine Starforged", "starforged-ore", 1, 2],
+] as const;;
 
-  for (const entry of [
-    SKILL_XP_BALANCE_DEFAULT,
-    { key: "bossGoldPerTier", value: 500, description: "Base boss gold reward per tier" },
-    { key: "bossExperiencePerTier", value: 250, description: "Base boss experience reward per tier" },
-  ]) {
-    const existing = await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", entry.key))
-      .first();
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        value: entry.value,
-        description: entry.description,
-        lastUpdated: now,
-      });
-    } else {
-      await ctx.db.insert("gameBalance", {
-        ...entry,
-        lastUpdated: now,
-      });
-    }
-  }
-  for (const entry of [...SKILL_TASK_BALANCE_DEFAULTS, ...COMBAT_BALANCE_DEFAULTS, ...HP_REGEN_BALANCE_DEFAULTS, ...LEATHER_BALANCE_DEFAULTS, ...INFUSION_BALANCE_DEFAULTS]) {
-    const existing = await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", entry.key))
-      .first();
-    if (existing) continue;
-    await ctx.db.insert("gameBalance", {
-      ...entry,
-      lastUpdated: now,
-    });
-  }
+type RecipeSeed = {
+  recipeId: string;
+  outputItemId: string;
+  skillId: "alchemy" | "woodworking" | "forging";
+  tier: Tier;
+  name: string;
+  outputFamily: string;
+  stage: "refinement" | "product" | "consumable";
+  requiresMonsterDrop: boolean;
+  ingredients: Array<{ itemId: string; quantity: number }>;
+};
 
-  for (const skill of SKILLS) {
-    const existing = await ctx.db
-      .query("skillDefinitions")
-      .withIndex("by_skillId", (q) => q.eq("skillId", skill.skillId))
-      .first();
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        ...skill,
-        enabled: true,
-        maxLevel: undefined,
-        updatedAt: now,
-      });
-    } else {
-      await ctx.db.insert("skillDefinitions", {
-        ...skill,
-        enabled: true,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-  }
-
-  for (const skill of SKILLS) {
-    for (const tier of TIERS) {
-      const index = tier - 1;
-      const tierRow = {
-        skillId: skill.skillId,
-        tier,
-        name: `${TIER_NAMES[index]} ${skill.name}`,
-        description: `Tier ${tier} ${skill.name.toLowerCase()} activities.`,
-        // Infusion is never level-gated; every tier attemptable from level 1.
-        requiredLevel: skill.skillId === "infusion" ? 1 : TIER_LEVELS[index],
-        enabled: true,
-        updatedAt: now,
-      };
-      const existing = await ctx.db
-        .query("skillTierDefinitions")
-        .withIndex("by_skillId_and_tier", (q) =>
-          q.eq("skillId", skill.skillId).eq("tier", tier)
-        )
-        .first();
-      if (existing) {
-        await ctx.db.patch(existing._id, tierRow);
-      } else {
-        await ctx.db.insert("skillTierDefinitions", {
-          ...tierRow,
-          createdAt: now,
-        });
-      }
-    }
-  }
-
-  // Infusion tiers past the 8 hand-authored tiers (up to the seeded max).
-  // All requiredLevel 1: gating is via success chance, not level locks.
-  for (const tier of INFUSION_TIERS) {
-    if (tier <= 8) continue;
-    const tierRow = {
-      skillId: "infusion",
-      tier,
-      name: `Tier ${tier} Infusion`,
-      description: `Tier ${tier} infusion activities.`,
-      requiredLevel: 1,
-      enabled: true,
-      updatedAt: now,
-    };
-    const existing = await ctx.db
-      .query("skillTierDefinitions")
-      .withIndex("by_skillId_and_tier", (q) =>
-        q.eq("skillId", "infusion").eq("tier", tier)
-      )
-      .first();
-    if (existing) {
-      await ctx.db.patch(existing._id, tierRow);
-    } else {
-      await ctx.db.insert("skillTierDefinitions", {
-        ...tierRow,
-        createdAt: now,
-      });
-    }
-  }
-
-  const gathering = [
-    ["harvest-herbs", "harvesting", 1, "Harvest Moonlit Herbs", "moonlit-herb", 1, 3],
-    ["gather-silverdew", "harvesting", 1, "Gather Silverdew Leaves", "silverdew-leaf", 1, 3],
-    ["gather-starlight-moss", "harvesting", 1, "Gather Starlight Moss", "starlight-moss", 1, 3],
-    ["harvest-mushrooms", "harvesting", 2, "Gather Glimmering Mushrooms", "glimmering-mushroom", 1, 2],
-    ["gather-sunveil", "harvesting", 2, "Gather Sunveil Blooms", "sunveil-bloom", 1, 2],
-    ["gather-dreamcap", "harvesting", 2, "Gather Dreamcap Spores", "dreamcap-spore", 1, 2],
-    ["harvest-flowers", "harvesting", 3, "Gather Whispering Flowers", "whispering-flower", 1, 2],
-    ["gather-astral-orchids", "harvesting", 3, "Gather Astral Orchids", "astral-orchid", 1, 2],
-    ["gather-elderroot", "harvesting", 3, "Gather Elderroot", "elderroot", 1, 2],
-    ["harvest-emberleaf", "harvesting", 4, "Gather Emberleaf", "emberleaf", 1, 2],
-    ["harvest-frostcap", "harvesting", 4, "Gather Frostcap", "frostcap", 1, 2],
-    ["harvest-thornbloom", "harvesting", 4, "Gather Thornbloom", "thornbloom", 1, 2],
-    ["harvest-tidepetal", "harvesting", 5, "Gather Tidepetal", "tidepetal", 1, 2],
-    ["harvest-stormspore", "harvesting", 5, "Gather Stormspore", "stormspore", 1, 2],
-    ["harvest-glowroot", "harvesting", 5, "Gather Glowroot", "glowroot", 1, 2],
-    ["harvest-voidfern", "harvesting", 6, "Gather Voidfern", "voidfern", 1, 2],
-    ["harvest-sunscale", "harvesting", 6, "Gather Sunscale Lichen", "sunscale-lichen", 1, 2],
-    ["harvest-hexbark", "harvesting", 6, "Gather Hexbark Blossom", "hexbark-blossom", 1, 2],
-    ["harvest-nightshade", "harvesting", 7, "Gather Nightshade Crown", "nightshade-crown", 1, 2],
-    ["harvest-wraithvine", "harvesting", 7, "Gather Wraithvine", "wraithvine", 1, 2],
-    ["harvest-doomorchid", "harvesting", 7, "Gather Doomorchid", "doomorchid", 1, 2],
-    ["harvest-starforged-seed", "harvesting", 8, "Gather Starforged Seed", "starforged-seed", 1, 2],
-    ["harvest-dawnpetal", "harvesting", 8, "Gather Dawnpetal", "dawnpetal", 1, 2],
-    ["harvest-eternalmoss", "harvesting", 8, "Gather Eternalmoss", "eternalmoss", 1, 2],
-    ["cut-moonwood", "woodcutting", 1, "Cut Moonwood", "moonwood-log", 1, 3],
-    ["strip-bark", "woodcutting", 2, "Strip Living Bark", "living-bark", 1, 2],
-    ["bind-thornvine", "woodcutting", 3, "Bind Thornvine", "thornvine-bundle", 1, 2],
-    ["cut-emberwood", "woodcutting", 4, "Cut Emberwood", "emberwood-log", 1, 2],
-    ["cut-tidewood", "woodcutting", 5, "Cut Tidewood", "tidewood-log", 1, 2],
-    ["cut-voidwood", "woodcutting", 6, "Cut Voidwood", "voidwood-log", 1, 2],
-    ["cut-dreadwood", "woodcutting", 7, "Cut Dreadwood", "dreadwood-log", 1, 2],
-    ["cut-worldheart", "woodcutting", 8, "Cut Worldheart", "worldheart-log", 1, 2],
-    ["mine-moonstone", "mining", 1, "Mine Moonstone", "moonstone-shard", 1, 3],
-    ["mine-amber", "mining", 2, "Mine Root Amber", "root-amber", 1, 2],
-    ["mine-root-iron", "mining", 3, "Mine Root-Iron", "root-iron-ore", 1, 2],
-    ["mine-emberstone", "mining", 4, "Mine Emberstone", "emberstone-shard", 1, 2],
-    ["mine-stormsilver", "mining", 5, "Mine Stormsilver", "stormsilver-ore", 1, 2],
-    ["mine-voidquartz", "mining", 6, "Mine Voidquartz", "voidquartz-ore", 1, 2],
-    ["mine-nightsteel", "mining", 7, "Mine Nightsteel", "nightsteel-ore", 1, 2],
-    ["mine-starforged", "mining", 8, "Mine Starforged", "starforged-ore", 1, 2],
-  ] as const;
-  for (const [
-    activityId,
-    skillId,
-    tier,
-    name,
-    outputItemId,
-    minYield,
-    maxYield,
-  ] of gathering) {
-    const activity = {
-      activityId,
-      skillId,
-      tier,
-      name,
-      description: `Gather ${name.toLowerCase()} from the mystical forest.`,
-      outputItemId: itemIdFor(itemById, outputItemId),
-      minYield,
-      maxYield,
-      durationMs: tier * 30_000,
-      experienceReward: tier * 25,
-      enabled: true,
-      updatedAt: now,
-    };
-    const existing = await ctx.db
-      .query("gatheringActivities")
-      .withIndex("by_activityId", (q) => q.eq("activityId", activityId))
-      .first();
-    if (existing) await ctx.db.patch(existing._id, activity);
-    else await ctx.db.insert("gatheringActivities", { ...activity, createdAt: now });
-  }
-
-  type RecipeSeed = {
-    recipeId: string;
-    outputItemId: string;
-    skillId: "alchemy" | "woodworking" | "forging";
-    tier: Tier;
-    name: string;
-    outputFamily: string;
-    stage: "refinement" | "product" | "consumable";
-    requiresMonsterDrop: boolean;
-    ingredients: Array<{ itemId: string; quantity: number }>;
-  };
+/** Refinement, product and consumable recipes (validated as chains). */
+function buildStagedRecipes(): RecipeSeed[] {
 
   const refinementChain = (
     skillId: RecipeSeed["skillId"],
@@ -1505,7 +1372,8 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     materials: ReadonlyArray<readonly [string, string]>,
     itemType: string,
     fileSuffix: string,
-    refinedPerTier: string[]
+    refinedPerTier: string[],
+    dropKind: MaterialKind
   ): RecipeSeed[] =>
     materials.map(([prefix, material], tierIndex) => {
       const outputItemId = `${prefix}-${fileSuffix}`;
@@ -1517,9 +1385,11 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
         name: `${verb} ${material} ${itemType}`,
         outputFamily,
         stage: "product" as const,
-        requiresMonsterDrop: false,
+        // Every tier N piece also takes the tier N biome's bone or hide.
+        requiresMonsterDrop: true,
         ingredients: [
           { itemId: refinedPerTier[tierIndex], quantity: 2 },
+          { itemId: materialItemId(tierIndex + 1, dropKind), quantity: 2 },
           ...(tierIndex === 0
             ? []
             : [
@@ -1572,7 +1442,8 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       materialPairs(WOOD_SETS, WOOD_IDS),
       itemType,
       fileSuffix,
-      refinedIds(LUMBER_LINE)
+      refinedIds(LUMBER_LINE),
+      "hide"
     )
   );
 
@@ -1594,7 +1465,8 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       materialPairs(FORGE_SETS, FORGE_IDS),
       itemType,
       fileSuffix,
-      refinedIds(INGOT_LINE)
+      refinedIds(INGOT_LINE),
+      "bone"
     )
   );
 
@@ -1622,37 +1494,42 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
   });
 
   const consumableRecipes: RecipeSeed[] = [
-    consumable("verdant-tonic", "Brew Verdant Tonic", 1, "alchemy-might", false, [
+    // Combat brews always take their biome's ichor: 1 for base, 2 for advanced.
+    consumable("verdant-tonic", "Brew Verdant Tonic", 1, "alchemy-might", true, [
       { itemId: extractT[0], quantity: 2 },
+      { itemId: materialItemId(1, "ichor"), quantity: 1 },
     ]),
-    consumable("ember-might-draught", "Brew Ember Might Draught", 2, "alchemy-might", false, [
+    consumable("ember-might-draught", "Brew Ember Might Draught", 2, "alchemy-might", true, [
       { itemId: extractT[1], quantity: 2 },
+      { itemId: materialItemId(2, "ichor"), quantity: 1 },
     ]),
-    consumable("hunters-swift-draught", "Brew Hunter's Swiftness Draught", 3, "alchemy-might", false, [
+    consumable("hunters-swift-draught", "Brew Hunter's Swiftness Draught", 3, "alchemy-might", true, [
       { itemId: extractT[2], quantity: 2 },
+      { itemId: materialItemId(3, "ichor"), quantity: 1 },
     ]),
     consumable("starwater-salve", "Brew Starwater Salve", 4, "alchemy-might", true, [
       { itemId: extractT[3], quantity: 2 },
       { itemId: "verdant-tonic", quantity: 1 },
-      { itemId: "troll-moss-hide", quantity: 1 },
+      { itemId: materialItemId(4, "ichor"), quantity: 2 },
     ]),
     consumable("demonseed-might-draught", "Brew Demonseed Might Draught", 5, "alchemy-might", true, [
       { itemId: extractT[4], quantity: 2 },
       { itemId: "ember-might-draught", quantity: 1 },
-      { itemId: "demon-ash-seed", quantity: 1 },
+      { itemId: materialItemId(5, "ichor"), quantity: 2 },
     ]),
-    consumable("stonehide-draught", "Brew Stonehide Draught", 6, "alchemy-might", false, [
+    consumable("stonehide-draught", "Brew Stonehide Draught", 6, "alchemy-might", true, [
       { itemId: extractT[5], quantity: 2 },
+      { itemId: materialItemId(6, "ichor"), quantity: 1 },
     ]),
     consumable("nightmare-swift-draught", "Brew Nightmare Swiftness Draught", 7, "alchemy-might", true, [
       { itemId: extractT[6], quantity: 2 },
       { itemId: "hunters-swift-draught", quantity: 1 },
-      { itemId: "nightmare-dreamleaf", quantity: 1 },
+      { itemId: materialItemId(7, "ichor"), quantity: 2 },
     ]),
     consumable("starforged-heart-draught", "Brew Starforged Heart Draught", 8, "alchemy-might", true, [
       { itemId: extractT[7], quantity: 2 },
       { itemId: "stonehide-draught", quantity: 1 },
-      { itemId: "archfiend-horn", quantity: 1 },
+      { itemId: materialItemId(8, "ichor"), quantity: 2 },
       { itemId: "forest-boss-token-8", quantity: 1 },
     ]),
     consumable("gathering-focus-tonic", "Brew Gathering Focus Tonic", 1, "alchemy-focus", false, [
@@ -1683,14 +1560,24 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       { itemId: essenceT[5], quantity: 2 },
       { itemId: "crafting-alacrity-tonic", quantity: 1 },
     ]),
-    consumable("wisdom-draught", "Brew Wisdom Draught", 3, "alchemy-wisdom", false, [
+    consumable("wisdom-draught", "Brew Wisdom Draught", 3, "alchemy-wisdom", true, [
       { itemId: extractT[2], quantity: 2 },
+      { itemId: materialItemId(3, "ichor"), quantity: 1 },
     ]),
     consumable("wisdom-elixir", "Brew Wisdom Elixir", 7, "alchemy-wisdom", true, [
       { itemId: extractT[6], quantity: 2 },
       { itemId: "wisdom-draught", quantity: 1 },
-      { itemId: "wyvern-moon-scale", quantity: 1 },
+      { itemId: materialItemId(7, "ichor"), quantity: 2 },
     ]),
+    // Greater brews: the tier N combat brew, refined with Blighted ichor from
+    // the Blighted version of biome N (combat tier 8+N).
+    ...GREATER_BREWS.map((brew) =>
+      consumable(brew.itemId, `Brew ${brew.name}`, brew.tier, "alchemy-greater", true, [
+        { itemId: extractT[brew.tier - 1], quantity: 2 },
+        { itemId: brew.baseItemId, quantity: 1 },
+        { itemId: materialItemId(brew.tier, "ichor", "blighted"), quantity: 3 },
+      ])
+    ),
   ];
 
   const recipes: RecipeSeed[] = [
@@ -1701,68 +1588,590 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
     ...forgingProductRecipes,
     ...consumableRecipes,
   ];
-  for (const seed of recipes) {
-    const {
-      recipeId,
-      outputItemId,
-      skillId,
-      tier,
-      name,
-      outputFamily,
-      stage,
-      requiresMonsterDrop,
-      ingredients,
-    } = seed;
-    const recipe = {
-      recipeId,
-      skillId,
-      tier,
-      name,
-      description:
-        stage === "refinement"
-          ? `Refine tier ${tier} gathered materials for later crafting.`
-          : stage === "consumable"
-            ? `Brew ${name.toLowerCase().replace(/^(brew|refine|shape|forge) /, "")} from tier ${tier} refined materials.`
-            : `Craft ${name.toLowerCase()} from tier ${tier} refined materials.`,
-      durationMs: tier * 45_000,
-      experienceReward: tier * 50,
-      outputFamily,
-      stage,
-      requiresMonsterDrop,
-      enabled: true,
-      updatedAt: now,
-    };
-    const existing = await ctx.db
-      .query("recipes")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
-      .first();
-    if (existing) await ctx.db.patch(existing._id, recipe);
-    else await ctx.db.insert("recipes", { ...recipe, createdAt: now });
+  return recipes;
+}
 
-    const oldIngredients = await ctx.db
-      .query("recipeIngredients")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
-      .collect();
-    for (const row of oldIngredients) await ctx.db.delete(row._id);
-    for (const ingredient of ingredients) {
-      await ctx.db.insert("recipeIngredients", {
-        recipeId,
-        itemId: itemIdFor(itemById, ingredient.itemId),
-        quantity: ingredient.quantity,
+function stagedRecipeDescription(recipe: RecipeSeed): string {
+  if (recipe.stage === "refinement") {
+    return `Refine tier ${recipe.tier} gathered materials for later crafting.`;
+  }
+  if (recipe.stage === "consumable") {
+    return `Brew ${recipe.name.toLowerCase().replace(/^(brew|refine|shape|forge) /, "")} from tier ${recipe.tier} refined materials.`;
+  }
+  return `Craft ${recipe.name.toLowerCase()} from tier ${recipe.tier} refined materials.`;
+}
+
+const BOSS_KEY_ESSENCE_QTY = 100;
+/** Boss tokens per kill: one per piece of a five-piece Blighted set. */
+const BOSS_TOKEN_DROP_QTY = 5;
+const TALISMAN_TROPHY_QTY = 3;
+
+/** Every crafting recipe the seed owns, across all crafting skills. */
+export function buildRecipePlans(bagSlotsPerTier: number): RecipePlan[] {
+  const staged: RecipePlan[] = buildStagedRecipes().map((recipe) => ({
+    recipeId: recipe.recipeId,
+    skillId: recipe.skillId,
+    tier: recipe.tier,
+    name: recipe.name,
+    description: stagedRecipeDescription(recipe),
+    outputFamily: recipe.outputFamily,
+    stage: recipe.stage,
+    requiresMonsterDrop: recipe.requiresMonsterDrop,
+    ingredients: recipe.ingredients,
+    outputItemId: recipe.outputItemId,
+  }));
+
+  // Boss-key chain: T1 = 100x essence T1; TN = 100x essence TN + 1x key T(N-1),
+  // plus that tier's trophy (biome trophy, Blighted trophy, or Rift Shards).
+  // Legacy recipes (no stage): gated by infusion success, not level locks.
+  const bossKeys: RecipePlan[] = INFUSION_TIERS.map((tier) => ({
+    recipeId: `infuse-boss-key-tier-${tier}`,
+    skillId: "infusion",
+    tier,
+    name: `Infuse Tier ${tier} Boss Key`,
+    description: `Condense tier ${tier} monster essence and a trophy${tier > 1 ? " with the previous tier key" : ""} into a boss key. Consumed when the boss fight starts.`,
+    outputFamily: "boss-key",
+    ingredients: [
+      { itemId: `essence-tier-${tier}`, quantity: BOSS_KEY_ESSENCE_QTY },
+      { itemId: bossKeyTrophyItemId(tier), quantity: tier >= RIFT_FIRST_TIER ? 5 : 1 },
+      ...(tier > 1 ? [{ itemId: `boss-key-tier-${tier - 1}`, quantity: 1 }] : []),
+    ],
+    outputItemId: `boss-key-tier-${tier}`,
+  }));
+
+  // Trophy talismans: legacy (stageless) ladders. Tier N = biome N trophies
+  // + tier N ingots + the line's tier N-1 talisman.
+  const ingotT = INGOT_LINE.map((row) => row[0] as string);
+  const talismans: RecipePlan[] = TALISMAN_LINES.flatMap((line) =>
+    TIERS.map((tier) => ({
+      recipeId: `forge-${talismanItemId(line.line, tier)}`,
+      skillId: "forging",
+      tier,
+      name: `Forge ${line.name} T${tier}`,
+      description: `Forge a tier ${tier} talisman from ${BIOMES[tier - 1].materials.trophy} and tier ${tier} ingots${tier > 1 ? ", upgrading the previous tier" : ""}.`,
+      outputFamily: `forging-talisman-${line.line}`,
+      ingredients: [
+        { itemId: materialItemId(tier, "trophy"), quantity: TALISMAN_TROPHY_QTY },
+        { itemId: ingotT[tier - 1], quantity: 2 },
+        ...(tier === 1
+          ? []
+          : [{ itemId: talismanItemId(line.line, tier - 1), quantity: 1 }]),
+      ],
+      outputItemId: talismanItemId(line.line, tier),
+    }))
+  );
+
+  // Blighted gear: legacy (stageless) ladders past tier 8, since there are no
+  // tier 9+ refined materials. Tier 9+N = the previous piece + Blighted biome
+  // N bone/hide + tier 8 ingots or lumber + the tier N-1 boss token.
+  const lumberT = LUMBER_LINE.map((row) => row[0] as string);
+  const blightedGear: RecipePlan[] = BLIGHTED_GEAR_BASES.flatMap((base) => {
+    const skillId = base.craftingSkillId as "forging" | "woodworking";
+    const forged = skillId === "forging";
+    return BLIGHTED_GEAR_TIERS.map((tier) => {
+      const previous =
+        tier === BLIGHTED_GEAR_TIERS[0]
+          ? base.itemId
+          : blightedGearItemId(base.itemId, tier - 1);
+      const outputItemId = blightedGearItemId(base.itemId, tier);
+      const biome = BIOMES[tier - 9];
+      return {
+        recipeId: outputItemId,
+        skillId,
+        tier,
+        name: `${forged ? "Forge" : "Shape"} ${biome.blight.label} ${base.name}`,
+        description: `Regrow the tier ${tier - 1} piece in Blighted ${biome.name} ${forged ? "bone" : "hide"} with a tier ${tier - 1} boss token: ${
+          tier === BLIGHTED_GEAR_TIERS[0]
+            ? `${BLIGHTED_GEAR_FIRST_STEP}×`
+            : `${Math.round((BLIGHTED_GEAR_GROWTH - 1) * 100)}% more`
+        } damage, defense and stat bonus.`,
+        outputFamily: base.itemFamily!,
+        ingredients: [
+          { itemId: previous, quantity: 1 },
+          {
+            itemId: materialItemId(tier - 8, forged ? "bone" : "hide", "blighted"),
+            quantity: BLIGHTED_GEAR_DROP_QTY,
+          },
+          {
+            itemId: forged ? ingotT[TIERS.length - 1] : lumberT[TIERS.length - 1],
+            quantity: BLIGHTED_GEAR_REFINED_QTY,
+          },
+          // The previous tier's boss gates the next gear tier.
+          { itemId: `forest-boss-token-${tier - 1}`, quantity: 1 },
+        ],
+        outputItemId,
+      };
+    });
+  });
+
+  const leather: RecipePlan[] = buildLeatherRecipes(bagSlotsPerTier).map((recipe) => ({
+    recipeId: recipe.recipeId,
+    skillId: "leathercrafting",
+    tier: recipe.tier,
+    name: recipe.name,
+    description: recipe.description,
+    outputFamily: recipe.outputFamily,
+    ingredients: recipe.ingredients,
+    outputItemId: recipe.outputItemId,
+  }));
+
+  return [...staged, ...bossKeys, ...talismans, ...blightedGear, ...leather];
+}
+
+/** Augmentation rows, with their material as an item slug. */
+export type AugmentationPlan = {
+  augmentationId: string;
+  skillId: string;
+  tier: number;
+  name: string;
+  description: string;
+  allowedEquipmentSlots: Array<"head" | "chest" | "mainHand" | "legs" | "feet" | "belt">;
+  requiredMaterialSlug: string;
+  requiredMaterialQuantity: number;
+  effectType: string;
+  effectElement: string;
+  effectAmount: number;
+  requiresPreviousTier: boolean;
+  experienceReward: number;
+};
+
+/**
+ * Chained boss-token lines: weapon (damage + element imbue) and armor
+ * (+defense + elemental ward). Tier N requires the tier N-1 augment on the
+ * same item, which it replaces. No cap.
+ */
+export function buildAugmentationPlans(): AugmentationPlan[] {
+  const balanceDefault = (key: string, fallback: number) => {
+    const found = INFUSION_BALANCE_DEFAULTS.find((entry) => entry.key === key);
+    return typeof found?.value === "number" ? found.value : fallback;
+  };
+  const tokenQty = balanceDefault("augmentBossTokenQty", 1);
+  const damagePerTier = balanceDefault("augmentDamagePerTier", 3);
+  const defensePerTier = balanceDefault("augmentDefensePerTier", 3);
+  return INFUSION_TIERS.flatMap((tier) => {
+    const chainNote =
+      tier > 1 ? ` Requires the tier ${tier - 1} augment on the same item first.` : "";
+    const imbue = ELEMENT_VALUES[(tier - 1) % ELEMENT_VALUES.length];
+    const shared = {
+      skillId: "infusion",
+      tier,
+      requiredMaterialSlug: `forest-boss-token-${tier}`,
+      requiredMaterialQuantity: tokenQty,
+      effectElement: imbue,
+      requiresPreviousTier: tier > 1,
+      experienceReward: 50 * tier,
+    };
+    return [
+      {
+        ...shared,
+        augmentationId: `augment-weapon-tier-${tier}`,
+        name: `Tier ${tier} Weapon Infusion`,
+        description: `Imbue a weapon with ${imbue} for +${tier * damagePerTier} base damage.${chainNote}`,
+        allowedEquipmentSlots: ["mainHand"] as AugmentationPlan["allowedEquipmentSlots"],
+        effectType: "damage-bonus",
+        effectAmount: tier * damagePerTier,
+      },
+      {
+        ...shared,
+        augmentationId: `augment-armor-tier-${tier}`,
+        name: `Tier ${tier} Armor Infusion`,
+        description: `Attune armor to ${imbue} for +${tier * defensePerTier} base defense and a ${imbue} ward against matching hits.${chainNote}`,
+        allowedEquipmentSlots: ["head", "chest", "legs", "feet", "belt"] as AugmentationPlan["allowedEquipmentSlots"],
+        effectType: "defense-bonus",
+        effectAmount: tier * defensePerTier,
+      },
+    ];
+  });
+}
+
+/** A loot table, its entries (item slugs), and the sources that point at it. */
+export type LootTablePlan = {
+  lootTableId: string;
+  name: string;
+  sourceType: "monster" | "boss";
+  tier?: number;
+  rollCount: number;
+  entries: Array<{
+    itemId: string;
+    dropChance: number;
+    minQuantity: number;
+    maxQuantity: number;
+    guaranteed: boolean;
+    purpose: "augmentation" | "boss-catalyst";
+  }>;
+  /** `tier: undefined` is the monster's fallback source for any tier. */
+  sources: Array<{ sourceId: string; tier?: number }>;
+};
+
+/**
+ * Monster loot: each biome monster has a main-tier table (tierless source)
+ * and a Blighted table for tier 8+N; Rift archetypes add one table for tiers
+ * 17–20. Bosses pay their tier's token and trophy plus a chance at hide, bone
+ * and ichor; Rift bosses pay Rift Shards.
+ */
+export function buildLootTablePlans(): LootTablePlan[] {
+  const monsterEntries = (drops: Array<{ itemId: string; chance: number }>) =>
+    drops.map((drop) => ({
+      itemId: drop.itemId,
+      dropChance: drop.chance,
+      minQuantity: 1,
+      maxQuantity: 1,
+      guaranteed: false,
+      purpose: "augmentation" as const,
+    }));
+  const riftTiers = INFUSION_TIERS.filter((tier) => tier >= RIFT_FIRST_TIER);
+  const monsterTables: LootTablePlan[] = biomeMonsterSeeds().flatMap((monster) => {
+    const tables: LootTablePlan[] = [
+      {
+        lootTableId: `loot-monster-${monster.type}`,
+        name: `${monster.name} drops`,
+        sourceType: "monster",
+        rollCount: 1,
+        entries: monsterEntries(monsterDropsForTier(monster, monster.biomeTier)),
+        sources: [{ sourceId: monster.type }],
+      },
+      {
+        lootTableId: `loot-monster-${monster.type}-blighted`,
+        name: `Blighted ${monster.name} drops`,
+        sourceType: "monster",
+        rollCount: 1,
+        entries: monsterEntries(
+          monsterDropsForTier(monster, monster.biomeTier + TIERS.length)
+        ),
+        sources: [{ sourceId: monster.type, tier: monster.biomeTier + TIERS.length }],
+      },
+    ];
+    if (RIFT_ARCHETYPES.includes(monster.archetype)) {
+      tables.push({
+        lootTableId: `loot-monster-${monster.type}-rift`,
+        name: `Riftborn ${monster.name} drops`,
+        sourceType: "monster",
+        rollCount: 1,
+        entries: monsterEntries(monsterDropsForTier(monster, RIFT_FIRST_TIER)),
+        sources: riftTiers.map((tier) => ({ sourceId: monster.type, tier })),
       });
     }
+    return tables;
+  });
 
-    const oldOutputs = await ctx.db
-      .query("recipeOutputs")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
-      .collect();
-    for (const row of oldOutputs) await ctx.db.delete(row._id);
-    await ctx.db.insert("recipeOutputs", {
-      recipeId,
-      itemId: itemIdFor(itemById, outputItemId),
-      quantity: 1,
+  // Boss kills cost a key chain worth ~1,000 wins of essence per tier, so the
+  // table is net positive: a set's worth of tokens (one per Blighted gear
+  // piece, or augments), more trophies than the key took, guaranteed
+  // materials, and Rift Shards from Blighted bosses on.
+  const guaranteed = (itemId: string, minQuantity: number, maxQuantity: number) => ({
+    itemId,
+    dropChance: 1,
+    minQuantity,
+    maxQuantity,
+    guaranteed: true,
+    purpose: "boss-catalyst" as const,
+  });
+  const bossTables: LootTablePlan[] = INFUSION_TIERS.map((tier) => ({
+    lootTableId: `loot-boss-tier-${tier}`,
+    name: `Tier ${tier} guardian rewards`,
+    sourceType: "boss",
+    tier,
+    rollCount: 1,
+    entries: [
+      guaranteed(`forest-boss-token-${tier}`, BOSS_TOKEN_DROP_QTY, BOSS_TOKEN_DROP_QTY),
+      ...(tier >= RIFT_FIRST_TIER
+        ? [guaranteed(RIFT_SHARD_ITEM_ID, 6, 10)]
+        : [
+            guaranteed(bossKeyTrophyItemId(tier), 3, 5),
+            ...(["hide", "bone", "ichor"] as const).map((kind) =>
+              guaranteed(materialItemIdForTier(tier, kind), 3, 6)
+            ),
+            ...(tier > TIERS.length ? [guaranteed(RIFT_SHARD_ITEM_ID, 1, 2)] : []),
+          ]),
+    ],
+    sources: [{ sourceId: `boss_tier_${tier}`, tier }],
+  }));
+
+  return [...monsterTables, ...bossTables];
+}
+
+// ─── Seed writers ───────────────────────────────────────────────────────────
+// The writers diff each row against the plan and only write what changed, so
+// re-running the seed on an up-to-date deployment is read-only (no write
+// churn, no needless subscription invalidations).
+
+export const CRAFTING_SEED_SECTIONS = [
+  "catalog",
+  "recipes:alchemy",
+  "recipes:woodworking",
+  "recipes:forging",
+  "recipes:leathercrafting",
+  "recipes:infusion",
+  "augmentations",
+  "loot",
+] as const;
+
+export type CraftingSeedSection = (typeof CRAFTING_SEED_SECTIONS)[number];
+
+export type CraftingSeedCounts = {
+  inserted: number;
+  updated: number;
+  deleted: number;
+  unchanged: number;
+};
+
+/** Whether any field of `values` differs from the stored row. */
+function rowDiffers(existing: Record<string, unknown>, values: Record<string, unknown>) {
+  return Object.entries(values).some(
+    ([key, value]) => JSON.stringify(existing[key]) !== JSON.stringify(value)
+  );
+}
+
+/** Order-independent signature of child rows, for "did these change" checks. */
+function rowsSignature(rows: Array<Record<string, unknown>>) {
+  return rows
+    .map((row) => JSON.stringify(Object.entries(row).sort(([a], [b]) => a.localeCompare(b))))
+    .sort()
+    .join("|");
+}
+
+class CraftingSeedWriter {
+  readonly counts: CraftingSeedCounts = { inserted: 0, updated: 0, deleted: 0, unchanged: 0 };
+  private readonly itemIds = new Map<string, Id<"items">>();
+
+  constructor(
+    readonly ctx: MutationCtx,
+    readonly now: number
+  ) {}
+
+  /** Document id of a seeded item by slug (memoized; one read per slug). */
+  async item(slug: string): Promise<Id<"items">> {
+    const known = this.itemIds.get(slug);
+    if (known) return known;
+    const row = await this.ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", slug))
+      .first();
+    if (!row) throw new Error(`Seed item ${slug} was not created`);
+    this.itemIds.set(slug, row._id);
+    return row._id;
+  }
+
+  remember(slug: string, id: Id<"items">) {
+    this.itemIds.set(slug, id);
+  }
+
+  /**
+   * Insert or patch one row. `values` must not include timestamps; the
+   * timestamp field is bumped only when something changed.
+   */
+  async upsert<T extends "items" | "skillDefinitions" | "skillTierDefinitions" | "gatheringActivities" | "recipes" | "augmentationDefinitions" | "taskDefinitions" | "lootTables">(
+    table: T,
+    existing: Doc<T> | null,
+    values: Record<string, unknown>
+  ): Promise<Id<T>> {
+    const db = this.ctx.db as unknown as GenericDbWriter;
+    if (!existing) {
+      this.counts.inserted += 1;
+      return (await db.insert(table, {
+        ...values,
+        createdAt: this.now,
+        updatedAt: this.now,
+      })) as Id<T>;
+    }
+    if (rowDiffers(existing as Record<string, unknown>, values)) {
+      await db.patch(existing._id, { ...values, updatedAt: this.now });
+      this.counts.updated += 1;
+    } else {
+      this.counts.unchanged += 1;
+    }
+    return existing._id;
+  }
+
+  /** Replace a set of child rows only when it differs from `desired`. */
+  async syncChildren<T extends "recipeIngredients" | "recipeOutputs" | "lootTableEntries" | "lootSources">(
+    table: T,
+    existing: Array<Doc<T>>,
+    desired: Array<Record<string, unknown>>,
+    compareKeys: string[],
+    timestamps: boolean
+  ) {
+    const project = (row: Record<string, unknown>) =>
+      Object.fromEntries(compareKeys.map((key) => [key, row[key] ?? null]));
+    if (
+      rowsSignature(existing.map((row) => project(row as Record<string, unknown>))) ===
+      rowsSignature(desired.map(project))
+    ) {
+      this.counts.unchanged += 1;
+      return;
+    }
+    const db = this.ctx.db as unknown as GenericDbWriter;
+    for (const row of existing) {
+      await db.delete(row._id);
+      this.counts.deleted += 1;
+    }
+    for (const row of desired) {
+      await db.insert(
+        table,
+        timestamps ? { ...row, createdAt: this.now, updatedAt: this.now } : row
+      );
+      this.counts.inserted += 1;
+    }
+  }
+}
+
+/** The writer only needs untyped insert/patch/delete across seeded tables. */
+type GenericDbWriter = {
+  insert: (table: string, value: Record<string, unknown>) => Promise<Id<TableNames>>;
+  patch: (id: Id<TableNames>, value: Record<string, unknown>) => Promise<void>;
+  delete: (id: Id<TableNames>) => Promise<void>;
+};
+
+async function seedCatalog(writer: CraftingSeedWriter) {
+  const { ctx, now } = writer;
+  const leatherBalance = await readLeatherBalance(ctx);
+
+  for (const item of ALL_ITEMS) {
+    const existing = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", item.itemId))
+      .first();
+    const id = await writer.upsert(
+      "items",
+      existing,
+      leatherSeedValues(item, leatherBalance.bagSlotsPerTier) as Record<string, unknown>
+    );
+    writer.remember(item.itemId, id);
+  }
+
+  // Seed-owned balance values are kept in sync; tunable defaults are only
+  // inserted when missing so admin edits survive.
+  const ownedBalance = [
+    SKILL_XP_BALANCE_DEFAULT,
+    { key: "bossGoldPerTier", value: 500, description: "Base boss gold reward per tier" },
+    { key: "bossExperiencePerTier", value: 250, description: "Base boss experience reward per tier" },
+  ];
+  const defaultBalance = [
+    ...SKILL_TASK_BALANCE_DEFAULTS,
+    ...COMBAT_BALANCE_DEFAULTS,
+    ...HP_REGEN_BALANCE_DEFAULTS,
+    ...LEATHER_BALANCE_DEFAULTS,
+    ...INFUSION_BALANCE_DEFAULTS,
+    ...ENDGAME_GATE_BALANCE_DEFAULTS,
+    ...BOSS_REWARD_BALANCE_DEFAULTS,
+  ];
+  for (const [entry, owned] of [
+    ...ownedBalance.map((entry) => [entry, true] as const),
+    ...defaultBalance.map((entry) => [entry, false] as const),
+  ]) {
+    const existing = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", entry.key))
+      .first();
+    if (!existing) {
+      await ctx.db.insert("gameBalance", { ...entry, lastUpdated: now });
+      writer.counts.inserted += 1;
+    } else if (
+      owned &&
+      rowDiffers(existing, { value: entry.value, description: entry.description })
+    ) {
+      await ctx.db.patch(existing._id, {
+        value: entry.value,
+        description: entry.description,
+        lastUpdated: now,
+      });
+      writer.counts.updated += 1;
+    } else {
+      writer.counts.unchanged += 1;
+    }
+  }
+
+  for (const skill of SKILLS) {
+    const existing = await ctx.db
+      .query("skillDefinitions")
+      .withIndex("by_skillId", (q) => q.eq("skillId", skill.skillId))
+      .first();
+    await writer.upsert("skillDefinitions", existing, {
+      ...skill,
+      enabled: true,
+      maxLevel: undefined,
     });
   }
+
+  const tierRows = [
+    ...SKILLS.flatMap((skill) =>
+      TIERS.map((tier) => ({
+        skillId: skill.skillId,
+        tier,
+        name: `${TIER_NAMES[tier - 1]} ${skill.name}`,
+        description: `Tier ${tier} ${skill.name.toLowerCase()} activities.`,
+        // Infusion is never level-gated; every tier attemptable from level 1.
+        requiredLevel: skill.skillId === "infusion" ? 1 : TIER_LEVELS[tier - 1],
+        enabled: true,
+      }))
+    ),
+    // Blighted gear tiers for the two gear skills.
+    ...SKILLS.filter((skill) => skill.skillId === "forging" || skill.skillId === "woodworking").flatMap(
+      (skill) =>
+        BLIGHTED_GEAR_TIERS.map((tier) => ({
+          skillId: skill.skillId,
+          tier,
+          name: `${BIOMES[tier - 9].blight.label} ${skill.name}`,
+          description: `Tier ${tier}: regrow tier 8 gear in Blighted ${BIOMES[tier - 9].name} materials.`,
+          requiredLevel: BLIGHTED_GEAR_LEVEL,
+          enabled: true,
+        }))
+    ),
+    // Infusion tiers past the 8 hand-authored tiers (up to the seeded max).
+    ...INFUSION_TIERS.filter((tier) => tier > TIERS.length).map((tier) => ({
+      skillId: "infusion",
+      tier,
+      name: `Tier ${tier} Infusion`,
+      description: `Tier ${tier} infusion activities.`,
+      requiredLevel: 1,
+      enabled: true,
+    })),
+  ];
+  for (const tierRow of tierRows) {
+    const existing = await ctx.db
+      .query("skillTierDefinitions")
+      .withIndex("by_skillId_and_tier", (q) =>
+        q.eq("skillId", tierRow.skillId).eq("tier", tierRow.tier)
+      )
+      .first();
+    await writer.upsert("skillTierDefinitions", existing, tierRow);
+  }
+
+  for (const [activityId, skillId, tier, name, outputItemId, minYield, maxYield] of GATHERING_ACTIVITIES) {
+    const existing = await ctx.db
+      .query("gatheringActivities")
+      .withIndex("by_activityId", (q) => q.eq("activityId", activityId))
+      .first();
+    await writer.upsert("gatheringActivities", existing, {
+      activityId,
+      skillId,
+      tier,
+      name,
+      description: `Gather ${name.toLowerCase()} from the mystical forest.`,
+      outputItemId: await writer.item(outputItemId),
+      minYield,
+      maxYield,
+      durationMs: tier * 30_000,
+      experienceReward: tier * 25,
+      enabled: true,
+    });
+  }
+
+  const existingTask = await ctx.db
+    .query("taskDefinitions")
+    .withIndex("by_taskId", (q) => q.eq("taskId", "skill_action"))
+    .first();
+  await writer.upsert("taskDefinitions", existingTask, {
+    taskId: "skill_action",
+    name: "Skill action",
+    category: "skill",
+    description: "Gather resources or craft an item.",
+    canProgressOffline: true,
+    requiresOnline: false,
+    enabled: true,
+    prerequisites: null,
+    rewards: { uses: "skillAction" },
+  });
 
   for (const recipeId of RETIRED_RECIPE_IDS) {
     const retired = await ctx.db
@@ -1771,680 +2180,231 @@ export async function seedForestCraftingContent(ctx: MutationCtx) {
       .first();
     if (retired && retired.enabled) {
       await ctx.db.patch(retired._id, { enabled: false, updatedAt: now });
-    }
-  }
-
-  // Boss-key chain: T1 = 100x essence T1; TN = 100x essence TN + 1x key T(N-1).
-  // Legacy recipes (no stage): validated as plain crafting, gated by infusion
-  // success chance instead of level locks.
-  const BOSS_KEY_ESSENCE_QTY = 100;
-  for (const tier of INFUSION_TIERS) {
-    const recipeId = `infuse-boss-key-tier-${tier}`;
-    const recipe = {
-      recipeId,
-      skillId: "infusion",
-      tier,
-      name: `Infuse Tier ${tier} Boss Key`,
-      description: `Condense tier ${tier} monster essence${tier > 1 ? " with the previous tier key" : ""} into a boss key. Consumed when the boss fight starts.`,
-      durationMs: tier * 45_000,
-      experienceReward: tier * 50,
-      outputFamily: "boss-key",
-      enabled: true,
-      updatedAt: now,
-    };
-    const existing = await ctx.db
-      .query("recipes")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
-      .first();
-    if (existing) await ctx.db.patch(existing._id, recipe);
-    else await ctx.db.insert("recipes", { ...recipe, createdAt: now });
-
-    const oldIngredients = await ctx.db
-      .query("recipeIngredients")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
-      .collect();
-    for (const row of oldIngredients) await ctx.db.delete(row._id);
-    await ctx.db.insert("recipeIngredients", {
-      recipeId,
-      itemId: itemIdFor(itemById, `essence-tier-${tier}`),
-      quantity: BOSS_KEY_ESSENCE_QTY,
-    });
-    if (tier > 1) {
-      await ctx.db.insert("recipeIngredients", {
-        recipeId,
-        itemId: itemIdFor(itemById, `boss-key-tier-${tier - 1}`),
-        quantity: 1,
-      });
-    }
-
-    const oldOutputs = await ctx.db
-      .query("recipeOutputs")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
-      .collect();
-    for (const row of oldOutputs) await ctx.db.delete(row._id);
-    await ctx.db.insert("recipeOutputs", {
-      recipeId,
-      itemId: itemIdFor(itemById, `boss-key-tier-${tier}`),
-      quantity: 1,
-    });
-  }
-
-  // Trophy talismans: 1000-drop sinks for otherwise-unused monster drops,
-  // plus same-tier ingots. Legacy (stageless) recipes like boss keys: the
-  // product chain rule requires a contiguous family from tier 1, but this
-  // line starts at tier 4.
-  const ingotT = refinedIds(INGOT_LINE);
-  const talismanRecipes: Array<{
-    recipeId: string;
-    outputItemId: string;
-    tier: number;
-    name: string;
-    dropItemId: string;
-  }> = [
-    { recipeId: "forge-rat-fang-talisman", outputItemId: "rat-fang-talisman", tier: 4, name: "Forge Rat Fang Talisman", dropItemId: "moonlit-rat-fang" },
-    { recipeId: "forge-goblin-thorn-talisman", outputItemId: "goblin-thorn-talisman", tier: 5, name: "Forge Goblin Thorn Talisman", dropItemId: "goblin-thorn-charm" },
-    { recipeId: "forge-heartwood-talisman", outputItemId: "heartwood-talisman", tier: 6, name: "Forge Heartwood Talisman", dropItemId: "orc-heartwood-shard" },
-    { recipeId: "forge-ember-scale-talisman", outputItemId: "ember-scale-talisman", tier: 7, name: "Forge Ember Scale Talisman", dropItemId: "dragon-ember-scale" },
-  ];
-  for (const talisman of talismanRecipes) {
-    const recipe = {
-      recipeId: talisman.recipeId,
-      skillId: "forging",
-      tier: talisman.tier,
-      name: talisman.name,
-      description: `Forge a trophy talisman from 1000 monster drops and tier ${talisman.tier} ingots.`,
-      durationMs: talisman.tier * 45_000,
-      experienceReward: talisman.tier * 50,
-      outputFamily: "forging-talisman",
-      enabled: true,
-      updatedAt: now,
-    };
-    const existing = await ctx.db
-      .query("recipes")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", talisman.recipeId))
-      .first();
-    if (existing) await ctx.db.patch(existing._id, recipe);
-    else await ctx.db.insert("recipes", { ...recipe, createdAt: now });
-
-    const oldIngredients = await ctx.db
-      .query("recipeIngredients")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", talisman.recipeId))
-      .collect();
-    for (const row of oldIngredients) await ctx.db.delete(row._id);
-    await ctx.db.insert("recipeIngredients", {
-      recipeId: talisman.recipeId,
-      itemId: itemIdFor(itemById, talisman.dropItemId),
-      quantity: 1000,
-    });
-    await ctx.db.insert("recipeIngredients", {
-      recipeId: talisman.recipeId,
-      itemId: itemIdFor(itemById, ingotT[talisman.tier - 1]),
-      quantity: 2,
-    });
-
-    const oldTalismanOutputs = await ctx.db
-      .query("recipeOutputs")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", talisman.recipeId))
-      .collect();
-    for (const row of oldTalismanOutputs) await ctx.db.delete(row._id);
-    await ctx.db.insert("recipeOutputs", {
-      recipeId: talisman.recipeId,
-      itemId: itemIdFor(itemById, talisman.outputItemId),
-      quantity: 1,
-    });
-  }
-
-  const leatherRecipes = buildLeatherRecipes(leatherBalance.bagSlotsPerTier);
-  for (const recipe of leatherRecipes) {
-    const row = {
-      recipeId: recipe.recipeId,
-      skillId: "leathercrafting",
-      tier: recipe.tier,
-      name: recipe.name,
-      description: recipe.description,
-      durationMs: recipe.tier * 45_000,
-      experienceReward: recipe.tier * 50,
-      outputFamily: recipe.outputFamily,
-      enabled: true,
-      updatedAt: now,
-    };
-    const existingRecipe = await ctx.db
-      .query("recipes")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
-      .first();
-    if (existingRecipe) await ctx.db.patch(existingRecipe._id, row);
-    else await ctx.db.insert("recipes", { ...row, createdAt: now });
-
-    const oldLeatherIngredients = await ctx.db
-      .query("recipeIngredients")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
-      .collect();
-    for (const oldRow of oldLeatherIngredients) await ctx.db.delete(oldRow._id);
-    for (const ingredient of recipe.ingredients) {
-      await ctx.db.insert("recipeIngredients", {
-        recipeId: recipe.recipeId,
-        itemId: itemIdFor(itemById, ingredient.itemId),
-        quantity: ingredient.quantity,
-      });
-    }
-
-    const oldLeatherOutputs = await ctx.db
-      .query("recipeOutputs")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
-      .collect();
-    for (const oldRow of oldLeatherOutputs) await ctx.db.delete(oldRow._id);
-    await ctx.db.insert("recipeOutputs", {
-      recipeId: recipe.recipeId,
-      itemId: itemIdFor(itemById, recipe.outputItemId),
-      quantity: 1,
-    });
-  }
-
-  // Legacy flavor augmentations (monster drops + tokens, stat bonuses).
-  // Retired in favor of chained boss-token lines below; rows stay for
-  // existing applied augments and refunds.
-  const retiredAugmentations = MONSTER_DROPS.map(
-    ([monsterId]) => `augment-${monsterId}`
-  );
-  for (const augmentationId of retiredAugmentations) {
-    const existing = await ctx.db
-      .query("augmentationDefinitions")
-      .withIndex("by_augmentationId", (q) =>
-        q.eq("augmentationId", augmentationId)
-      )
-      .first();
-    if (existing && existing.enabled) {
-      await ctx.db.patch(existing._id, { enabled: false, updatedAt: now });
-    }
-  }
-
-  // Chained boss-token lines: weapon (damage + element imbue) and armor
-  // (+defense + elemental ward). Tier N requires the tier N-1 augment
-  // on the same item, which it replaces. No cap.
-  const balanceDefault = (key: string, fallback: number) => {
-    const found = INFUSION_BALANCE_DEFAULTS.find((entry) => entry.key === key);
-    return typeof found?.value === "number" ? found.value : fallback;
-  };
-  const AUGMENT_TOKEN_QTY = balanceDefault("augmentBossTokenQty", 1);
-  const AUGMENT_DAMAGE_PER_TIER = balanceDefault("augmentDamagePerTier", 3);
-  const AUGMENT_DEFENSE_PER_TIER = balanceDefault("augmentDefensePerTier", 3);
-  const augmentments: Array<{
-    augmentationId: string;
-    skillId: string;
-    tier: number;
-    name: string;
-    description: string;
-    allowedEquipmentSlots: Array<
-      "head" | "chest" | "mainHand" | "legs" | "feet" | "belt"
-    >;
-    requiredMaterialItemId: Id<"items">;
-    requiredMaterialQuantity: number;
-    effectType: string;
-    effectElement?: string;
-    effectAmount: number;
-    requiresPreviousTier: boolean;
-    experienceReward: number;
-    enabled: boolean;
-    updatedAt: number;
-  }> = [];
-  for (const tier of INFUSION_TIERS) {
-    const chainNote =
-      tier > 1
-        ? ` Requires the tier ${tier - 1} augment on the same item first.`
-        : "";
-    const imbue = ELEMENT_VALUES[(tier - 1) % ELEMENT_VALUES.length];
-    augmentments.push(
-      {
-        augmentationId: `augment-weapon-tier-${tier}`,
-        skillId: "infusion",
-        tier,
-        name: `Tier ${tier} Weapon Infusion`,
-        description:
-          `Imbue a weapon with ` +
-          `${imbue} ` +
-          `for +${tier * AUGMENT_DAMAGE_PER_TIER} base damage.` +
-          chainNote,
-        allowedEquipmentSlots: ["mainHand"],
-        requiredMaterialItemId: itemIdFor(
-          itemById,
-          `forest-boss-token-${tier}`
-        ),
-        requiredMaterialQuantity: AUGMENT_TOKEN_QTY,
-        effectType: "damage-bonus",
-        effectElement: imbue,
-        effectAmount: tier * AUGMENT_DAMAGE_PER_TIER,
-        requiresPreviousTier: tier > 1,
-        experienceReward: 50 * tier,
-        enabled: true,
-        updatedAt: now,
-      },
-      {
-        augmentationId: `augment-armor-tier-${tier}`,
-        skillId: "infusion",
-        tier,
-        name: `Tier ${tier} Armor Infusion`,
-        description:
-          `Attune armor to ${imbue} for +${tier * AUGMENT_DEFENSE_PER_TIER} ` +
-          `base defense and a ${imbue} ward against matching hits.` +
-          chainNote,
-        allowedEquipmentSlots: ["head", "chest", "legs", "feet", "belt"],
-        requiredMaterialItemId: itemIdFor(
-          itemById,
-          `forest-boss-token-${tier}`
-        ),
-        requiredMaterialQuantity: AUGMENT_TOKEN_QTY,
-        effectType: "defense-bonus",
-        effectElement: imbue,
-        effectAmount: tier * AUGMENT_DEFENSE_PER_TIER,
-        requiresPreviousTier: tier > 1,
-        experienceReward: 50 * tier,
-        enabled: true,
-        updatedAt: now,
-      }
-    );
-  }
-  for (const augmentation of augmentments) {
-    const existing = await ctx.db
-      .query("augmentationDefinitions")
-      .withIndex("by_augmentationId", (q) =>
-        q.eq("augmentationId", augmentation.augmentationId)
-      )
-      .first();
-    if (existing) await ctx.db.patch(existing._id, augmentation);
-    else await ctx.db.insert("augmentationDefinitions", { ...augmentation, createdAt: now });
-  }
-
-  const upsertTask = async () => {
-    const existing = await ctx.db
-      .query("taskDefinitions")
-      .withIndex("by_taskId", (q) => q.eq("taskId", "skill_action"))
-      .first();
-    const definition = {
-      taskId: "skill_action",
-      name: "Skill action",
-      category: "skill",
-      description: "Gather resources or craft an item.",
-      canProgressOffline: true,
-      requiresOnline: false,
-      enabled: true,
-      prerequisites: null,
-      rewards: { uses: "skillAction" },
-      updatedAt: now,
-    };
-    if (existing) await ctx.db.patch(existing._id, definition);
-    else await ctx.db.insert("taskDefinitions", { ...definition, createdAt: now });
-  };
-  await upsertTask();
-
-  for (const [monsterId, materialId] of MONSTER_DROPS) {
-    const tableId = `loot-monster-${monsterId}`;
-    const existingTable = await ctx.db
-      .query("lootTables")
-      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
-      .first();
-    const table = {
-      lootTableId: tableId,
-      name: `${monsterId} aspect drops`,
-      sourceType: "monster" as const,
-      rollCount: 1,
-      enabled: true,
-      updatedAt: now,
-    };
-    if (existingTable) await ctx.db.patch(existingTable._id, table);
-    else await ctx.db.insert("lootTables", { ...table, createdAt: now });
-
-    const oldEntries = await ctx.db
-      .query("lootTableEntries")
-      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
-      .collect();
-    for (const row of oldEntries) await ctx.db.delete(row._id);
-    await ctx.db.insert("lootTableEntries", {
-      lootTableId: tableId,
-      itemId: itemIdFor(itemById, materialId),
-      weight: 1,
-      dropChance: 0.35,
-      minQuantity: 1,
-      maxQuantity: 1,
-      guaranteed: false,
-      purpose: "augmentation",
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-    const existingSource = (
-      await ctx.db
-        .query("lootSources")
-        .withIndex("by_sourceType_and_sourceId", (q) =>
-          q.eq("sourceType", "monster").eq("sourceId", monsterId)
-        )
-        .collect()
-    ).find((row) => row.tier === undefined);
-    if (existingSource) {
-      await ctx.db.patch(existingSource._id, {
-        lootTableId: tableId,
-        updatedAt: now,
-      });
-    } else {
-      await ctx.db.insert("lootSources", {
-        sourceType: "monster",
-        sourceId: monsterId,
-        lootTableId: tableId,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-  }
-
-  const bossCatalysts = [
-    "moonlit-rat-fang",
-    "goblin-thorn-charm",
-    "orc-heartwood-shard",
-    "troll-moss-hide",
-    "wyvern-moon-scale",
-    "dragon-ember-scale",
-    "demon-ash-seed",
-    "nightmare-dreamleaf",
-  ];
-  for (const tier of INFUSION_TIERS) {
-    const tableId = `loot-boss-tier-${tier}`;
-    const tokenId = itemIdFor(itemById, `forest-boss-token-${tier}`);
-    const existingTable = await ctx.db
-      .query("lootTables")
-      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
-      .first();
-    const table = {
-      lootTableId: tableId,
-      name: `Tier ${tier} guardian rewards`,
-      sourceType: "boss" as const,
-      tier,
-      rollCount: 1,
-      enabled: true,
-      updatedAt: now,
-    };
-    if (existingTable) await ctx.db.patch(existingTable._id, table);
-    else await ctx.db.insert("lootTables", { ...table, createdAt: now });
-    const oldEntries = await ctx.db
-      .query("lootTableEntries")
-      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
-      .collect();
-    for (const row of oldEntries) await ctx.db.delete(row._id);
-    await ctx.db.insert("lootTableEntries", {
-      lootTableId: tableId,
-      itemId: tokenId,
-      weight: 1,
-      dropChance: 1,
-      minQuantity: 1,
-      maxQuantity: 1,
-      guaranteed: true,
-      purpose: "boss-catalyst",
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-    const catalystId = itemIdFor(
-      itemById,
-      tier <= bossCatalysts.length
-        ? bossCatalysts[tier - 1]
-        : `essence-tier-${tier}`
-    );
-    await ctx.db.insert("lootTableEntries", {
-      lootTableId: tableId,
-      itemId: catalystId,
-      weight: 1,
-      dropChance: 0.25,
-      minQuantity: 1,
-      maxQuantity: 1,
-      guaranteed: false,
-      purpose: "boss-catalyst",
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-    const sourceId = `boss_tier_${tier}`;
-    const existingSource = (
-      await ctx.db
-        .query("lootSources")
-        .withIndex("by_sourceType_and_sourceId_and_tier", (q) =>
-          q.eq("sourceType", "boss").eq("sourceId", sourceId).eq("tier", tier)
-        )
-        .collect()
-    )[0];
-    if (existingSource) {
-      await ctx.db.patch(existingSource._id, {
-        lootTableId: tableId,
-        updatedAt: now,
-      });
-    } else {
-      await ctx.db.insert("lootSources", {
-        sourceType: "boss",
-        sourceId,
-        tier,
-        lootTableId: tableId,
-        createdAt: now,
-        updatedAt: now,
-      });
+      writer.counts.updated += 1;
     }
   }
 }
 
-export type LeathercraftingBackfillSummary = {
-  balanceKeysInserted: number;
-  itemsInserted: number;
-  skillsInserted: number;
-  tiersInserted: number;
-  recipesInserted: number;
-  recipeIngredientsInserted: number;
-  recipeOutputsInserted: number;
-  lootTablesInserted: number;
-  lootEntriesInserted: number;
-  lootSourcesInserted: number;
-};
-
-/**
- * Insert-only backfill for deployments seeded before leathercrafting existed.
- *
- * Unlike `seedForestCraftingContent`, this never patches or deletes existing
- * rows: admin edits, other forest crafting content, and player-owned items are
- * left untouched. Re-running is a no-op once the leather rows are present.
- *
- * The full rerunnable content sync remains `seedForestCraftingContent` /
- * `seed:upsertForestCrafting`.
- */
-export async function seedLeathercraftingContent(
-  ctx: MutationCtx
-): Promise<LeathercraftingBackfillSummary> {
-  const now = Date.now();
-  const summary: LeathercraftingBackfillSummary = {
-    balanceKeysInserted: 0,
-    itemsInserted: 0,
-    skillsInserted: 0,
-    tiersInserted: 0,
-    recipesInserted: 0,
-    recipeIngredientsInserted: 0,
-    recipeOutputsInserted: 0,
-    lootTablesInserted: 0,
-    lootEntriesInserted: 0,
-    lootSourcesInserted: 0,
-  };
+async function seedRecipes(writer: CraftingSeedWriter, skillId: string) {
+  const { ctx } = writer;
   const leatherBalance = await readLeatherBalance(ctx);
-
-  for (const entry of LEATHER_BALANCE_DEFAULTS) {
-    const existing = await ctx.db
-      .query("gameBalance")
-      .withIndex("by_key", (q) => q.eq("key", entry.key))
-      .first();
-    if (existing) continue;
-    await ctx.db.insert("gameBalance", {
-      ...entry,
-      lastUpdated: now,
-    });
-    summary.balanceKeysInserted += 1;
-  }
-
-  const itemById = new Map<string, Id<"items">>();
-  const leatherItems = [
-    ...MONSTER_DROP_ITEMS.filter((item) =>
-      LEATHER_HIDE_ITEM_IDS.has(item.itemId)
-    ),
-    ...LEATHERWORKING_ITEMS,
-  ];
-  for (const item of leatherItems) {
-    const existing = await ctx.db
-      .query("items")
-      .withIndex("by_itemId", (q) => q.eq("itemId", item.itemId))
-      .first();
-    if (existing) {
-      itemById.set(item.itemId, existing._id);
-      continue;
-    }
-    const id = await ctx.db.insert("items", {
-      ...leatherSeedValues(item, leatherBalance.bagSlotsPerTier),
-      createdAt: now,
-      updatedAt: now,
-    });
-    itemById.set(item.itemId, id);
-    summary.itemsInserted += 1;
-  }
-
-  const leatherSkill = SKILLS.find(
-    (skill) => skill.skillId === "leathercrafting"
+  const plans = buildRecipePlans(leatherBalance.bagSlotsPerTier).filter(
+    (plan) => plan.skillId === skillId
   );
-  if (!leatherSkill) {
-    throw new Error("Leathercrafting skill seed definition is missing");
-  }
-  const existingSkill = await ctx.db
-    .query("skillDefinitions")
-    .withIndex("by_skillId", (q) => q.eq("skillId", "leathercrafting"))
-    .first();
-  if (!existingSkill) {
-    await ctx.db.insert("skillDefinitions", {
-      ...leatherSkill,
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-    summary.skillsInserted += 1;
-  }
-
-  for (const tier of TIERS) {
-    const existing = await ctx.db
-      .query("skillTierDefinitions")
-      .withIndex("by_skillId_and_tier", (q) =>
-        q.eq("skillId", "leathercrafting").eq("tier", tier)
-      )
-      .first();
-    if (existing) continue;
-    await ctx.db.insert("skillTierDefinitions", {
-      skillId: "leathercrafting",
-      tier,
-      name: `${TIER_NAMES[tier - 1]} Leathercrafting`,
-      description: `Tier ${tier} leathercrafting activities.`,
-      requiredLevel: TIER_LEVELS[tier - 1],
-      enabled: true,
-      createdAt: now,
-      updatedAt: now,
-    });
-    summary.tiersInserted += 1;
-  }
-
-  const leatherRecipes = buildLeatherRecipes(
-    leatherBalance.bagSlotsPerTier
-  );
-  for (const recipe of leatherRecipes) {
+  for (const plan of plans) {
     const existing = await ctx.db
       .query("recipes")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
+      .withIndex("by_recipeId", (q) => q.eq("recipeId", plan.recipeId))
       .first();
-    if (existing) continue;
-    await ctx.db.insert("recipes", {
-      recipeId: recipe.recipeId,
-      skillId: "leathercrafting",
-      tier: recipe.tier,
-      name: recipe.name,
-      description: recipe.description,
-      durationMs: recipe.tier * 45_000,
-      experienceReward: recipe.tier * 50,
-      outputFamily: recipe.outputFamily,
+    await writer.upsert("recipes", existing, {
+      recipeId: plan.recipeId,
+      skillId: plan.skillId,
+      tier: plan.tier,
+      name: plan.name,
+      description: plan.description,
+      durationMs: plan.tier * 45_000,
+      experienceReward: plan.tier * 50,
+      outputFamily: plan.outputFamily,
+      ...(plan.stage === undefined ? {} : { stage: plan.stage }),
+      ...(plan.requiresMonsterDrop === undefined
+        ? {}
+        : { requiresMonsterDrop: plan.requiresMonsterDrop }),
       enabled: true,
-      createdAt: now,
-      updatedAt: now,
     });
-    summary.recipesInserted += 1;
 
-    for (const ingredient of recipe.ingredients) {
-      await ctx.db.insert("recipeIngredients", {
-        recipeId: recipe.recipeId,
-        itemId: itemIdFor(itemById, ingredient.itemId),
+    const ingredients = await Promise.all(
+      plan.ingredients.map(async (ingredient) => ({
+        recipeId: plan.recipeId,
+        itemId: await writer.item(ingredient.itemId),
         quantity: ingredient.quantity,
-      });
-      summary.recipeIngredientsInserted += 1;
-    }
-    await ctx.db.insert("recipeOutputs", {
-      recipeId: recipe.recipeId,
-      itemId: itemIdFor(itemById, recipe.outputItemId),
-      quantity: 1,
-    });
-    summary.recipeOutputsInserted += 1;
+      }))
+    );
+    await writer.syncChildren(
+      "recipeIngredients",
+      await ctx.db
+        .query("recipeIngredients")
+        .withIndex("by_recipeId", (q) => q.eq("recipeId", plan.recipeId))
+        .collect(),
+      ingredients,
+      ["recipeId", "itemId", "quantity"],
+      false
+    );
+    await writer.syncChildren(
+      "recipeOutputs",
+      await ctx.db
+        .query("recipeOutputs")
+        .withIndex("by_recipeId", (q) => q.eq("recipeId", plan.recipeId))
+        .collect(),
+      [{ recipeId: plan.recipeId, itemId: await writer.item(plan.outputItemId), quantity: 1 }],
+      ["recipeId", "itemId", "quantity"],
+      false
+    );
   }
+}
 
-  for (const source of LEATHER_SOURCES) {
-    const tableId = `loot-monster-${source.monster}`;
-    const existingTable = await ctx.db
-      .query("lootTables")
-      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
+async function seedAugmentations(writer: CraftingSeedWriter) {
+  const { ctx, now } = writer;
+  // Legacy flavor augmentations from the pre-biome monsters stay disabled for
+  // any applied augments and refunds.
+  for (const monsterId of LEGACY_MONSTER_IDS) {
+    const existing = await ctx.db
+      .query("augmentationDefinitions")
+      .withIndex("by_augmentationId", (q) => q.eq("augmentationId", `augment-${monsterId}`))
       .first();
-    if (!existingTable) {
-      await ctx.db.insert("lootTables", {
-        lootTableId: tableId,
-        name: `${source.monster} aspect drops`,
-        sourceType: "monster",
-        rollCount: 1,
-        enabled: true,
-        createdAt: now,
-        updatedAt: now,
-      });
-      summary.lootTablesInserted += 1;
+    if (existing && existing.enabled) {
+      await ctx.db.patch(existing._id, { enabled: false, updatedAt: now });
+      writer.counts.updated += 1;
     }
+  }
+  for (const plan of buildAugmentationPlans()) {
+    const { requiredMaterialSlug, ...row } = plan;
+    const existing = await ctx.db
+      .query("augmentationDefinitions")
+      .withIndex("by_augmentationId", (q) => q.eq("augmentationId", plan.augmentationId))
+      .first();
+    await writer.upsert("augmentationDefinitions", existing, {
+      ...row,
+      requiredMaterialItemId: await writer.item(requiredMaterialSlug),
+      enabled: true,
+    });
+  }
+}
 
-    const entries = await ctx.db
+async function seedLoot(writer: CraftingSeedWriter) {
+  const { ctx } = writer;
+  const plans = buildLootTablePlans();
+
+  // Monster loot the plans no longer describe (old rosters) is removed.
+  const wantedMonsterTables = new Set(
+    plans.filter((plan) => plan.sourceType === "monster").map((plan) => plan.lootTableId)
+  );
+  for (const table of await ctx.db
+    .query("lootTables")
+    .withIndex("by_sourceType_and_tier", (q) => q.eq("sourceType", "monster"))
+    .collect()) {
+    if (wantedMonsterTables.has(table.lootTableId)) continue;
+    for (const entry of await ctx.db
       .query("lootTableEntries")
-      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", tableId))
-      .collect();
-    const hideItemId = itemIdFor(itemById, source.hideItemId);
-    if (!entries.some((entry) => entry.itemId === hideItemId)) {
-      await ctx.db.insert("lootTableEntries", {
-        lootTableId: tableId,
-        itemId: hideItemId,
-        weight: 1,
-        dropChance: 0.35,
-        minQuantity: 1,
-        maxQuantity: 1,
-        guaranteed: false,
-        purpose: "augmentation",
-        enabled: true,
-        createdAt: now,
-        updatedAt: now,
-      });
-      summary.lootEntriesInserted += 1;
+      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", table.lootTableId))
+      .collect()) {
+      await ctx.db.delete(entry._id);
+      writer.counts.deleted += 1;
     }
-
-    const sources = await ctx.db
-      .query("lootSources")
-      .withIndex("by_sourceType_and_sourceId", (q) =>
-        q.eq("sourceType", "monster").eq("sourceId", source.monster)
-      )
-      .collect();
-    if (!sources.some((row) => row.tier === undefined)) {
-      await ctx.db.insert("lootSources", {
-        sourceType: "monster",
-        sourceId: source.monster,
-        lootTableId: tableId,
-        createdAt: now,
-        updatedAt: now,
-      });
-      summary.lootSourcesInserted += 1;
+    await ctx.db.delete(table._id);
+    writer.counts.deleted += 1;
+  }
+  const monsterSources = await ctx.db
+    .query("lootSources")
+    .withIndex("by_sourceType_and_sourceId", (q) => q.eq("sourceType", "monster"))
+    .collect();
+  for (const source of monsterSources) {
+    if (!wantedMonsterTables.has(source.lootTableId)) {
+      await ctx.db.delete(source._id);
+      writer.counts.deleted += 1;
     }
   }
 
-  return summary;
+  for (const plan of plans) {
+    const existing = await ctx.db
+      .query("lootTables")
+      .withIndex("by_lootTableId", (q) => q.eq("lootTableId", plan.lootTableId))
+      .first();
+    await writer.upsert("lootTables", existing, {
+      lootTableId: plan.lootTableId,
+      name: plan.name,
+      sourceType: plan.sourceType,
+      ...(plan.tier === undefined ? {} : { tier: plan.tier }),
+      rollCount: plan.rollCount,
+      enabled: true,
+    });
+    const entries = await Promise.all(
+      plan.entries.map(async (entry) => ({
+        lootTableId: plan.lootTableId,
+        itemId: await writer.item(entry.itemId),
+        weight: 1,
+        dropChance: entry.dropChance,
+        minQuantity: entry.minQuantity,
+        maxQuantity: entry.maxQuantity,
+        guaranteed: entry.guaranteed,
+        purpose: entry.purpose,
+        enabled: true,
+      }))
+    );
+    await writer.syncChildren(
+      "lootTableEntries",
+      await ctx.db
+        .query("lootTableEntries")
+        .withIndex("by_lootTableId", (q) => q.eq("lootTableId", plan.lootTableId))
+        .collect(),
+      entries,
+      ["itemId", "weight", "dropChance", "minQuantity", "maxQuantity", "guaranteed", "purpose", "enabled"],
+      true
+    );
+    // Sources for this table's source ids, matched on (sourceId, tier).
+    const sourceIds = [...new Set(plan.sources.map((source) => source.sourceId))];
+    const existingSources = (
+      await Promise.all(
+        sourceIds.map((sourceId) =>
+          ctx.db
+            .query("lootSources")
+            .withIndex("by_sourceType_and_sourceId", (q) =>
+              q.eq("sourceType", plan.sourceType).eq("sourceId", sourceId)
+            )
+            .collect()
+        )
+      )
+    ).flat();
+    for (const source of plan.sources) {
+      const match = existingSources.find(
+        (row) => row.sourceId === source.sourceId && row.tier === source.tier
+      );
+      if (!match) {
+        await ctx.db.insert("lootSources", {
+          sourceType: plan.sourceType,
+          sourceId: source.sourceId,
+          ...(source.tier === undefined ? {} : { tier: source.tier }),
+          lootTableId: plan.lootTableId,
+          createdAt: writer.now,
+          updatedAt: writer.now,
+        });
+        writer.counts.inserted += 1;
+      } else if (match.lootTableId !== plan.lootTableId) {
+        await ctx.db.patch(match._id, { lootTableId: plan.lootTableId, updatedAt: writer.now });
+        writer.counts.updated += 1;
+      } else {
+        writer.counts.unchanged += 1;
+      }
+    }
+  }
+}
+
+/**
+ * Sync one section of the crafting content. Sections are sized to stay well
+ * inside a single transaction's read limit, so deployments with existing rows
+ * can run each in its own mutation (`seed:upsertForestCrafting`). Run
+ * "catalog" first: the other sections look items up by slug.
+ */
+export async function seedForestCraftingSection(
+  ctx: MutationCtx,
+  section: CraftingSeedSection
+): Promise<CraftingSeedCounts> {
+  const writer = new CraftingSeedWriter(ctx, Date.now());
+  if (section === "catalog") await seedCatalog(writer);
+  else if (section === "augmentations") await seedAugmentations(writer);
+  else if (section === "loot") await seedLoot(writer);
+  else await seedRecipes(writer, section.slice("recipes:".length));
+  return writer.counts;
+}
+
+/**
+ * Sync every section in this one transaction. Fine for fresh databases and
+ * tests; deployments with existing rows should use `seed:upsertForestCrafting`,
+ * which runs each section in its own transaction.
+ */
+export async function seedForestCraftingContent(ctx: MutationCtx) {
+  const results: Partial<Record<CraftingSeedSection, CraftingSeedCounts>> = {};
+  for (const section of CRAFTING_SEED_SECTIONS) {
+    results[section] = await seedForestCraftingSection(ctx, section);
+  }
+  return results;
 }

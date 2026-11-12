@@ -6,8 +6,20 @@
  * Safe to call multiple times — upserts existing records.
  */
 
-import { internalMutation, mutation, query } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import { internalAction, internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { readBalanceMap } from "./balance";
+import {
+  applyBlight,
+  biomeMonsterSeeds,
+  blightForTier,
+  monsterNameForTier,
+  monstersForTier,
+  pickEncounter,
+  tierStatScale,
+} from "./biomes";
+import { readEndgameJump } from "./endgameGate";
 import { v } from "convex/values";
 import { requireAdmin } from "./adminAuth";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
@@ -23,9 +35,16 @@ import {
 } from "./bazaar";
 import type { Doc, Id } from "./_generated/dataModel";
 import { DEFAULT_ITEM_RARITIES } from "./itemTypes";
-import { seedForestCraftingContent } from "./forestCraftingSeed";
+import {
+  CRAFTING_SEED_SECTIONS,
+  seedForestCraftingSection,
+  type CraftingSeedCounts,
+} from "./forestCraftingSeed";
 import { INFUSION_BALANCE_DEFAULTS } from "./infusion";
-import { validateAllRecipeChains } from "./recipeValidation";
+import {
+  validateRecipeChainsForSkill,
+  validateRecipeCycles,
+} from "./recipeValidation";
 import { SKILL_TASK_BALANCE_DEFAULTS } from "./skillBonuses";
 import { TASK_SYNC_BALANCE_DEFAULTS } from "./taskTiming";
 import {
@@ -45,18 +64,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 // ─── Seed helpers ─────────────────────────────────────────────────────────────
 
-async function populateMonsters(ctx: MutationCtx) {
-  const monsters = [
-    { type: "rat",       name: "Rat",       element: "earth", str: 2,  dex: 4, int: 1, luk: 2, con: 2, goldDrop: 10,  experienceReward: 5,  baseMsPerAttack: 2000, strength: 5   },
-    { type: "goblin",    name: "Goblin",    element: "wind",  str: 3,  dex: 3, int: 2, luk: 3, con: 3, goldDrop: 15,  experienceReward: 8,  baseMsPerAttack: 2000, strength: 15  },
-    { type: "orc",       name: "Orc",       element: "fire",  str: 4,  dex: 2, int: 2, luk: 1, con: 4, goldDrop: 20,  experienceReward: 12, baseMsPerAttack: 2000, strength: 25  },
-    { type: "troll",     name: "Troll",     element: "water", str: 6,  dex: 3, int: 3, luk: 2, con: 6, goldDrop: 50,  experienceReward: 25, baseMsPerAttack: 2000, strength: 40  },
-    { type: "wyvern",    name: "Wyvern",    element: "wind",  str: 5,  dex: 5, int: 4, luk: 3, con: 5, goldDrop: 60,  experienceReward: 30, baseMsPerAttack: 2000, strength: 50  },
-    { type: "dragon",    name: "Dragon",    element: "fire",  str: 7,  dex: 4, int: 5, luk: 2, con: 7, goldDrop: 75,  experienceReward: 40, baseMsPerAttack: 2000, strength: 60  },
-    { type: "demon",     name: "Demon",     element: "dark",  str: 9,  dex: 6, int: 6, luk: 4, con: 8, goldDrop: 150, experienceReward: 60, baseMsPerAttack: 2000, strength: 75  },
-    { type: "nightmare", name: "Nightmare", element: "dark",  str: 8,  dex: 8, int: 7, luk: 5, con: 7, goldDrop: 175, experienceReward: 75, baseMsPerAttack: 2000, strength: 85  },
-    { type: "archfiend", name: "Archfiend", element: "light", str: 10, dex: 7, int: 8, luk: 3, con: 9, goldDrop: 200, experienceReward: 90, baseMsPerAttack: 2000, strength: 100 },
-  ];
+export async function populateMonsters(ctx: MutationCtx) {
+  // The 48 biome monsters (convex/biomes.ts). Rows not in the roster are old
+  // content and are removed.
+  const monsters = biomeMonsterSeeds();
+  const wanted = new Set(monsters.map((monster) => monster.type));
+  for (const row of await ctx.db.query("monsters").take(500)) {
+    if (!wanted.has(row.type)) await ctx.db.delete(row._id);
+  }
   for (const monster of monsters) {
     const existing = await ctx.db.query("monsters").withIndex("by_type", (q) => q.eq("type", monster.type)).first();
     if (existing) {
@@ -103,7 +118,7 @@ async function populateItemRarities(ctx: MutationCtx) {
   }
 }
 
-async function populateGameBalance(ctx: MutationCtx) {
+export async function populateGameBalance(ctx: MutationCtx) {
   const entries: Array<{ key: string; value: unknown; description: string }> = [
     { key: "tierScaleMultiplier",  value: 1.4,                          description: "Monster stat multiplier per tier level" },
     { key: "minFightDurationMs", value: 2000, description: "Shortest a won regular fight may take, including the walk to the next monster (milliseconds)" },
@@ -112,7 +127,7 @@ async function populateGameBalance(ctx: MutationCtx) {
     { key: "autoRestUntilPercent", value: 0.9, description: "Fraction of max HP a resting hunter recovers to before fighting again" },
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
-    { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
+    { key: "bossStatMultiplier",   value: 1.6,                           description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
     { key: "maxTier",              value: 20,                           description: "Maximum tier available to fight" },
     { key: "rebirthThresholds",    value: [5, 10, 15, 21, 28, 36, 45], description: "Tier thresholds required for each rebirth" },
     { key: "rebirthStatLevelRequirement", value: 99, description: "Stat or skill level required in at least one stat or skill to rebirth" },
@@ -757,23 +772,52 @@ export const getHiddenSpots = query({
 
 // ─── Monster selection ────────────────────────────────────────────────────────
 
-/** Pick a weighted-random monster (weaker = more common), optionally within a zone. */
+function pickWeighted<T extends { strength: number }>(monsters: T[]): T {
+  return pickEncounter(monsters);
+}
+
+/** A monster as it appears on `tier`: biome name prefix, Blighted twist, tier scaling. */
+async function scaleMonsterForTier(
+  ctx: QueryCtx,
+  monster: Doc<"monsters">,
+  tier: number
+) {
+  const [balance, endgameJump] = await Promise.all([
+    readBalanceMap(ctx, ["tierScaleMultiplier", "tierScaleMsReduction", "minAttackMs"]),
+    readEndgameJump(ctx),
+  ]);
+  const read = (key: string, fallback: number) => {
+    const value = balance.get(key);
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  };
+  const tierMsReduction = read("tierScaleMsReduction", 50);
+  const minAttackMs = read("minAttackMs", 800);
+  const mult = tierStatScale(tier, read("tierScaleMultiplier", 1.4), endgameJump);
+  const scaled = {
+    ...monster,
+    name: monsterNameForTier(monster, tier),
+    str: Math.round(monster.str * mult),
+    dex: Math.round(monster.dex * mult),
+    int: Math.round(monster.int * mult),
+    luk: Math.round(monster.luk * mult),
+    con: Math.round(monster.con * mult),
+    goldDrop: Math.round(monster.goldDrop * mult),
+    experienceReward: Math.round(monster.experienceReward * mult),
+    baseMsPerAttack: Math.max(minAttackMs, monster.baseMsPerAttack - (tier - 1) * tierMsReduction),
+  };
+  return applyBlight(scaled, blightForTier(monster, tier), minAttackMs);
+}
+
+/** Pick a weighted-random monster of a tier (weaker = more common), optionally within a zone. */
 export const pickRandomMonster = query({
-  args: { zone: v.optional(combatZoneValidator) },
+  args: { tier: v.optional(v.number()), zone: v.optional(combatZoneValidator) },
   handler: async (ctx, args) => {
-    const allMonsters = await ctx.db.query("monsters").collect();
+    const catalog = await ctx.db.query("monsters").take(500);
+    const allMonsters = args.tier === undefined ? catalog : monstersForTier(catalog, args.tier);
     const monsters =
       args.zone === undefined ? allMonsters : monstersInZone(allMonsters, args.zone);
     if (monsters.length === 0) return null;
-    const maxStrength = Math.max(...monsters.map((m) => m.strength));
-    const weights = monsters.map((m) => maxStrength - m.strength + 1);
-    const totalWeight = weights.reduce((a, b) => a + b, 0);
-    let random = Math.random() * totalWeight;
-    for (let i = 0; i < monsters.length; i++) {
-      random -= weights[i];
-      if (random <= 0) return monsters[i];
-    }
-    return monsters[monsters.length - 1];
+    return pickWeighted(monsters);
   },
 });
 
@@ -786,73 +830,19 @@ export const getScaledMonster = query({
       .withIndex("by_type", (q) => q.eq("type", args.type))
       .first();
     if (!monster) return null;
-
-    const [multiplierRow, msReductionRow, minMsRow] = await Promise.all([
-      ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", "tierScaleMultiplier")).first(),
-      ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", "tierScaleMsReduction")).first(),
-      ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", "minAttackMs")).first(),
-    ]);
-
-    const tierMultiplier  = (multiplierRow?.value  as number) ?? 2;
-    const tierMsReduction = (msReductionRow?.value as number) ?? 50;
-    const minAttackMs     = (minMsRow?.value        as number) ?? 800;
-    const mult = Math.pow(tierMultiplier, args.tier - 1);
-
-    return {
-      ...monster,
-      str: Math.round(monster.str * mult),
-      dex: Math.round(monster.dex * mult),
-      int: Math.round(monster.int * mult),
-      luk: Math.round(monster.luk * mult),
-      con: Math.round(monster.con * mult),
-      goldDrop:         Math.round(monster.goldDrop         * mult),
-      experienceReward: Math.round(monster.experienceReward * mult),
-      baseMsPerAttack:  Math.max(minAttackMs, monster.baseMsPerAttack - (args.tier - 1) * tierMsReduction),
-    };
+    return await scaleMonsterForTier(ctx, monster, args.tier);
   },
 });
 
-/** Pick a random weighted monster AND scale it — one-shot call for FightArea. */
+/** Pick a random weighted monster of a tier AND scale it. */
 export const pickAndScaleMonster = query({
   args: { tier: v.number(), zone: v.optional(combatZoneValidator) },
   handler: async (ctx, args) => {
-    const allMonsters = await ctx.db.query("monsters").collect();
+    const allMonsters = monstersForTier(await ctx.db.query("monsters").take(500), args.tier);
     const monsters =
       args.zone === undefined ? allMonsters : monstersInZone(allMonsters, args.zone);
     if (monsters.length === 0) return null;
-
-    const maxStrength = Math.max(...monsters.map((m) => m.strength));
-    const weights = monsters.map((m) => maxStrength - m.strength + 1);
-    const totalWeight = weights.reduce((a, b) => a + b, 0);
-    let random = Math.random() * totalWeight;
-    let monster = monsters[monsters.length - 1];
-    for (let i = 0; i < monsters.length; i++) {
-      random -= weights[i];
-      if (random <= 0) { monster = monsters[i]; break; }
-    }
-
-    const [multiplierRow, msReductionRow, minMsRow] = await Promise.all([
-      ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", "tierScaleMultiplier")).first(),
-      ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", "tierScaleMsReduction")).first(),
-      ctx.db.query("gameBalance").withIndex("by_key", (q) => q.eq("key", "minAttackMs")).first(),
-    ]);
-
-    const tierMultiplier  = (multiplierRow?.value  as number) ?? 2;
-    const tierMsReduction = (msReductionRow?.value as number) ?? 50;
-    const minAttackMs     = (minMsRow?.value        as number) ?? 800;
-    const mult = Math.pow(tierMultiplier, args.tier - 1);
-
-    return {
-      ...monster,
-      str: Math.round(monster.str * mult),
-      dex: Math.round(monster.dex * mult),
-      int: Math.round(monster.int * mult),
-      luk: Math.round(monster.luk * mult),
-      con: Math.round(monster.con * mult),
-      goldDrop:         Math.round(monster.goldDrop         * mult),
-      experienceReward: Math.round(monster.experienceReward * mult),
-      baseMsPerAttack:  Math.max(minAttackMs, monster.baseMsPerAttack - (args.tier - 1) * tierMsReduction),
-    };
+    return await scaleMonsterForTier(ctx, pickWeighted(monsters), args.tier);
   },
 });
 
@@ -927,8 +917,9 @@ export const populateAll = mutation({
     await ensureBossForTier(ctx, 1);
     await ensureBossForTier(ctx, 2);
     await ensureBossForTier(ctx, 3);
-    await seedForestCraftingContent(ctx);
-    await validateAllRecipeChains(ctx);
+    // Crafting content is too large for this transaction on a populated
+    // deployment; it syncs section by section right after.
+    await ctx.scheduler.runAfter(0, internal.seed.upsertForestCrafting, {});
     await populateHiddenSpots(ctx);
     await populateAchievements(ctx);
     await populateRebirthRewards(ctx);
@@ -940,17 +931,59 @@ export const populateAll = mutation({
 });
 
 /**
- * Non-destructive upsert of forest crafting content (incl. infusion).
- * Runs seedForestCraftingContent + recipe validation without wiping player
- * data. Invoke from CLI against self-hosted:
+ * Sync the forest crafting content (items, skills, gathering, recipes,
+ * augmentations, loot) into an existing deployment without touching player
+ * data, then validate every recipe chain. Each seed section and each skill's
+ * validation runs in its own transaction to stay inside read limits; a
+ * re-run on an up-to-date deployment writes nothing.
+ *
  * npx convex run --env-file docker/.env.selfhosted seed:upsertForestCrafting '{}'
  */
-export const upsertForestCrafting = internalMutation({
+export const upsertForestCrafting = internalAction({
   args: {},
   handler: async (ctx) => {
-    await seedForestCraftingContent(ctx);
-    await validateAllRecipeChains(ctx);
-    return { success: true };
+    const sections: Record<string, CraftingSeedCounts> = {};
+    for (const section of CRAFTING_SEED_SECTIONS) {
+      sections[section] = await ctx.runMutation(
+        internal.seed.upsertForestCraftingSection,
+        { section }
+      );
+    }
+    let validated = 0;
+    for (const skillId of CRAFTING_VALIDATION_SKILLS) {
+      validated += await ctx.runMutation(internal.seed.validateCraftingSkill, { skillId });
+    }
+    await ctx.runMutation(internal.seed.validateCraftingCycles, {});
+    return { success: true, sections, validatedRecipes: validated };
+  },
+});
+
+const CRAFTING_VALIDATION_SKILLS = ["alchemy", "woodworking", "forging"] as const;
+
+/** One section of `upsertForestCrafting`. Run "catalog" before the others. */
+export const upsertForestCraftingSection = internalMutation({
+  args: {
+    section: v.union(...CRAFTING_SEED_SECTIONS.map((section) => v.literal(section))),
+  },
+  handler: async (ctx, { section }): Promise<CraftingSeedCounts> => {
+    return await seedForestCraftingSection(ctx, section);
+  },
+});
+
+/** Validate one skill's staged recipe chains (step of `upsertForestCrafting`). */
+export const validateCraftingSkill = internalMutation({
+  args: { skillId: v.string() },
+  handler: async (ctx, { skillId }): Promise<number> => {
+    return await validateRecipeChainsForSkill(ctx, skillId);
+  },
+});
+
+/** Check the whole recipe graph for cycles (last step of `upsertForestCrafting`). */
+export const validateCraftingCycles = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<null> => {
+    await validateRecipeCycles(ctx);
+    return null;
   },
 });
 
@@ -1120,11 +1153,11 @@ export const resetForestCrafting = mutation({
       }
     }
 
-    await seedForestCraftingContent(ctx);
-    await validateAllRecipeChains(ctx);
+    // Reseed in its own transactions (see upsertForestCrafting).
+    await ctx.scheduler.runAfter(0, internal.seed.upsertForestCrafting, {});
     return {
       success: true,
-      message: "Forest crafting content reset and reseeded",
+      message: "Forest crafting content reset; reseeding in the background",
     };
   },
 });

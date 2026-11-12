@@ -3,6 +3,7 @@
  * Convex calls the default export of convex/init.ts automatically.
  */
 
+import { biomeMonsterSeeds } from "./biomes";
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { WORLD_CHAT_SEED_MESSAGES } from "./chatSeedData";
@@ -25,20 +26,11 @@ import {
 } from "./bazaar";
 
 async function seedMonsters(ctx: MutationCtx) {
+  // Biome roster: see convex/biomes.ts.
   const existing = await ctx.db.query("monsters").first();
   if (existing) return; // Already seeded
 
-  const monsters = [
-    { type: "rat",       name: "Rat",       element: "earth", str: 2,  dex: 4, int: 1, luk: 2, con: 2, goldDrop: 10,  experienceReward: 5,  baseMsPerAttack: 2000, strength: 5   },
-    { type: "goblin",    name: "Goblin",    element: "wind",  str: 3,  dex: 3, int: 2, luk: 3, con: 3, goldDrop: 15,  experienceReward: 8,  baseMsPerAttack: 2000, strength: 15  },
-    { type: "orc",       name: "Orc",       element: "fire",  str: 4,  dex: 2, int: 2, luk: 1, con: 4, goldDrop: 20,  experienceReward: 12, baseMsPerAttack: 2000, strength: 25  },
-    { type: "troll",     name: "Troll",     element: "water", str: 6,  dex: 3, int: 3, luk: 2, con: 6, goldDrop: 50,  experienceReward: 25, baseMsPerAttack: 2000, strength: 40  },
-    { type: "wyvern",    name: "Wyvern",    element: "wind",  str: 5,  dex: 5, int: 4, luk: 3, con: 5, goldDrop: 60,  experienceReward: 30, baseMsPerAttack: 2000, strength: 50  },
-    { type: "dragon",    name: "Dragon",    element: "fire",  str: 7,  dex: 4, int: 5, luk: 2, con: 7, goldDrop: 75,  experienceReward: 40, baseMsPerAttack: 2000, strength: 60  },
-    { type: "demon",     name: "Demon",     element: "dark",  str: 9,  dex: 6, int: 6, luk: 4, con: 8, goldDrop: 150, experienceReward: 60, baseMsPerAttack: 2000, strength: 75  },
-    { type: "nightmare", name: "Nightmare", element: "dark",  str: 8,  dex: 8, int: 7, luk: 5, con: 7, goldDrop: 175, experienceReward: 75, baseMsPerAttack: 2000, strength: 85  },
-    { type: "archfiend", name: "Archfiend", element: "light", str: 10, dex: 7, int: 8, luk: 3, con: 9, goldDrop: 200, experienceReward: 90, baseMsPerAttack: 2000, strength: 100 },
-  ];
+  const monsters = biomeMonsterSeeds();
   for (const m of monsters) {
     await ctx.db.insert("monsters", { ...m, createdAt: Date.now() });
   }
@@ -90,7 +82,7 @@ async function seedGameBalance(ctx: MutationCtx) {
     { key: "autoRestUntilPercent", value: 0.9, description: "Fraction of max HP a resting hunter recovers to before fighting again" },
     { key: "tierScaleMsReduction", value: 50,                           description: "Monster attack speed reduction per tier (ms)" },
     { key: "minAttackMs",          value: 800,                          description: "Minimum milliseconds between monster attacks" },
-    { key: "bossStatMultiplier",   value: 3,                            description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
+    { key: "bossStatMultiplier",   value: 1.6,                           description: "Boss stat multiplier over the strongest regular monster before tier scaling" },
     { key: "maxTier",              value: 20,                           description: "Maximum tier available to fight" },
     { key: "rebirthThresholds",    value: [5, 10, 15, 21, 28, 36, 45], description: "Tier thresholds required for each rebirth" },
     { key: "rebirthStatLevelRequirement", value: 99, description: "Stat or skill level required in at least one stat or skill to rebirth" },

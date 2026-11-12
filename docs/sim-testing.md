@@ -154,3 +154,19 @@ Notes:
   left with no real members. Real players and their data are never touched.
 - `status` lists sim players, guilds with member counts, and pending
   application counts — point the agent at it for verification.
+
+## Balance report (biome world)
+
+`convex/balanceSim.test.ts` plays a sword character's life through the real
+combat code and prints pacing per tier, the tier 8 → 9 wall at 0/3/6 rebirths,
+the Blighted gear ladder (tiers 9–16 with gear of the hunted tier at 3/6/10
+rebirths), and material income per zone. It is opt-in because it takes several minutes:
+
+```bash
+BALANCE_SIM=1 npx vitest run convex/balanceSim.test.ts --silent=false
+```
+
+Re-run it after changing `tierScaleMultiplier`, `endgameTierJumpMultiplier`,
+archetype drop rates in `convex/biomes.ts`, the Blighted gear constants, or
+recipe costs. An always-on guard checks that tier 9/13/16 Blighted gear keeps
+the easy zone farmable at 3 rebirths.

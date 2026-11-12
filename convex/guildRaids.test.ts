@@ -349,7 +349,11 @@ test("kill loot lands in the guild stash, not player inventories", async () => {
     playerId: t.ownerId,
   });
   expect(stash.length).toBeGreaterThan(0);
-  expect(stash[0].quantity).toBeGreaterThanOrEqual(2);
+  // The table's 2 scales plus 2 per raider for the guild buildings.
+  const scales = stash
+    .filter((row) => row.itemSlug === "dragon-scale")
+    .reduce((sum, row) => sum + row.quantity, 0);
+  expect(scales).toBe(2 + 2 * 2);
 });
 
 test("a wipe still pays XP and chips the tier for the next lobby", async () => {

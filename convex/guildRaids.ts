@@ -38,6 +38,7 @@ import {
 import { getActiveCombatBoosts, readCombatBalance } from "./items";
 import { getPassiveBonuses } from "./passiveTree";
 import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
+import { raidScaleDrop } from "./guildBuildings";
 import { patchPlayerProgress } from "./playerProgress";
 import { progressWeeklyObjectives } from "./guildObjectives";
 import { grantItemToGuildStash } from "./guildStash";
@@ -104,7 +105,7 @@ const RAID_FALLBACKS = {
   durationHours: 24,
   roundIntervalMs: 2000,
   partySize: 4,
-  powerMultiplier: 4,
+  powerMultiplier: 7.5,
   tailEvery: 4,
   tailMult: 0.7,
   breathEvery: 6,
@@ -1357,8 +1358,18 @@ export const tickRaid = mutation({
         ).boss;
         await settleRaidXp(ctx, finished, tuning, boss, true, now);
         await bumpStanding(ctx, finished, true, now);
-        // Kill loot goes to the guild stash, never to player inventories.
+        // Kill loot goes to the guild stash, never to player inventories:
+        // the boss table roll plus dragon scales per raider for buildings.
         const rolled = await rollBossLoot(ctx, boss.bossId, raid.tier);
+        const scales = raidScaleDrop(
+          raid.tier,
+          finished.participants.filter((member) => member.damageDealt >= tuning.minDamage).length
+        );
+        const scaleItem = await ctx.db
+          .query("items")
+          .withIndex("by_itemId", (q) => q.eq("itemId", scales.itemId))
+          .first();
+        if (scaleItem) rolled.push({ itemId: scaleItem._id, quantity: scales.quantity });
         const stash: Array<{ itemName: string; quantity: number }> = [];
         for (const entry of rolled) {
           await grantItemToGuildStash(ctx, {

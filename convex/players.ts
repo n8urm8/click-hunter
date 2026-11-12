@@ -699,6 +699,7 @@ export const rebirth = mutation({
       rebirthTierThreshold: nextThreshold,
       currentTier: 1,
       maxTierReached: 1,
+      highestBossDefeated: 0,
       autoAttackEnabled: true,
       autoStartFightEnabled: false,
       lastUpdated: Date.now(),

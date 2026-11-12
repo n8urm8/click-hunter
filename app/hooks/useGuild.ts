@@ -179,3 +179,18 @@ export function useWithdrawFromGuildStash() {
 export function useClaimObjectiveReward() {
   return useMutation(api.guildObjectives.claimObjectiveReward);
 }
+
+export function useGuildBuildings(playerId: Id<"players"> | null | undefined) {
+  return useQuery({
+    ...convexQuery(api.guildBuildings.getGuildBuildings, playerId ? { playerId } : "skip"),
+    ...convexQueryCacheOptions,
+  });
+}
+
+export function useDonateBuildingMaterial() {
+  return useMutation(api.guildBuildings.donateBuildingMaterial);
+}
+
+export function useUpgradeGuildBuilding() {
+  return useMutation(api.guildBuildings.upgradeGuildBuilding);
+}

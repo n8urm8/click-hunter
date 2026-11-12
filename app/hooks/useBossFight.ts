@@ -15,6 +15,17 @@ export function useBossRequirements(playerId: Id<"players"> | null, tier: number
   });
 }
 
+/** The endgame gate for this player: first locked tier and what it needs. */
+export function useEndgameGate(playerId: Id<"players"> | null) {
+  return useQuery({
+    ...convexQuery(
+      api.bossFights.getEndgameGateStatus,
+      playerId ? { playerId } : "skip"
+    ),
+    ...convexQueryCacheOptions,
+  });
+}
+
 export function useStartBossFight() {
   return useMutation(api.bossFights.startBossFight);
 }

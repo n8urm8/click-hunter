@@ -21,8 +21,10 @@ import {
   useCreateRaidParty,
   useDeclineApplication,
   useDepositGold,
+  useDonateBuildingMaterial,
   useDemoteMember,
   useDisbandGuild,
+  useGuildBuildings,
   useGuildConfig,
   useGuildLeaderboard,
   useGuildMembers,
@@ -39,6 +41,7 @@ import {
   useRaidStatus,
   useStartRaid,
   useTickRaid,
+  useUpgradeGuildBuilding,
   useWeeklyObjectives,
   useWithdrawFromGuildStash,
   useWithdrawGold,
@@ -439,6 +442,128 @@ function BankView({ player }: { player: GuildPlayer }) {
         </p>
       </Card>
       <SectionError message={error} />
+    </div>
+  );
+}
+
+function BuildingsView({ player }: { player: GuildPlayer }) {
+  const buildings = useGuildBuildings(player._id);
+  const donate = useDonateBuildingMaterial();
+  const upgrade = useUpgradeGuildBuilding();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const run = async (key: string, fn: () => Promise<unknown>) => {
+    setBusy(key);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (buildings.isPending) {
+    return <p className="text-sm text-muted-foreground">Loading buildings...</p>;
+  }
+  if (buildings.isError || !buildings.data) {
+    return (
+      <Card className="p-4">
+        <p className="text-sm text-blood-light" role="alert">
+          Unable to load guild buildings.
+        </p>
+      </Card>
+    );
+  }
+  const { canUpgrade } = buildings.data;
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-4">
+        <h4 className="mb-1 text-sm font-semibold">Guild buildings</h4>
+        <p className="text-sm text-muted-foreground">
+          Permanent upgrades every member shares. Raid kills drop Dragon Scales
+          into the guild stash; members donate crafted goods.
+ Officers spend the stash to raise a building.
+        </p>
+      </Card>
+      <SectionError message={error} />
+      <div className="grid gap-3 sm:grid-cols-2">
+        {buildings.data.buildings.map((building) => (
+          <Card key={building.buildingId} className="p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h5 className="font-semibold">{building.name}</h5>
+                <p className="text-xs text-muted-foreground">{building.description}</p>
+              </div>
+              <Badge variant="secondary">
+                Lv {building.level}/{building.maxLevel}
+              </Badge>
+            </div>
+            <p className="mt-2 text-sm">
+              {building.bonus ? (
+                <span className="font-mono text-green-400">{building.bonus}</span>
+              ) : (
+                <span className="text-muted-foreground">No bonus yet</span>
+              )}
+              {building.nextBonus && (
+                <span className="text-muted-foreground"> → {building.nextBonus}</span>
+              )}
+            </p>
+            {building.cost.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {building.cost.map((row) => {
+                  const missing = Math.max(0, row.needed - row.inStash);
+                  const give = Math.min(missing, row.inInventory);
+                  const key = `${building.buildingId}:${row.itemSlug}`;
+                  return (
+                    <li key={row.itemSlug} className="flex items-center justify-between gap-2 text-xs">
+                      <span>
+                        {row.itemName}{" "}
+                        <span className={row.inStash >= row.needed ? "font-mono text-green-400" : "font-mono text-muted-foreground"}>
+                          {row.inStash}/{row.needed}
+                        </span>
+                        {!row.donatable && (
+                          <span className="text-muted-foreground"> · from raids</span>
+                        )}
+                      </span>
+                      {row.donatable && give > 0 && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={busy !== null}
+                          onClick={() =>
+                            run(key, () =>
+                              donate({ playerId: player._id, itemSlug: row.itemSlug, quantity: give })
+                            )
+                          }
+                        >
+                          {busy === key ? "Donating..." : `Donate ${give}`}
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {canUpgrade && building.level < building.maxLevel && (
+              <Button
+                className="mt-3 w-full"
+                disabled={!building.affordable || busy !== null}
+                onClick={() =>
+                  run(building.buildingId, () =>
+                    upgrade({ playerId: player._id, buildingId: building.buildingId })
+                  )
+                }
+              >
+                {busy === building.buildingId ? "Building..." : `Upgrade to Lv ${building.level + 1}`}
+              </Button>
+            )}
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1019,6 +1144,7 @@ export function GuildPanel({
         { value: "hall", label: "Hall" },
         { value: "roster", label: "Roster" },
         { value: "bank", label: "Bank" },
+        { value: "buildings", label: "Buildings" },
         { value: "raids", label: "Raids" },
         { value: "objectives", label: "Objectives" },
         { value: "browse", label: "Browse" },
@@ -1043,6 +1169,7 @@ export function GuildPanel({
       {activeView === "hall" && <HallView player={player} />}
       {activeView === "roster" && <RosterView player={player} />}
       {activeView === "bank" && <BankView player={player} />}
+      {activeView === "buildings" && <BuildingsView player={player} />}
       {activeView === "raids" && <RaidsView player={player} />}
       {activeView === "objectives" && <ObjectivesView player={player} />}
       {activeView === "browse" && <BrowseView player={player} />}

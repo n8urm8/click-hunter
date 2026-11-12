@@ -1984,6 +1984,7 @@ function buildInfusionRates(infusionBalance: Awaited<ReturnType<typeof readInfus
     failXpPercent: infusionBalance.infusionFailXpPercent,
     keyEssenceQty: infusionBalance.bossKeyEssenceQty,
     enchantEssenceQty: infusionBalance.enchantEssenceQty,
+    enchantMaterialQty: infusionBalance.enchantMaterialQty,
     enchantGoldPerLevel: infusionBalance.enchantGoldPerLevel,
     damagePerLevel: infusionBalance.enchantDamagePerLevel,
     defensePerLevel: infusionBalance.enchantDefensePerLevel,

@@ -6,6 +6,12 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { calculateCharacterLevel } from "./characterLevel";
 import {
+  assertTierUnlocked,
+  endgameGateStatus,
+  endgameLockReason,
+  readEndgameGate,
+} from "./endgameGate";
+import {
   loadBattleContext,
   readPlayerCombatProfile,
   rollEncounter,
@@ -404,8 +410,8 @@ async function validateAutoBattleRequest(
   targetDurationMs: number | undefined,
   zone?: CombatZone
 ) {
-  // Battle automation is available to everyone, no unlock required.
-  // Any tier up to the content cap can be battled at any character level.
+  // Battle automation is available to everyone. Tiers below the endgame gate
+  // can be battled at any character level; the gate is checked below.
   await requirePlayerOwner(ctx, playerId);
   if (!Number.isSafeInteger(tier) || tier < 1) {
     throw new Error("Battle tier must be a positive integer");
@@ -422,6 +428,7 @@ async function validateAutoBattleRequest(
   if (tier > maxTier) {
     throw new Error("That battle tier does not exist yet");
   }
+  await assertTierUnlocked(ctx, await requirePlayer(ctx, playerId), tier);
 
   if (mode === "count") {
     if (
@@ -958,6 +965,16 @@ async function processAutoBattle(
     await completeTask(ctx, task, "failed", now, {
       reason: "Auto-battle task has no tier",
     });
+    return await activateNextTask(ctx, playerId, now);
+  }
+  // Hunts queued before the gate closed on this player (a rebirth, or the
+  // gate shipping) stop instead of fighting behind it.
+  const lockReason = endgameLockReason(
+    endgameGateStatus(hpPlayer, await readEndgameGate(ctx)),
+    tier
+  );
+  if (lockReason) {
+    await completeTask(ctx, task, "failed", now, { reason: lockReason });
     return await activateNextTask(ctx, playerId, now);
   }
 

@@ -25,6 +25,15 @@ import {
 import { getActiveEventMultipliers } from "./loot";
 import { getGuildBonusesForPlayer } from "./guilds";
 import {
+  applyBlight,
+  blightForTier,
+  monsterNameForTier,
+  monstersForTier,
+  pickEncounter,
+  tierStatScale,
+} from "./biomes";
+import { readEndgameJump } from "./endgameGate";
+import {
   conRegenPerSecond,
   readHpRegenBalance,
   readPlayerHpOrNull,
@@ -121,19 +130,7 @@ function readAutoBattleRewards(value: unknown): AutoBattleRewards {
 }
 
 function pickWeightedMonster(monsters: Monster[]) {
-  const maxStrength = Math.max(...monsters.map((monster) => monster.strength));
-  const weights = monsters.map((monster) =>
-    Math.max(1, maxStrength - monster.strength + 1)
-  );
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-  let random = Math.random() * totalWeight;
-
-  for (let index = 0; index < monsters.length; index += 1) {
-    random -= weights[index];
-    if (random <= 0) return monsters[index];
-  }
-
-  return monsters[monsters.length - 1];
+  return pickEncounter(monsters);
 }
 
 function readTierMultiplier(value: unknown) {
@@ -171,11 +168,13 @@ function scaleMonster(
   tier: number,
   tierMultiplier: number,
   tierMsReduction: number,
-  minimumAttackMs: number
+  minimumAttackMs: number,
+  endgameJump: { gateTier: number; jumpMultiplier: number } | null = null
 ) {
-  const multiplier = Math.pow(tierMultiplier, tier - 1);
-  return {
+  const multiplier = tierStatScale(tier, tierMultiplier, endgameJump);
+  const scaled = {
     ...monster,
+    name: monsterNameForTier(monster, tier),
     str: Math.max(1, Math.round(monster.str * multiplier)),
     dex: Math.max(1, Math.round(monster.dex * multiplier)),
     int: Math.max(1, Math.round(monster.int * multiplier)),
@@ -186,6 +185,7 @@ function scaleMonster(
       monster.baseMsPerAttack - (tier - 1) * tierMsReduction
     ),
   };
+  return applyBlight(scaled, blightForTier(monster, tier), minimumAttackMs);
 }
 
 export interface AutoBattleResult {
@@ -291,14 +291,17 @@ export async function readPlayerCombatProfile(
   const rebirthRewards = await readRebirthRewardBonuses(ctx, player.rebirthCount);
   const guildStatMultiplier =
     (1 + (guildBonuses.statBonusPercent ?? 0) / 100) * rebirthRewards.statMultiplier;
+  // Guild stat buildings: their own % per stat, on top of the guild level.
+  const guildBuildingMultiplier = (stat: keyof typeof guildBonuses.statBonusByStat) =>
+    1 + (guildBonuses.statBonusByStat?.[stat] ?? 0) / 100;
   const effectiveStats = {
-    str: (player.str + bonuses.str + passives.stats.str + (boosts?.statBonus.str ?? 0)) * rebirthStatMultiplier(rebirthCounts.str, rebirthBonusPercent) * guildStatMultiplier,
-    dex: (player.dex + bonuses.dex + passives.stats.dex + (boosts?.statBonus.dex ?? 0)) * rebirthStatMultiplier(rebirthCounts.dex, rebirthBonusPercent) * guildStatMultiplier,
-    int: (player.int + bonuses.int + passives.stats.int + (boosts?.statBonus.int ?? 0)) * rebirthStatMultiplier(rebirthCounts.int, rebirthBonusPercent) * guildStatMultiplier,
-    luk: (player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0)) * rebirthStatMultiplier(rebirthCounts.luk, rebirthBonusPercent) * guildStatMultiplier,
-    con: (player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0)) * rebirthStatMultiplier(rebirthCounts.con, rebirthBonusPercent) * guildStatMultiplier,
+    str: (player.str + bonuses.str + passives.stats.str + (boosts?.statBonus.str ?? 0)) * rebirthStatMultiplier(rebirthCounts.str, rebirthBonusPercent) * guildStatMultiplier * guildBuildingMultiplier("str"),
+    dex: (player.dex + bonuses.dex + passives.stats.dex + (boosts?.statBonus.dex ?? 0)) * rebirthStatMultiplier(rebirthCounts.dex, rebirthBonusPercent) * guildStatMultiplier * guildBuildingMultiplier("dex"),
+    int: (player.int + bonuses.int + passives.stats.int + (boosts?.statBonus.int ?? 0)) * rebirthStatMultiplier(rebirthCounts.int, rebirthBonusPercent) * guildStatMultiplier * guildBuildingMultiplier("int"),
+    luk: (player.luk + bonuses.luk + passives.stats.luk + (boosts?.statBonus.luk ?? 0)) * rebirthStatMultiplier(rebirthCounts.luk, rebirthBonusPercent) * guildStatMultiplier * guildBuildingMultiplier("luk"),
+    con: (player.con + bonuses.con + passives.stats.con + (boosts?.statBonus.con ?? 0)) * rebirthStatMultiplier(rebirthCounts.con, rebirthBonusPercent) * guildStatMultiplier * guildBuildingMultiplier("con"),
     wis: (player.wis ?? 1) * rebirthStatMultiplier(rebirthCounts.wis, rebirthBonusPercent) * guildStatMultiplier,
-    agi: ((player.agi ?? 1) + (bonuses.agi ?? 0) + (passives.stats.agi ?? 0) + (boosts?.statBonus.agi ?? 0)) * rebirthStatMultiplier(rebirthCounts.agi, rebirthBonusPercent) * guildStatMultiplier,
+    agi: ((player.agi ?? 1) + (bonuses.agi ?? 0) + (passives.stats.agi ?? 0) + (boosts?.statBonus.agi ?? 0)) * rebirthStatMultiplier(rebirthCounts.agi, rebirthBonusPercent) * guildStatMultiplier * guildBuildingMultiplier("agi"),
   };
   const scalingStat = weapon?.damageStat === "dex"
     ? effectiveStats.dex
@@ -484,6 +487,8 @@ export type BattleContext = {
   tierMultiplier: number;
   tierMsReduction: number;
   minimumAttackMs: number;
+  /** One-time stat jump from the endgame gate tier up. */
+  endgameJump: { gateTier: number; jumpMultiplier: number };
   monsterPower: number;
   minFightMs: number;
   rewards: AutoBattleRewards;
@@ -537,7 +542,9 @@ export async function loadBattleContext(
   // Bounded catalog read: monster pool is small content (~9 rows); take()
   // keeps a hard cap so future content growth can't turn encounter rolls
   // into an unbounded scan.
-  const allMonsters = await ctx.db.query("monsters").take(500);
+  const catalog = await ctx.db.query("monsters").take(500);
+  // Only this tier's biome roster (see convex/biomes.ts) can be met here.
+  const allMonsters = monstersForTier(catalog, tier);
   if (allMonsters.length === 0) {
     throw new Error("Regular monsters are not configured");
   }
@@ -545,7 +552,7 @@ export async function loadBattleContext(
   const zoned = zone === undefined ? [] : monstersInZone(allMonsters, zone);
   const pool = zoned.length > 0 ? zoned : allMonsters;
 
-  const [balanceMap, eventMultipliers, profile, equippedAbility] = await Promise.all([
+  const [balanceMap, eventMultipliers, profile, equippedAbility, endgameJump] = await Promise.all([
     readBalanceMap(ctx, [
       "tierScaleMultiplier",
       "tierScaleMsReduction",
@@ -563,6 +570,7 @@ export async function loadBattleContext(
       .query("playerEquippedAbilities")
       .withIndex("by_playerId", (q) => q.eq("playerId", player._id))
       .first(),
+    readEndgameJump(ctx),
   ]);
   const abilityState = equippedAbility
     ? await buildAbilityCombatState(
@@ -579,6 +587,7 @@ export async function loadBattleContext(
     tierMultiplier: readTierMultiplier(balanceMap.get("tierScaleMultiplier")),
     tierMsReduction: readTierMsReduction(balanceMap.get("tierScaleMsReduction")),
     minimumAttackMs: readMinimumAttackMs(balanceMap.get("minAttackMs")),
+    endgameJump,
     monsterPower: readMonsterPowerMultiplier(balanceMap.get("monsterPowerMultiplier")),
     minFightMs: readNonNegativeNumber(
       balanceMap.get("minFightDurationMs"),
@@ -617,7 +626,8 @@ export function rollEncounter(
     tier,
     battle.tierMultiplier,
     battle.tierMsReduction,
-    battle.minimumAttackMs
+    battle.minimumAttackMs,
+    battle.endgameJump
   );
   const isMagical = combatStats.damageType === "magical";
   const monsterDefense = monsterTierDefense(tier, balance.monsterDefensePerTier);

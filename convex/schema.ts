@@ -253,6 +253,9 @@ export default defineSchema({
     rebirthTierThreshold: v.number(), // e.g., 5, 10, 15 - which tier unlocks next rebirth
     currentTier: v.number(), // Which tier player is currently fighting in (1+)
     maxTierReached: v.optional(v.number()), // Highest tier player has beaten — optional during migration
+    // Highest boss tier beaten since the last rebirth (absent = none). The
+    // endgame gate reads it; rebirth resets it to 0.
+    highestBossDefeated: v.optional(v.number()),
     // Permanent rebirth bonuses: times each stat met the rebirth
     // requirement when a rebirth happened. Each point adds another
     // `rebirthStatBonusPercent` to that stat. Absent means zero.
@@ -835,6 +838,9 @@ export default defineSchema({
     baseMsPerAttack: v.number(),
     // Difficulty weighting (0-100, lower = more common)
     strength: v.number(),
+    // Biome placement (see convex/biomes.ts). Absent = appears on every tier.
+    biomeTier: v.optional(v.number()),
+    archetype: v.optional(v.string()),
     // Metadata
     createdAt: v.number(),
   })
@@ -1355,6 +1361,18 @@ export default defineSchema({
   // No stash limits: stackable items fill existing stacks up to maxStackSize
   // then spill into new rows (multiple stacks allowed); non-stackable items
   // get one row per unit.
+  // Permanent guild building levels (convex/guildBuildings.ts). A missing row
+  // is level 0.
+  guildBuildings: defineTable({
+    guildId: v.id("guilds"),
+    buildingId: v.string(),
+    level: v.number(),
+    updatedAt: v.number(),
+    updatedBy: v.optional(v.id("players")),
+  })
+    .index("by_guildId", ["guildId"])
+    .index("by_guildId_and_buildingId", ["guildId", "buildingId"]),
+
   guildStashItems: defineTable({
     guildId: v.id("guilds"),
     itemId: v.id("items"),

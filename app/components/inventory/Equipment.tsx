@@ -14,6 +14,10 @@ import {
   type SkillBonusScope,
   type SkillTaskEffectType,
 } from "../../../convex/itemTypes";
+import {
+  enchantMaterialItemId,
+  enchantMaterialName,
+} from "../../../convex/biomes";
 
 export type OwnedItem = {
   _id: Id<"playerItems">;
@@ -551,6 +555,13 @@ export function EnchantmentControls({
     .filter((row) => row.item.itemId === essenceSlug)
     .reduce((total, row) => total + row.quantity, 0);
   const need = rates?.enchantEssenceQty ?? 25;
+  // Masterwork material: biome bone (weapons) or hide (armor) for this level.
+  const materialSlug = enchantMaterialItemId(next, isWeapon);
+  const materialLabel = enchantMaterialName(next, isWeapon);
+  const materialNeed = rates?.enchantMaterialQty ?? 10;
+  const materialCount = inventoryItems
+    .filter((row) => row.item.itemId === materialSlug)
+    .reduce((total, row) => total + row.quantity, 0);
   const goldCost = Math.ceil((rates?.enchantGoldPerLevel ?? 0) * next);
   const atCap = rates ? next > rates.enchantLevelCap : false;
   const chance = rates
@@ -606,14 +617,18 @@ export function EnchantmentControls({
       ) : (
         <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[11px] text-forest-glow">
-            +{next}: {need}x {essenceSlug} (have {essenceCount}){goldCost > 0 ? ` + ${goldCost.toLocaleString()} gold` : ""} · {bonus}
+            +{next}: {need}x {essenceSlug} (have {essenceCount})
+            {materialNeed > 0 ? ` + ${materialNeed}x ${materialLabel} (have ${materialCount})` : ""}
+            {goldCost > 0 ? ` + ${goldCost.toLocaleString()} gold` : ""} · {bonus}
             {chance !== null &&
               ` · ${formatPercent(chance)} at Infusion ${infusionLevel}`}
           </p>
           <Button
             type="button"
             size="xs"
-            disabled={isEnchanting || essenceCount < need}
+            disabled={
+              isEnchanting || essenceCount < need || materialCount < materialNeed
+            }
             onClick={() => void runEnchant()}
           >
             {isEnchanting ? "Enchanting..." : `Enchant +${next}`}

@@ -168,7 +168,7 @@ async function validateOutputMetadata(
   }
 }
 
-async function validateRecipeCycles(ctx: MutationCtx) {
+export async function validateRecipeCycles(ctx: MutationCtx) {
   const recipes = await ctx.db.query("recipes").collect();
   const [ingredientRows, outputRows] = await Promise.all([
     ctx.db.query("recipeIngredients").collect(),
@@ -400,4 +400,24 @@ export async function validateAllRecipeChains(ctx: MutationCtx) {
     }
   }
   await validateRecipeCycles(ctx);
+}
+
+/**
+ * Validate one crafting skill's staged recipes (no cycle check). Lets a large
+ * catalog be validated a skill per transaction, followed by one
+ * `validateRecipeCycles` pass.
+ */
+export async function validateRecipeChainsForSkill(ctx: MutationCtx, skillId: string) {
+  const recipes = await ctx.db
+    .query("recipes")
+    .withIndex("by_skillId_and_tier", (q) => q.eq("skillId", skillId))
+    .collect();
+  let validated = 0;
+  for (const recipe of recipes) {
+    if (recipe.stage !== undefined) {
+      await validateRecipeChain(ctx, recipe.recipeId, { skipCycleCheck: true });
+      validated += 1;
+    }
+  }
+  return validated;
 }

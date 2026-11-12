@@ -86,6 +86,7 @@ vi.mock("~/hooks/useBossFight", () => ({
   useStrikeBoss: () => vi.fn(),
   useCheckBossFight: () => vi.fn(),
   useBossRequirements: () => ({ data: { total: 9, defeated: 9, missingNames: [] } }),
+  useEndgameGate: () => ({ data: undefined }),
 }));
 vi.mock("~/hooks/useInventory", () => ({
   usePlayerInventory: () => ({

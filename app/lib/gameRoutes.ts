@@ -54,6 +54,7 @@ export type GuildView =
   | "hall"
   | "roster"
   | "bank"
+  | "buildings"
   | "raids"
   | "objectives"
   | "browse"
@@ -63,6 +64,7 @@ export const GUILD_VIEWS: GuildView[] = [
   "hall",
   "roster",
   "bank",
+  "buildings",
   "raids",
   "objectives",
   "browse",
@@ -74,6 +76,7 @@ export function isGuildView(value: string | null): value is GuildView {
     value === "hall" ||
     value === "roster" ||
     value === "bank" ||
+    value === "buildings" ||
     value === "raids" ||
     value === "objectives" ||
     value === "browse" ||

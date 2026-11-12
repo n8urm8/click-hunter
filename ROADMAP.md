@@ -220,6 +220,20 @@ roadmap matches the repo:
 6. **Polish** — `app/lib/logger.ts:49` Sentry TODO; `InventoryPanel.tsx` crafting empty-state copy predates loot; table-drive achievement conditions; dedicated admin arena section if PvP tuning outgrows general balance.
 7. **Repo hygiene** — `dist/` is committed; `.gitignore` covers `build/` but not `dist/`.
 
+## Biome world and endgame gate (2026-11-11)
+
+- Tiers 1–8 are biomes (Grove … Starforged), one per crafting tier, each with six monsters built from shared archetypes and its own hide/bone/ichor/trophy (`convex/biomes.ts`).
+- Tiers 9–16 are Blighted versions of biomes 1–8 (stat twist per biome, Blighted materials); 17–20 are the Rift (hard archetypes of every biome, Rift Shards).
+- Tier 9+ needs `endgameRebirthRequirement` rebirths and this life's tier 8 boss kill, and monsters jump `endgameTierJumpMultiplier`× at the gate (`convex/endgameGate.ts`).
+- Sinks: leather lines, forged/woodworked gear, combat brews and Greater brews, talisman ladders, boss keys (trophies), enchanting (bone/hide per level, Blighted for +9–16, Rift Shards beyond).
+- Blighted gear ladder: forged and woodworked tier 8 pieces regrow into tiers 9–16 (`<tier8-id>-t<N>`, e.g. `starforged-sword-t9`): previous piece + 4 Blighted bone/hide of biome N + 3 tier 8 ingots/lumber + 1 tier N−1 boss token, skill level 95. Tier 9 is 8× tier 8, then 1.4× per tier on damage, defense and stat bonus (`BLIGHTED_GEAR_FIRST_STEP`/`BLIGHTED_GEAR_GROWTH` in `convex/forestCraftingSeed.ts`), so a Blighted tier plays like a main tier.
+- Bosses: `bossStatMultiplier` 1.6 (was 3; gear of the tier wins, a tier behind loses). Solo kills pay `soloBossRewardMultiplier` (8) × the base reward × `rewardTierGrowth`^(tier−1) ≈ 120 regular fights, plus 5 tokens, 3–5 trophies, 3–6 of each material, and Rift Shards from tier 9. Raid dragons moved to `guildRaidPowerMultiplier` 7.5 to stay as strong as before.
+- Guild buildings (`convex/guildBuildings.ts`, Guild → Buildings tab): six stat buildings (+2%/level to one stat), Treasury (+3% gold), Academy (+3% XP), Barracks (+2 member slots), levels 1–10, permanent. Raid kills drop Dragon Scales per raider into the stash (Blighted scales at tiers 9–16, Rift scales at 17–20); members donate the building's crafted good; officers upgrade. Raiders keep the solo-boss gold/XP.
+- [ ] Follow-up: guild buildings costs/bonuses are code constants; move them to admin-editable balance if they need live tuning.
+- [ ] Follow-up: leather armor, belts and talismans stop at tier 8; extend them if the Blighted ladder needs more slots.
+- [x] `seed:upsertForestCrafting` is an action that syncs eight seed sections and validates each crafting skill in separate transactions; writers diff rows, so a re-run on current content writes nothing (`convex/forestCraftingSeed.ts`).
+- [ ] Follow-up: guild raids at tier 9+ ignore the endgame gate.
+
 ---
 
 ## Migrations Completed
@@ -239,4 +253,6 @@ roadmap matches the repo:
 | — | `migrations:backfillArenaBalance`, `migrations:backfillRankedBalance` | Seed arena/ranked tuning (working tree) |
 | — | `migrations:backfillBazaarBalance` | Seed bazaar tax tuning |
 | — | `migrations:backfillSimLiveBalance` | Seed sim-harness tuning |
+| 2026-11-11 | `migrations:migrateToBiomes`, `seed:upsertForestCrafting`, `migrations:rebuildBiomeBosses` (`pnpm migrate:biomes`) | Biome world: 48 biome monsters, biome/Blighted/Rift materials and loot tables, leather/talisman/brew/gear/boss-key/enchant costs, rebuilt bosses (destructive; no live data) |
+| 2026-11-11 | `migrations:backfillEndgameGateBalance` | Seed endgame gate keys (also inserted by the crafting seed) |
 | — | `migrations:consolidatePendingRewards`, `migrations:retuneGuildActivityXp` | Consolidate pending rewards; retune guild activity XP |

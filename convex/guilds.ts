@@ -7,6 +7,11 @@ import { calculateCharacterLevel } from "./characterLevel";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 import { readBalanceMap } from "./balance";
+import {
+  emptyBuildingBonuses,
+  readGuildBuildingBonuses,
+  type GuildStatKey,
+} from "./guildBuildings";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 
@@ -37,7 +42,7 @@ export const GUILD_BALANCE_DEFAULTS = [
   { key: "guildRaidDurationHours", value: 24, description: "Hours an active raid lasts before expiring" },
   { key: "guildRaidRoundIntervalMs", value: 2000, description: "Milliseconds between automatic raid combat rounds (all living members hit, then the dragon retaliates)" },
   { key: "guildRaidPartySize", value: 4, description: "Max guildmates per raid party lobby (1-4)" },
-  { key: "guildRaidPowerMultiplier", value: 4, description: "Raid dragon stat multiplier over the same-tier solo boss (dragon starts ~T1 boss x4)" },
+  { key: "guildRaidPowerMultiplier", value: 7.5, description: "Raid dragon stat multiplier over the same-tier solo boss (7.5 x the 1.6 boss = the old 4 x 3)" },
   { key: "guildRaidTailSwipeEvery", value: 4, description: "Rounds between dragon tail-swipe AoE attacks (hits all party members)" },
   { key: "guildRaidTailSwipeMultiplier", value: 0.7, description: "Tail swipe damage as a fraction of the dragon basic attack" },
   { key: "guildRaidBreathEvery", value: 6, description: "Rounds between dragon elemental-breath AoE attacks" },
@@ -196,24 +201,50 @@ async function getBonusForLevel(ctx: DatabaseCtx, level: number) {
   return { ...GUILD_BONUS_SEED[0], _id: null as never, _creationTime: 0 };
 }
 
+export type PlayerGuildBonuses = {
+  /** Guild level gold % plus the Treasury. */
+  goldBonusPercent: number;
+  /** Guild level XP % plus the Academy. */
+  xpBonusPercent: number;
+  /** Guild level bonus to every stat. */
+  statBonusPercent: number;
+  /** Stat building bonus per stat, on top of `statBonusPercent`. */
+  statBonusByStat: Record<GuildStatKey, number>;
+};
+
 export async function getGuildBonusesForPlayer(
   ctx: DatabaseCtx,
   playerId: Id<"players">
-): Promise<{ goldBonusPercent: number; xpBonusPercent: number; statBonusPercent: number }> {
-  const membership = await getMembership(ctx, playerId);
-  if (!membership) {
-    return { goldBonusPercent: 0, xpBonusPercent: 0, statBonusPercent: 0 };
-  }
-  const guild = await ctx.db.get(membership.guildId);
-  if (!guild) {
-    return { goldBonusPercent: 0, xpBonusPercent: 0, statBonusPercent: 0 };
-  }
-  const bonus = await getBonusForLevel(ctx, guild.level);
-  return {
-    goldBonusPercent: bonus.goldBonusPercent ?? 0,
-    xpBonusPercent: bonus.xpBonusPercent ?? 0,
-    statBonusPercent: bonus.statBonusPercent ?? 0,
+): Promise<PlayerGuildBonuses> {
+  const none: PlayerGuildBonuses = {
+    goldBonusPercent: 0,
+    xpBonusPercent: 0,
+    statBonusPercent: 0,
+    statBonusByStat: emptyBuildingBonuses().stats,
   };
+  const membership = await getMembership(ctx, playerId);
+  if (!membership) return none;
+  const guild = await ctx.db.get(membership.guildId);
+  if (!guild) return none;
+  const [bonus, buildings] = await Promise.all([
+    getBonusForLevel(ctx, guild.level),
+    readGuildBuildingBonuses(ctx, guild._id),
+  ]);
+  return {
+    goldBonusPercent: (bonus.goldBonusPercent ?? 0) + buildings.goldPercent,
+    xpBonusPercent: (bonus.xpBonusPercent ?? 0) + buildings.xpPercent,
+    statBonusPercent: bonus.statBonusPercent ?? 0,
+    statBonusByStat: buildings.stats,
+  };
+}
+
+/** Member cap: the guild level's slots plus the Barracks. */
+async function guildMemberCap(ctx: DatabaseCtx, guild: Doc<"guilds">) {
+  const [bonus, buildings] = await Promise.all([
+    getBonusForLevel(ctx, guild.level),
+    readGuildBuildingBonuses(ctx, guild._id),
+  ]);
+  return (bonus.maxMembers ?? 50) + buildings.memberSlots;
 }
 
 async function countMembers(ctx: DatabaseCtx, guildId: Id<"guilds">) {
@@ -384,6 +415,13 @@ export const disbandGuild = mutation({
     for (const application of applications) {
       await ctx.db.patch(application._id, { status: "expired" });
     }
+    const buildings = await ctx.db
+      .query("guildBuildings")
+      .withIndex("by_guildId", (q) => q.eq("guildId", guild._id))
+      .take(50);
+    for (const building of buildings) {
+      await ctx.db.delete(building._id);
+    }
     await ctx.db.delete(guild._id);
     return null;
   },
@@ -429,9 +467,8 @@ export const invitePlayer = mutation({
     if (targetMembership) throw new Error("That player is already in a guild");
 
     const config = await readGuildConfig(ctx);
-    const bonus = await getBonusForLevel(ctx, guild.level);
     const memberCount = await countMembers(ctx, guild._id);
-    if (memberCount >= (bonus.maxMembers ?? 50)) {
+    if (memberCount >= (await guildMemberCap(ctx, guild))) {
       throw new Error("Guild is full");
     }
 
@@ -551,9 +588,8 @@ export async function acceptApplicationRow(
     );
   }
 
-  const bonus = await getBonusForLevel(ctx, guild.level);
   const memberCount = await countMembers(ctx, guild._id);
-  if (memberCount >= (bonus.maxMembers ?? 50)) {
+  if (memberCount >= (await guildMemberCap(ctx, guild))) {
     throw new Error("Guild is full");
   }
 

@@ -43,26 +43,28 @@ const WEAPON_ICONS = {
 
 type WeaponKind = keyof typeof WEAPON_ICONS;
 
-/** Seeded monster-trophy ids (gem placeholders); kept as exact ids so
- * substrings like "heart", "shard", or "scale" can't misroute resources. */
-const MONSTER_TROPHY_ITEM_IDS = new Set([
-  "moonlit-rat-fang",
-  "goblin-thorn-charm",
-  "orc-heartwood-shard",
-  "troll-moss-hide",
-  "wyvern-moon-scale",
-  "dragon-ember-scale",
-  "demon-ash-seed",
-  "nightmare-dreamleaf",
-  "archfiend-horn",
-]);
+/** Combat materials (convex/biomes.ts) carry their kind as the id suffix. */
+function biomeMaterialKind(slug: string): "hide" | "bone" | "ichor" | "trophy" | "shard" | null {
+  if (slug === "rift-shard") return "shard";
+  const match = /-(hide|bone|ichor|trophy)$/.exec(slug);
+  return match ? (match[1] as "hide" | "bone" | "ichor" | "trophy") : null;
+}
 
-/** Hides/scales are leathercrafting inputs, not generic monster trophies. */
-const LEATHER_HIDE_ITEM_IDS = new Set([
-  "troll-moss-hide",
-  "wyvern-moon-scale",
-  "dragon-ember-scale",
-]);
+function biomeMaterialIcon(kind: ReturnType<typeof biomeMaterialKind>): string | null {
+  switch (kind) {
+    case "hide":
+      return leatherIcon;
+    case "bone":
+      return ingotIcon;
+    case "ichor":
+      return refinedAlchemyIcon;
+    case "trophy":
+    case "shard":
+      return gemIcon;
+    default:
+      return null;
+  }
+}
 
 function detectWeaponKind(item: ItemIconInput): WeaponKind | null {
   const haystacks = [
@@ -109,20 +111,14 @@ function equipmentIcon(item: ItemIconInput): string {
 
 function craftingIcon(item: ItemIconInput): string {
   const rawItemId = (item.itemId ?? "").toLowerCase();
-  const rawNameSlug = (item.name ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-+/g, "-");
-  // Hide/scale drops and cured leather share the leather material icon.
-  // Partial loot projections only carry a name, so check the slug too.
-  if (
-    LEATHER_HIDE_ITEM_IDS.has(rawItemId) ||
-    LEATHER_HIDE_ITEM_IDS.has(rawNameSlug) ||
-    item.itemFamily?.startsWith("leather-")
-  ) {
-    return leatherIcon;
-  }
+  // Combat materials by kind. Loot summaries that only carry a display name
+  // fall through to the name keyword rules below.
+  const materialIcon =
+    item.itemFamily === "monster-drop" || item.itemId === "rift-shard"
+      ? biomeMaterialIcon(biomeMaterialKind(rawItemId)) ?? gemIcon
+      : biomeMaterialIcon(biomeMaterialKind(rawItemId));
+  if (materialIcon) return materialIcon;
+  if (item.itemFamily?.startsWith("leather-")) return leatherIcon;
 
   switch (item.itemFamily) {
     case "harvesting-resource":
@@ -143,11 +139,13 @@ function craftingIcon(item: ItemIconInput): string {
     case "alchemy-focus":
     case "alchemy-swiftness":
     case "alchemy-wisdom":
+    case "alchemy-greater":
       return alchemyPotionIcon;
     case "monster-augmentation":
       return gemIcon;
     case "boss-catalyst":
     case "boss-key":
+    case "raid-material":
       return gemIcon;
     default:
       break;
@@ -207,11 +205,11 @@ function craftingIcon(item: ItemIconInput): string {
   // Check the display-name slug too so partial projections without a stored
   // slug (combat loot summaries) still hit before the generic ore/log/herb
   // keywords below.
-  if (
-    MONSTER_TROPHY_ITEM_IDS.has(itemId) ||
-    MONSTER_TROPHY_ITEM_IDS.has(nameSlug)
-  )
-    return gemIcon;
+  if (nameSlug.endsWith("-pelt") || nameSlug.endsWith("-hide") || nameSlug.endsWith("-scale")) {
+    return leatherIcon;
+  }
+  if (nameSlug.endsWith("-ichor")) return refinedAlchemyIcon;
+  if (nameSlug === "rift-shard") return gemIcon;
   if (
     itemId.startsWith("forest-boss-token") ||
     haystack.includes("forest-boss-token") ||

@@ -7,6 +7,7 @@ import { requirePlayer, requirePlayerOwner } from "./playerAuth";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 import { consumeItems } from "./items";
+import { enchantMaterialItemId } from "./biomes";
 import { grantItemToInventory } from "./items";
 import { accrueGuildXpFromEarned, getGuildBonusesForPlayer } from "./guilds";
 import {
@@ -28,6 +29,7 @@ export const INFUSION_BALANCE_DEFAULTS = [
   { key: "enchantGoldPerLevel", value: 10000, description: "Gold spent per enchant attempt, multiplied by the level being attempted" },
   { key: "abilityBookDropChance", value: 0.002, description: "Chance per regular monster win to drop a random ability book for that tier" },
   { key: "enchantEssenceQty", value: 25, description: "Essence of tier (currentEnchant+1) required per enchant attempt" },
+  { key: "enchantMaterialQty", value: 10, description: "Masterwork material per enchant attempt: bone (weapons) or hide (armor) of biome N for +1..+8, its Blighted grade for +9..+16, Rift Shards beyond" },
   { key: "enchantDamagePerLevel", value: 2, description: "Flat baseDamage added per enchant level (weapons)" },
   { key: "enchantDefensePerLevel", value: 2, description: "Flat baseDefense added per enchant level (armor)" },
   { key: "enchantLevelCap", value: 1000, description: "Maximum enchant level per equipment instance" },
@@ -87,6 +89,7 @@ export async function readInfusionBalance(ctx: DatabaseCtx) {
     enchantGoldPerLevel: Math.max(0, readFloat(get("enchantGoldPerLevel", 10_000), 10_000)),
     bossKeyEssenceQty: readInt(get("bossKeyEssenceQty", 100), 100, 1),
     enchantEssenceQty: readInt(get("enchantEssenceQty", 25), 25, 1),
+    enchantMaterialQty: readInt(get("enchantMaterialQty", 10), 10, 0),
     enchantDamagePerLevel: Math.max(
       0,
       readFloat(get("enchantDamagePerLevel", 2), 2)
@@ -311,8 +314,20 @@ export const enchantEquipment = mutation({
       throw new Error(`Enchanting to +${next} costs ${goldCost} gold`);
     }
     const essence = await ensureEssenceItem(ctx, next);
+    // Masterwork material: the biome bone/hide for this enchant level.
+    const materialSlug = enchantMaterialItemId(next, isWeapon);
+    const material = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", materialSlug))
+      .first();
+    if (!material && balance.enchantMaterialQty > 0) {
+      throw new Error(`Enchant material ${materialSlug} is not configured`);
+    }
     await consumeItems(ctx, playerId, [
       { itemId: essence._id, quantity: balance.enchantEssenceQty },
+      ...(material && balance.enchantMaterialQty > 0
+        ? [{ itemId: material._id, quantity: balance.enchantMaterialQty }]
+        : []),
     ]);
     if (goldCost > 0) {
       await patchPlayerProgress(ctx, payer, { gold: payer.gold - goldCost });

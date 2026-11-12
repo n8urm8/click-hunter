@@ -35,6 +35,11 @@ import {
 } from "./monsterStats";
 import { settleTasksBeforeInteraction } from "./taskSettlement";
 import { getTierClearStatus } from "./tierClears";
+import {
+  assertTierUnlocked,
+  endgameGateStatus,
+  readEndgameGate,
+} from "./endgameGate";
 
 const rateLimiter = new RateLimiter(components.rateLimiter, {});
 
@@ -292,6 +297,21 @@ export const getBossRequirements = query({
 });
 
 /**
+ * The endgame gate as it stands for this player: which tier is the first
+ * locked one, what it needs, and whether this player has it.
+ */
+export const getEndgameGateStatus = query({
+  args: {
+    playerId: v.id("players"),
+  },
+  handler: async (ctx, { playerId }) => {
+    await requirePlayerOwner(ctx, playerId);
+    const player = await requirePlayer(ctx, playerId);
+    return endgameGateStatus(player, await readEndgameGate(ctx));
+  },
+});
+
+/**
  * Open a server-authoritative boss fight. Returns the session the client
  * renders; every strike and the final settlement are validated here.
  */
@@ -311,6 +331,7 @@ export const startBossFight = mutation({
     if (tier > provenMax + 1) {
       throw new Error("That boss tier is not unlocked yet");
     }
+    await assertTierUnlocked(ctx, player, tier);
 
     const clears = await getTierClearStatus(ctx, playerId, tier);
     if (clears.missingNames.length > 0) {

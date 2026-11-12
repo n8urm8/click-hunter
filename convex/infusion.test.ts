@@ -150,9 +150,11 @@ test("seed plants infusion skill, essence, keys, and chained key recipes", async
   expect(rows.essence?.maxStackSize).toBe(10000);
   expect(rows.key?.itemFamily).toBe("boss-key");
   expect(rows.recipe1?.skillId).toBe("infusion");
-  // Tier 2 chains the previous key.
-  expect(rows.ingredients2.length).toBe(2);
-  expect(rows.ingredients2.map((row) => row.quantity).sort()).toEqual([1, 100]);
+  // Tier 2 chains the previous key and takes a Moonlit Grove trophy.
+  expect(rows.ingredients2.length).toBe(3);
+  expect(
+    rows.ingredients2.map((row) => row.quantity).sort((a, b) => a - b)
+  ).toEqual([1, 1, 100]);
 });
 
 test("enchanting consumes tier-matched essence and raises base damage", async () => {
@@ -167,6 +169,16 @@ test("enchanting consumes tier-matched essence and raises base damage", async ()
     });
     await ctx.db.insert("playerItems", {
       playerId, itemId: essence, quantity: 100, acquiredAt: 0, updatedAt: 0,
+    });
+    // Masterwork material for weapon +1: the Grove's bone.
+    const bone = await ctx.db.insert("items", {
+      itemId: "grove-bone", name: "Briar Bone", category: "crafting",
+      description: "d", stackable: true, maxStackSize: 10000,
+      allowedEquipmentSlots: [], rarityLevel: 10,
+      itemFamily: "monster-drop", createdAt: 0, updatedAt: 0,
+    });
+    await ctx.db.insert("playerItems", {
+      playerId, itemId: bone, quantity: 12, acquiredAt: 0, updatedAt: 0,
     });
     await patchPlayerWithRecords(ctx, playerId, { gold: 100_000 });
   });
@@ -183,6 +195,20 @@ test("enchanting consumes tier-matched essence and raises base damage", async ()
     return getEquippedWeapon(ctx, playerId);
   });
   expect(weapon?.baseDamage).toBe(10);
+  const bones = await t.run(async (ctx) => {
+    const bone = await ctx.db
+      .query("items")
+      .withIndex("by_itemId", (q) => q.eq("itemId", "grove-bone"))
+      .first();
+    const row = await ctx.db
+      .query("playerItems")
+      .withIndex("by_playerId_and_itemId", (q) =>
+        q.eq("playerId", playerId).eq("itemId", bone!._id)
+      )
+      .first();
+    return row?.quantity;
+  });
+  expect(bones).toBe(2);
 });
 
 test("failed enchants burn essence but grant half XP", async () => {
@@ -197,6 +223,16 @@ test("failed enchants burn essence but grant half XP", async () => {
     });
     await ctx.db.insert("playerItems", {
       playerId, itemId: essence, quantity: 100, acquiredAt: 0, updatedAt: 0,
+    });
+    // Masterwork material for weapon +1: the Grove's bone.
+    const bone = await ctx.db.insert("items", {
+      itemId: "grove-bone", name: "Briar Bone", category: "crafting",
+      description: "d", stackable: true, maxStackSize: 10000,
+      allowedEquipmentSlots: [], rarityLevel: 10,
+      itemFamily: "monster-drop", createdAt: 0, updatedAt: 0,
+    });
+    await ctx.db.insert("playerItems", {
+      playerId, itemId: bone, quantity: 12, acquiredAt: 0, updatedAt: 0,
     });
     await patchPlayerWithRecords(ctx, playerId, { gold: 100_000 });
   });
@@ -216,65 +252,50 @@ test("failed enchants burn essence but grant half XP", async () => {
   expect(stacks.every((row) => row.itemId !== undefined)).toBe(true);
 });
 
-test("trophy talismans sink 1000 dead drops into accessories", async () => {
+test("trophy talismans ladder through the biome trophies", async () => {
   const { t, playerId } = await setup();
   await t.run((ctx) => seedForestCraftingContent(ctx));
   const rows = await t.run(async (ctx) => {
+    const bySlug = (slug: string) =>
+      ctx.db
+        .query("items")
+        .withIndex("by_itemId", (q) => q.eq("itemId", slug))
+        .first();
     const items = await Promise.all(
-      [
-        "rat-fang-talisman",
-        "goblin-thorn-talisman",
-        "heartwood-talisman",
-        "ember-scale-talisman",
-      ].map((slug) =>
-        ctx.db
-          .query("items")
-          .withIndex("by_itemId", (q) => q.eq("itemId", slug))
-          .first()
-      )
+      ["talisman-hunter-t1", "talisman-swiftwind-t4", "talisman-warlord-t6", "talisman-bulwark-t8"].map(bySlug)
     );
-    const recipe = await ctx.db
-      .query("recipes")
-      .withIndex("by_recipeId", (q) => q.eq("recipeId", "forge-rat-fang-talisman"))
-      .first();
-    const fang = await ctx.db
-      .query("items")
-      .withIndex("by_itemId", (q) => q.eq("itemId", "moonlit-rat-fang"))
-      .first();
-    const tonic = await ctx.db
-      .query("items")
-      .withIndex("by_itemId", (q) => q.eq("itemId", "verdant-tonic"))
-      .first();
-    const ingredients = recipe
-      ? await ctx.db
-          .query("recipeIngredients")
-          .withIndex("by_recipeId", (q) => q.eq("recipeId", recipe.recipeId))
-          .collect()
-      : [];
-    return { items, recipe, ingredients, fang, tonic };
+    const ingredientSlugs = async (recipeId: string) => {
+      const ingredients = await ctx.db
+        .query("recipeIngredients")
+        .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+        .collect();
+      const docs = await Promise.all(ingredients.map((row) => ctx.db.get(row.itemId)));
+      return Object.fromEntries(
+        ingredients.map((row, index) => [docs[index]?.itemId, row.quantity])
+      );
+    };
+    return {
+      items,
+      t1: await ingredientSlugs("forge-talisman-hunter-t1"),
+      t3: await ingredientSlugs("forge-talisman-hunter-t3"),
+    };
   });
   expect(rows.items.every((item) => item?.category === "equipment")).toBe(true);
   expect(
-    rows.items.every((item) =>
-      item?.allowedEquipmentSlots.includes("accessory1")
-    )
+    rows.items.every((item) => item?.allowedEquipmentSlots.includes("accessory1"))
   ).toBe(true);
   expect(
     rows.items.map((item) => [item?.craftingTier, item?.effectStat, item?.effectAmount])
   ).toEqual([
-    [4, "luk", 6],
-    [5, "dex", 8],
+    [1, "luk", 2],
+    [4, "dex", 6],
     [6, "str", 9],
-    [7, "con", 11],
+    [8, "con", 12],
   ]);
-  expect(rows.recipe?.skillId).toBe("forging");
-  expect(rows.fang?.maxStackSize).toBe(1000);
-  expect(rows.tonic?.maxStackSize).toBe(1000);
-  expect(
-    rows.ingredients.map((row) => row.quantity).sort((a, b) => a - b)
-  ).toEqual([2, 1000]);
+  expect(rows.t1).toEqual({ "grove-trophy": 3, "moonstone-ingot": 2 });
+  expect(rows.t3).toMatchObject({ "ancient-trophy": 3, "talisman-hunter-t2": 1 });
 
-  // 999 fangs is not enough; 1000 queues.
+  // Two trophies is not enough; three queues.
   await t.run(async (ctx) => {
     const now = Date.now();
     await ctx.db.insert("taskDefinitions", {
@@ -283,20 +304,20 @@ test("trophy talismans sink 1000 dead drops into accessories", async () => {
       enabled: true, createdAt: now, updatedAt: now,
     });
     await ctx.db.insert("playerSkills", {
-      playerId, skillId: "forging", level: 39, experience: 0,
+      playerId, skillId: "forging", level: 1, experience: 0,
       totalExperience: 0, actionsCompleted: 0, createdAt: now, updatedAt: now,
     });
-    const fang = await ctx.db
+    const trophy = await ctx.db
       .query("items")
-      .withIndex("by_itemId", (q) => q.eq("itemId", "moonlit-rat-fang"))
+      .withIndex("by_itemId", (q) => q.eq("itemId", "grove-trophy"))
       .first();
     const ingot = await ctx.db
       .query("items")
-      .withIndex("by_itemId", (q) => q.eq("itemId", "emberstone-ingot"))
+      .withIndex("by_itemId", (q) => q.eq("itemId", "moonstone-ingot"))
       .first();
-    if (!fang || !ingot) throw new Error("Seed materials missing");
+    if (!trophy || !ingot) throw new Error("Seed materials missing");
     await ctx.db.insert("playerItems", {
-      playerId, itemId: fang._id, quantity: 999, acquiredAt: now, updatedAt: now,
+      playerId, itemId: trophy._id, quantity: 2, acquiredAt: now, updatedAt: now,
     });
     await ctx.db.insert("playerItems", {
       playerId, itemId: ingot._id, quantity: 2, acquiredAt: now, updatedAt: now,
@@ -305,23 +326,23 @@ test("trophy talismans sink 1000 dead drops into accessories", async () => {
   await expect(
     t.mutation(api.tasks.enqueueSkillAction, {
       playerId, actionType: "crafting",
-      actionId: "forge-rat-fang-talisman", quantity: 1,
+      actionId: "forge-talisman-hunter-t1", quantity: 1,
     })
   ).rejects.toThrow("Insufficient crafting materials");
   await t.run(async (ctx) => {
-    const fang = await ctx.db
+    const trophy = await ctx.db
       .query("items")
-      .withIndex("by_itemId", (q) => q.eq("itemId", "moonlit-rat-fang"))
+      .withIndex("by_itemId", (q) => q.eq("itemId", "grove-trophy"))
       .first();
-    if (!fang) throw new Error("Seed fang missing");
+    if (!trophy) throw new Error("Seed trophy missing");
     await ctx.db.insert("playerItems", {
-      playerId, itemId: fang._id, quantity: 1,
+      playerId, itemId: trophy._id, quantity: 1,
       acquiredAt: Date.now(), updatedAt: Date.now(),
     });
   });
   const queued = await t.mutation(api.tasks.enqueueSkillAction, {
     playerId, actionType: "crafting",
-    actionId: "forge-rat-fang-talisman", quantity: 1,
+    actionId: "forge-talisman-hunter-t1", quantity: 1,
   });
   expect(queued).toBeDefined();
 });

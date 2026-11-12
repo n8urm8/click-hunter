@@ -1,6 +1,8 @@
 import { readBalanceValue } from "./balance";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ELEMENT_VALUES, type ElementKind } from "./itemTypes";
+import { monstersForTier, tierAreaName, tierStatScale } from "./biomes";
+import { readEndgameJump } from "./endgameGate";
 
 const BOSS_NAME_ADJECTIVES = [
   "Ashen",
@@ -40,9 +42,25 @@ const BOSS_NAME_TITLES = [
   "Bonebinder",
 ] as const;
 
-const DEFAULT_BOSS_STAT_MULTIPLIER = 3;
+// Over the tier's strongest monster. Tuned with the balance sim: gear of the
+// boss's tier wins, gear a tier behind does not.
+const DEFAULT_BOSS_STAT_MULTIPLIER = 1.6;
 const DEFAULT_TIER_SCALE_MULTIPLIER = 2;
 export const DEFAULT_BOSS_REWARD_MULTIPLIER = 3;
+
+/**
+ * Solo boss gold/XP on top of `bossGoldPerTier` × tier × the boss's reward
+ * multiplier, which raids share. A key costs ~1,000 wins of essence, so the
+ * default pays about 120 regular fights at the same tier; solo boss rewards
+ * also grow with `rewardTierGrowth` like regular fights.
+ */
+export const BOSS_REWARD_BALANCE_DEFAULTS = [
+  {
+    key: "soloBossRewardMultiplier",
+    value: 8,
+    description: "Solo boss gold/XP multiplier over the base boss reward (raids use the base)",
+  },
+] as const;
 
 type DatabaseCtx = MutationCtx | QueryCtx;
 
@@ -55,7 +73,7 @@ function generateBossName(tier: number) {
         BOSS_NAME_TITLES.length
     ];
 
-  return `${adjective} ${title} of Tier ${tier}`;
+  return `${adjective} ${title} of ${tierAreaName(tier)}`;
 }
 
 function readBossStatMultiplier(value: unknown) {
@@ -78,8 +96,12 @@ export async function getTierScaleMultiplier(ctx: DatabaseCtx) {
   return readTierScaleMultiplier(await readBalanceValue(ctx, "tierScaleMultiplier"));
 }
 
-export function getTierScale(tier: number, tierMultiplier: number) {
-  return Math.pow(tierMultiplier, tier - 1);
+export function getTierScale(
+  tier: number,
+  tierMultiplier: number,
+  endgameJump: { gateTier: number; jumpMultiplier: number } | null = null
+) {
+  return tierStatScale(tier, tierMultiplier, endgameJump);
 }
 
 /**
@@ -107,7 +129,11 @@ export async function readScaledBoss(ctx: DatabaseCtx, tier: number) {
   if (!boss) return null;
   const mult = boss.statsTierScaled
     ? 1
-    : getTierScale(tier, await getTierScaleMultiplier(ctx));
+    : getTierScale(
+        tier,
+        await getTierScaleMultiplier(ctx),
+        await readEndgameJump(ctx)
+      );
   return {
     ...boss,
     element: bossElementForTier(tier),
@@ -133,11 +159,16 @@ export async function ensureBossForTier(ctx: MutationCtx, tier: number) {
     .first();
   if (existing) return existing;
 
-  const strongestMonster = await ctx.db
-    .query("monsters")
-    .withIndex("by_strength")
-    .order("desc")
-    .first();
+  // The strongest monster of this tier's roster sets the boss's stat shape.
+  const roster = monstersForTier(
+    await ctx.db.query("monsters").take(500),
+    tier
+  );
+  const strongestMonster = roster.reduce<(typeof roster)[number] | null>(
+    (best, monster) =>
+      best === null || monster.strength > best.strength ? monster : best,
+    null
+  );
   if (!strongestMonster) {
     throw new Error("Cannot create a boss before regular monsters are seeded");
   }
@@ -148,7 +179,7 @@ export async function ensureBossForTier(ctx: MutationCtx, tier: number) {
     .first();
   const statMultiplier = readBossStatMultiplier(bossMultiplierRow?.value);
   const tierMultiplier = await getTierScaleMultiplier(ctx);
-  const tierScale = getTierScale(tier, tierMultiplier);
+  const tierScale = getTierScale(tier, tierMultiplier, await readEndgameJump(ctx));
   const now = Date.now();
   if (!bossMultiplierRow) {
     await ctx.db.insert("gameBalance", {

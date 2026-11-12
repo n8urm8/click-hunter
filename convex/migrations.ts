@@ -15,7 +15,7 @@ import {
   readPlayerProgressOrNull,
 } from "./playerProgress";
 import { readPlayerHpOrNull } from "./playerHp";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   ensureBossForTier,
   getTierScale,
@@ -39,11 +39,12 @@ import { HP_REGEN_BALANCE_DEFAULTS } from "./playerHp";
 import { LEATHER_BALANCE_DEFAULTS } from "./leatherwork";
 import {
   ALL_ITEMS,
-  seedLeathercraftingContent,
   STAFF_BASE_DAMAGE_PER_TIER,
   STARTER_STAFF_BASE_DAMAGE,
 } from "./forestCraftingSeed";
 import { INFUSION_BALANCE_DEFAULTS, seedInfusionBalance } from "./infusion";
+import { ENDGAME_GATE_BALANCE_DEFAULTS } from "./endgameGate";
+import { populateMonsters } from "./seed";
 import {
   DEFAULT_ITEM_RARITY_LEVEL,
   DEFAULT_ITEM_RARITIES,
@@ -278,6 +279,25 @@ export const backfillInfusionBalance = internalMutation({
   handler: async (ctx) => {
     let created = 0;
     for (const entry of INFUSION_BALANCE_DEFAULTS) {
+      const existing = await ctx.db.query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", entry.key)).first();
+      if (existing) continue;
+      await ctx.db.insert("gameBalance", { ...entry, lastUpdated: Date.now() });
+      created += 1;
+    }
+    return { created };
+  },
+});
+/**
+ * Seed the endgame gate balance keys so they show up for tuning in the admin
+ * panel (readers already fall back to the defaults when they are missing).
+ * Run: npx convex run migrations:backfillEndgameGateBalance
+ */
+export const backfillEndgameGateBalance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let created = 0;
+    for (const entry of ENDGAME_GATE_BALANCE_DEFAULTS) {
       const existing = await ctx.db.query("gameBalance")
         .withIndex("by_key", (q) => q.eq("key", entry.key)).first();
       if (existing) continue;
@@ -1031,26 +1051,6 @@ export const backfillRebirthAbilityBonuses = internalMutation({
   },
 });
 
-/**
- * Migration: add leathercrafting content to deployments seeded before it
- * existed (skill, tiers, leather items, recipes, balance keys, hide drops).
- *
- * Insert-only: existing rows, admin edits, and other forest crafting content
- * are never patched or deleted. Safe to re-run.
- *
- * Run: npx convex run migrations:backfillLeathercrafting
- */
-export const backfillLeathercrafting = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const summary = await seedLeathercraftingContent(ctx);
-    const inserted = Object.values(summary).reduce(
-      (total, count) => total + count,
-      0
-    );
-    return { success: true, inserted, ...summary };
-  },
-});
 
 /**
  * Migration: tag every seedable weapon with its weapon class and rebalance
@@ -1496,5 +1496,157 @@ export const applyAgilityRebalance = internalMutation({
       await ctx.db.patch(speedRow._id, { description: speedDefault.description, lastUpdated: now });
     }
     return { patched };
+  },
+});
+
+/**
+ * Migration: move content to the biome world (convex/biomes.ts).
+ *
+ * Destructive by design (there is no live player data): removes the old
+ * nine-monster roster and its drops, the 1000-drop talismans and the
+ * troll/wyvern/dragon leather lines (with any inventory, stash, bazaar or
+ * pending-reward rows that point at them), clears per-tier monster clears,
+ * and reseeds the monster roster. Split in three for transaction read limits:
+ *
+ * 1. npx convex run migrations:migrateToBiomes
+ * 2. npx convex run seed:upsertForestCrafting
+ * 3. npx convex run migrations:rebuildBiomeBosses
+ */
+export const migrateToBiomes = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const removedItemIds = new Set<string>([
+      "moonlit-rat-fang",
+      "goblin-thorn-charm",
+      "orc-heartwood-shard",
+      "troll-moss-hide",
+      "wyvern-moon-scale",
+      "dragon-ember-scale",
+      "demon-ash-seed",
+      "nightmare-dreamleaf",
+      "archfiend-horn",
+      "rat-fang-talisman",
+      "goblin-thorn-talisman",
+      "heartwood-talisman",
+      "ember-scale-talisman",
+    ]);
+    const oldLeatherPrefixes = ["trollhide-", "wyvernscale-", "dragonhide-"];
+    const isRemovedSlug = (slug: string) =>
+      removedItemIds.has(slug) ||
+      oldLeatherPrefixes.some((prefix) => slug.startsWith(prefix));
+
+    const removedDocIds = new Set<Id<"items">>();
+    for (const item of await ctx.db.query("items").collect()) {
+      if (isRemovedSlug(item.itemId)) removedDocIds.add(item._id);
+    }
+
+    let removedRows = 0;
+    const remove = async (id: Parameters<typeof ctx.db.delete>[0]) => {
+      await ctx.db.delete(id);
+      removedRows += 1;
+    };
+    for (const row of await ctx.db.query("playerItems").collect()) {
+      if (!removedDocIds.has(row.itemId)) continue;
+      for (const augment of await ctx.db
+        .query("playerItemAugments")
+        .withIndex("by_playerItemId", (q) => q.eq("playerItemId", row._id))
+        .collect()) {
+        await remove(augment._id);
+      }
+      await remove(row._id);
+    }
+    for (const row of await ctx.db.query("guildStashItems").collect()) {
+      if (removedDocIds.has(row.itemId)) await remove(row._id);
+    }
+    for (const row of await ctx.db.query("marketOrders").collect()) {
+      if (removedDocIds.has(row.itemId)) await remove(row._id);
+    }
+    for (const row of await ctx.db.query("pendingRewards").collect()) {
+      if (removedDocIds.has(row.itemId)) await remove(row._id);
+    }
+    for (const row of await ctx.db.query("lootTableEntries").collect()) {
+      if (removedDocIds.has(row.itemId)) await remove(row._id);
+    }
+
+    // Recipes that make or use a removed item.
+    const removedRecipeIds = new Set<string>();
+    for (const row of await ctx.db.query("recipeIngredients").collect()) {
+      if (removedDocIds.has(row.itemId)) removedRecipeIds.add(row.recipeId);
+    }
+    for (const row of await ctx.db.query("recipeOutputs").collect()) {
+      if (removedDocIds.has(row.itemId)) removedRecipeIds.add(row.recipeId);
+    }
+    for (const recipeId of removedRecipeIds) {
+      for (const recipe of await ctx.db
+        .query("recipes")
+        .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+        .collect()) {
+        await remove(recipe._id);
+      }
+      for (const row of await ctx.db
+        .query("recipeIngredients")
+        .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+        .collect()) {
+        await remove(row._id);
+      }
+      for (const row of await ctx.db
+        .query("recipeOutputs")
+        .withIndex("by_recipeId", (q) => q.eq("recipeId", recipeId))
+        .collect()) {
+        await remove(row._id);
+      }
+    }
+    for (const id of removedDocIds) await remove(id);
+
+    // Tier clears name old monster types.
+    for (const row of await ctx.db.query("playerTierClears").collect()) {
+      await remove(row._id);
+    }
+
+    await populateMonsters(ctx);
+    return {
+      removedItems: removedDocIds.size,
+      removedRows,
+      next: "npx convex run seed:upsertForestCrafting, then migrations:rebuildBiomeBosses",
+    };
+  },
+});
+
+/**
+ * Step 3 of the biome migration (after `migrateToBiomes` and
+ * `seed:upsertForestCrafting`): build every boss for tiers 1–20 from its
+ * biome roster, with the endgame jump.
+ *
+ * Also moves `bossStatMultiplier` to the tuned default (1.6, down from 3:
+ * the sim showed bosses at 3× needed gear a tier or more ahead).
+ *
+ * Run: npx convex run migrations:rebuildBiomeBosses
+ */
+export const rebuildBiomeBosses = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const statRow = await ctx.db
+      .query("gameBalance")
+      .withIndex("by_key", (q) => q.eq("key", "bossStatMultiplier"))
+      .first();
+    if (statRow && statRow.value === 3) {
+      await ctx.db.patch(statRow._id, { value: 1.6, lastUpdated: Date.now() });
+      // Raid dragons scale off the boss: keep them as strong as before.
+      const raidRow = await ctx.db
+        .query("gameBalance")
+        .withIndex("by_key", (q) => q.eq("key", "guildRaidPowerMultiplier"))
+        .first();
+      if (raidRow && raidRow.value === 4) {
+        await ctx.db.patch(raidRow._id, { value: 7.5, lastUpdated: Date.now() });
+      }
+    }
+    for (const boss of await ctx.db.query("bosses").collect()) {
+      await ctx.db.delete(boss._id);
+    }
+    for (let tier = 1; tier <= 20; tier += 1) {
+      await ensureBossForTier(ctx, tier);
+    }
+    await rebuildBalanceSnapshot(ctx);
+    return { bosses: 20 };
   },
 });

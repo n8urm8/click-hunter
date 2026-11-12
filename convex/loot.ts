@@ -3,7 +3,7 @@ import { readBalanceValue } from "./balance";
 import { patchPlayerProgress, readPlayerProgress } from "./playerProgress";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { ensureBossForTier } from "./bossData";
+import { BOSS_REWARD_BALANCE_DEFAULTS, ensureBossForTier } from "./bossData";
 import {
   findFightHistory,
   isPlayerSettlementKey,
@@ -173,6 +173,11 @@ export type CombatSettlement = {
 
 const DEFAULT_BOSS_GOLD_PER_TIER = 500;
 const DEFAULT_BOSS_EXPERIENCE_PER_TIER = 250;
+
+/** `rewardTierGrowth`, read here because combat.ts already imports loot.ts. */
+function readBossRewardTierGrowth(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1 ? value : 1.15;
+}
 
 async function getBalanceValue(ctx: DatabaseCtx, key: string) {
   return await readBalanceValue(ctx, key);
@@ -570,20 +575,33 @@ export async function settleCombatFight(
     throw new Error("Boss is not configured for this tier");
   }
 
+  // Solo bosses pay the base boss reward × the solo multiplier, growing per
+  // tier like regular fights so a kill stays worth its key at every tier.
+  const soloScale =
+    readNonNegativeNumber(
+      await getBalanceValue(ctx, "soloBossRewardMultiplier"),
+      BOSS_REWARD_BALANCE_DEFAULTS[0].value
+    ) *
+    Math.pow(
+      readBossRewardTierGrowth(await getBalanceValue(ctx, "rewardTierGrowth")),
+      args.tier - 1
+    );
   const baseGold =
     readNonNegativeNumber(
       await getBalanceValue(ctx, "bossGoldPerTier"),
       DEFAULT_BOSS_GOLD_PER_TIER
     ) *
     args.tier *
-    boss.rewardMultiplier;
+    boss.rewardMultiplier *
+    soloScale;
   const baseExperience =
     readNonNegativeNumber(
       await getBalanceValue(ctx, "bossExperiencePerTier"),
       DEFAULT_BOSS_EXPERIENCE_PER_TIER
     ) *
     args.tier *
-    boss.rewardMultiplier;
+    boss.rewardMultiplier *
+    soloScale;
   const eventMultipliers = await getActiveEventMultipliers(ctx, Date.now());
   const [combatBoosts, passives, guildBonuses, rebirthRewards] = await Promise.all([
     getActiveCombatBoosts(ctx, args.playerId, Date.now()),
@@ -625,6 +643,13 @@ export async function settleCombatFight(
       xp: experienceEarned,
     });
     await recordTierProgress(ctx, player, args.tier);
+    // The endgame gate reads this life's best boss kill.
+    if (args.tier > (player.highestBossDefeated ?? 0)) {
+      await ctx.db.patch(player._id, {
+        highestBossDefeated: args.tier,
+        lastUpdated: Date.now(),
+      });
+    }
   }
 
   const loot = await resolveLoot(ctx, args);

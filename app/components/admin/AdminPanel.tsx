@@ -62,6 +62,7 @@ import {
   useUpdateUpgrade,
 } from "~/hooks/useAdmin";
 import { useAdminDraft } from "~/hooks/useAdminDraft";
+import { encounterWeights } from "../../../convex/biomes";
 import type { AdminConfigSection } from "../../../convex/adminConfig";
 import {
   calculateCombatLevel,
@@ -3179,10 +3180,10 @@ function getMonsterEncounterRates(monsters: Doc<"monsters">[]) {
     return new Map<Id<"monsters">, number>();
   }
 
-  const maxStrength = Math.max(...monsters.map((monster) => monster.strength));
-  const weights = monsters.map((monster) => ({
+  const encounter = encounterWeights(monsters);
+  const weights = monsters.map((monster, index) => ({
     id: monster._id,
-    weight: maxStrength - monster.strength + 1,
+    weight: encounter[index],
   }));
   const totalWeight = weights.reduce((total, entry) => total + entry.weight, 0);
 

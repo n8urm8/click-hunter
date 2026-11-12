@@ -1,6 +1,6 @@
 # ADR 0001: Deliver leathercrafting to existing deployments
 
-- Status: Accepted
+- Status: Superseded (2026-11-11) — the biome rework replaced the troll/wyvern/dragon leather lines and removed `backfillLeathercrafting`; content now ships through `pnpm migrate:biomes` and `seed:upsertForestCrafting`.
 - Date: 2026-10-19
 
 ## Context

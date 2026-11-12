@@ -2,7 +2,7 @@ import {
   Card, CardContent, CardHeader, CardTitle,
 } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
-import { Crown, Swords } from "lucide-react";
+import { Crown, Lock, Swords } from "lucide-react";
 import { Progress } from "~/components/ui/progress";
 import { useAtom } from "jotai";
 import {
@@ -41,12 +41,23 @@ import {
   useEnqueueAutoBattle,
   useTaskQueue,
 } from "~/hooks/useTasks";
-import { useBossRequirements, useStartBossFight } from "~/hooks/useBossFight";
+import {
+  useBossRequirements,
+  useEndgameGate,
+  useStartBossFight,
+} from "~/hooks/useBossFight";
 import { usePlayerInventory } from "~/hooks/useInventory";
 import { formatNumber } from "~/lib/utils";
 import type { PlayerWithDerivedStats } from "~/hooks/usePlayer";
 import { useTaskClock } from "~/hooks/useTaskClock";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
+import {
+  biomeForTier,
+  monsterNameForTier,
+  monstersForTier,
+  tierAreaName,
+  tierBand,
+} from "../../../convex/biomes";
 import { projectBattleHealth } from "../../../convex/taskTiming";
 
 interface FightAreaProps {
@@ -551,14 +562,33 @@ export function FightArea({ player }: FightAreaProps) {
     1,
     player.maxTierReached ?? player.currentTier ?? 1
   );
-  const visibleTierCount = Math.min(maxTier, reachedTier + 3);
+  // Tiers from the endgame gate up stay locked (shown, not selectable) until
+  // the player has the rebirths and this life's boss kill below the gate.
+  const endgameGate = useEndgameGate(player._id).data;
+  const lockedFromTier =
+    endgameGate && !endgameGate.unlocked ? endgameGate.gateTier : null;
+  const visibleTierCount = Math.min(
+    maxTier,
+    reachedTier + 3,
+    lockedFromTier ?? Number.POSITIVE_INFINITY
+  );
+  const highestOpenTier =
+    lockedFromTier === null
+      ? visibleTierCount
+      : Math.max(1, Math.min(visibleTierCount, lockedFromTier - 1));
   const requestedTier = Number(searchParams.get("tier"));
   const selectedTier = Math.min(
     Number.isSafeInteger(requestedTier) && requestedTier >= 1
       ? requestedTier
       : player.currentTier,
-    visibleTierCount
+    highestOpenTier
   );
+  const tierIsLocked = (tier: number) =>
+    lockedFromTier !== null && tier >= lockedFromTier;
+  const showEndgameLock =
+    endgameGate !== undefined &&
+    lockedFromTier !== null &&
+    visibleTierCount >= lockedFromTier;
   const rawZone = searchParams.get("zone");
   const selectedZone: CombatZone = isCombatZone(rawZone) ? rawZone : "easy";
 
@@ -569,10 +599,22 @@ export function FightArea({ player }: FightAreaProps) {
     setSearchParams(next);
   };
 
+  // Each tier has its own biome roster (convex/biomes.ts), named as it
+  // appears there (Blighted / Riftborn prefixes past tier 8).
   const zoneGroups = useMemo(
-    () => (monsters ? groupMonstersByZone(monsters) : null),
-    [monsters]
+    () =>
+      monsters
+        ? groupMonstersByZone(
+            monstersForTier(monsters, selectedTier).map((monster) => ({
+              ...monster,
+              name: monsterNameForTier(monster, selectedTier),
+            }))
+          )
+        : null,
+    [monsters, selectedTier]
   );
+  const selectedArea = tierAreaName(selectedTier);
+  const selectedBlight = biomeForTier(selectedTier);
 
   const bossQuery = useQuery({
     ...convexQuery(api.seed.getScaledBoss, {
@@ -823,7 +865,9 @@ export function FightArea({ player }: FightAreaProps) {
       )}
       <div className="grid gap-6 lg:grid-cols-2 lg:gap-8">
         <fieldset disabled={isStarting || isRespawning} className="min-w-0">
-          <legend className="mb-3 font-heading text-lg">Hunting tier</legend>
+          <legend className="mb-3 font-heading text-lg">
+            Hunting tier · {selectedArea}
+          </legend>
           <div className="grid max-h-[6rem] grid-cols-4 gap-2 overflow-y-auto pr-1 sm:grid-cols-6">
             {Array.from({ length: visibleTierCount }, (_, i) => i + 1).map((tier) => (
               <label key={tier} className="combat-choice">
@@ -832,13 +876,31 @@ export function FightArea({ player }: FightAreaProps) {
                   name="hunting-tier"
                   value={tier}
                   checked={selectedTier === tier}
+                  disabled={tierIsLocked(tier)}
                   onChange={() => updateCombatParams(tier, selectedZone)}
                   className="sr-only"
                 />
-                <span>T{tier}</span>
+                <span className="inline-flex items-center gap-1">
+                  {tierIsLocked(tier) && <Lock aria-label="Locked" className="size-3" />}
+                  T{tier}
+                </span>
               </label>
             ))}
           </div>
+          {tierBand(selectedTier) === "blighted" && selectedBlight && (
+            <p className="mt-2 text-xs text-muted-foreground" role="status">
+              {selectedBlight.blight.label}: {selectedBlight.blight.description}.
+            </p>
+          )}
+          {showEndgameLock && endgameGate && (
+            <p className="mt-2 text-xs text-muted-foreground" role="status">
+              Tier {endgameGate.gateTier}+ is the endgame. Needs{" "}
+              {endgameGate.rebirthRequirement} rebirths (
+              {endgameGate.hasRebirths ? "done" : `${endgameGate.rebirthCount}/${endgameGate.rebirthRequirement}`}
+              ) and the Tier {endgameGate.gateTier - 1} boss beaten this life (
+              {endgameGate.hasGateBoss ? "done" : "not yet"}).
+            </p>
+          )}
         </fieldset>
         <fieldset disabled={isStarting || isRespawning} className="min-w-0">
           <legend className="mb-3 font-heading text-lg">Hunting zone</legend>

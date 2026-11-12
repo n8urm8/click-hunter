@@ -9,7 +9,10 @@ backfill should be safe to re-run. The leathercrafting backfill is insert-only.
 
 **Content sync** — A seed function that patches, inserts, and removes content to
 match the code. `seedForestCraftingContent` / `seed:upsertForestCrafting` is the
-full forest crafting content sync. It can overwrite admin edits.
+full forest crafting content sync, run section by section (`CRAFTING_SEED_SECTIONS`)
+so each transaction stays under the read limit. It overwrites admin edits to seeded
+items, recipes and loot, keeps tuned balance defaults, and writes nothing when the
+content is already current.
 
 **Seed** — Initial data written to a fresh deployment. `convex/init.ts` runs
 once when tables are empty; `convex/seed.ts` exposes admin and CLI seed paths.
