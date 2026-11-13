@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity } from "./testIdentity";
 import { patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -98,7 +99,7 @@ async function seedContent(ctx: MutationCtx) {
 async function setup() {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "ability-ui-user" });
+  const t = base.withIdentity(testIdentity("ability-ui-user"));
   const { book } = await t.run((ctx) => seedContent(ctx));
   const player = await t.mutation(api.players.getOrCreatePlayer, {
     anonymousId: "ability-ui",

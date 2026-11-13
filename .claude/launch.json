@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "gloamwake-vite",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "set -a; . ./docker/.env.selfhosted; set +a; npx vite --port 5199 --strictPort"
+      ],
+      "port": 5199
+    },
+    {
+      "name": "landing-preview-temp",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "VITE_CLERK_PUBLISHABLE_KEY=pk_test_ZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk VITE_CONVEX_URL=http://127.0.0.1:3210 npx vite --port 5198 --strictPort"
+      ],
+      "port": 5198
+    }
+  ]
+}

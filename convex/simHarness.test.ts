@@ -1,3 +1,4 @@
+import { ownerFor, testIdentity } from "./testIdentity";
 import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 /**
  * Simulation harness for AI-prompted automated testing, plus its own tests.
@@ -140,7 +141,7 @@ export class Sim {
       const id = await insertPlayerWithRecords(ctx, {
         anonymousId: `${SIM_ANON_PREFIX}${this.counter}-${Math.floor(this.rng() * 1e9)}`,
         name,
-        authSubject: subject,
+        authSubject: ownerFor(subject),
         ...stats,
         statXp,
         gold: opts.gold ?? 0,
@@ -160,7 +161,7 @@ export class Sim {
       return id;
     });
 
-    const as = this.client.withIdentity({ subject });
+    const as = this.client.withIdentity(testIdentity(subject));
     const level = await this.client.run(async (ctx) => {
       const player = await playerWithRecords(ctx, playerId);
       if (!player) throw new Error("Spawned player not found");

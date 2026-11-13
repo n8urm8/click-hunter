@@ -1,5 +1,5 @@
 /**
- * Click-Hunter Game Configuration — types only
+ * Gloamwake Game Configuration — types only
  * All runtime data (monsters, upgrades, balance) lives in the Convex database.
  * See convex/seed.ts for data and convex/schema.ts for structure.
  */

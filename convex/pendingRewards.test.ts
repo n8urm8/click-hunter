@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
@@ -13,7 +14,7 @@ async function setup() {
   const fixture = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "pending-test", name: "Hunter", role: "admin",
-      authSubject: "pending-user",
+      authSubject: ownerFor("pending-user"),
       str: 10, dex: 10, int: 10, luk: 0, con: 50,
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
       currentTier: 1, autoAttackEnabled: false, autoStartFightEnabled: false,

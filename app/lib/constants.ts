@@ -33,10 +33,10 @@ export const Z_INDEX = {
 
 // Storage Keys
 export const STORAGE_KEYS = {
-  ANONYMOUS_ID: "clickHunter_anonymousId",
-  PLAYER_NAME: "clickHunter_playerName",
-  DISCOVERED_SPOTS: "clickHunter_discoveredSpots",
-  SETTINGS: "clickHunter_settings",
+  ANONYMOUS_ID: "gloamwake_anonymousId",
+  PLAYER_NAME: "gloamwake_playerName",
+  DISCOVERED_SPOTS: "gloamwake_discoveredSpots",
+  SETTINGS: "gloamwake_settings",
 } as const;
 
 // Game Balance

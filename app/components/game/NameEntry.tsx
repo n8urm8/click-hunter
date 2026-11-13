@@ -26,7 +26,7 @@ export function NameEntry({ onSubmit, isLoading }: NameEntryProps) {
       <Card className="w-full max-w-md forest-card box-glow-gold relative z-10">
         <div className="p-8 space-y-6">
           <div className="text-center">
-            <h1 className="text-4xl font-heading text-gold glow-gold">Click Hunter</h1>
+            <h1 className="text-4xl font-heading text-gold glow-gold">Gloamwake</h1>
             <div className="flex justify-center my-3">
               <span className="text-forest-glow/40 text-sm tracking-[0.5em]">~ ✧ ✦ ✧ ~</span>
             </div>

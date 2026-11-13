@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -31,7 +32,7 @@ async function setupPlayer(
     const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: `arena-${subject}`,
       name,
-      authSubject: subject,
+      authSubject: ownerFor(subject),
       role: "admin",
       str: stats.str,
       dex: stats.dex,
@@ -56,7 +57,7 @@ async function setupPlayer(
 async function setup() {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "arena-user" });
+  const t = base.withIdentity(testIdentity("arena-user"));
   // Level 60 fighters (combat sum; no skills seeded in tests).
   const strong = { str: 200, dex: 12, int: 12, luk: 12, con: 200 };
   const average = { str: 12, dex: 12, int: 12, luk: 12, con: 12 };
@@ -65,8 +66,8 @@ async function setup() {
     setupPlayer(base, "arena-user-2", "FighterTwo", average),
     setupPlayer(base, "arena-user-3", "Watcher", average),
   ]);
-  const t2 = base.withIdentity({ subject: "arena-user-2" });
-  const t3 = base.withIdentity({ subject: "arena-user-3" });
+  const t2 = base.withIdentity(testIdentity("arena-user-2"));
+  const t3 = base.withIdentity(testIdentity("arena-user-3"));
   return { base, t, t2, t3, fighter1, fighter2, spectator };
 }
 
@@ -113,7 +114,7 @@ test("fighters below the configured level cannot open or join lobbies", async ()
     "Rookie",
     { str: 1, dex: 1, int: 1, luk: 1, con: 1 },
   );
-  const rookieCtx = t.withIdentity({ subject: "arena-rookie" });
+  const rookieCtx = t.withIdentity(testIdentity("arena-rookie"));
   await expect(
     rookieCtx.mutation(api.arena.createLobby, {
       playerId: rookie,

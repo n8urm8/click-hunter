@@ -22,19 +22,8 @@ docker compose exec backend ./generate_admin_key.sh
 Paste the printed key into `docker/.env.selfhosted` as `CONVEX_SELF_HOSTED_ADMIN_KEY`.
 (`docker/.env.selfhosted` is gitignored — never commit the key.)
 
-Convex Auth needs an RS256 keypair on self-hosted backends (cloud provisions
-this automatically). Generate it once and store it on the deployment:
-
-```bash
-node docker/generate-auth-keys.mjs   # writes docker/.auth-keys.env (gitignored)
-set -a; . ./docker/.env.selfhosted; set +a
-set -a; . ./docker/.auth-keys.env; set +a
-printenv JWT_PRIVATE_KEY | npx convex env set JWT_PRIVATE_KEY
-npx convex env set JWKS "$JWKS"
-```
-
-Keep `docker/.auth-keys.env`: re-apply it with the same two `env set` commands
-after wiping the backend volume or when provisioning another backend.
+Sign-in runs on Clerk, so the backend needs no auth keypair. Set up Clerk
+before the first push (see [Accounts](#accounts-clerk)).
 
 ## 2. Push your Convex functions
 
@@ -43,10 +32,9 @@ pnpm backend:push
 ```
 
 This typechecks, regenerates `convex/_generated`, and pushes functions, indexes,
-and schema to the self-hosted backend. `auth.config.ts` picks up
-`CONVEX_SITE_URL` (port 3211) from the env file at push time. Sign-in
-(including Anonymous) requires the auth keypair from step 1; if you add OAuth
-providers later, follow the manual Convex Auth setup.
+and schema to the self-hosted backend. The push fails until
+`CLERK_JWT_ISSUER_DOMAIN` is set on the deployment, because `auth.config.ts`
+reads it at push time.
 
 ## 3. Run the game against it
 
@@ -112,6 +100,40 @@ docker compose up -d --build web   # http://localhost:8080
   `--env-file docker/.env.selfhosted` — bare `convex` without the env file
   targets cloud via `.env.local`. `pnpm dev:cloud` is the explicit
   cloud-dev alternative.
+
+## Accounts (Clerk)
+
+Every character belongs to a Clerk account. The first screen is sign-in or
+sign-up, and there is no anonymous play. Clerk handles passwords, email
+verification and password reset, so the app needs no mail settings.
+
+One-time Clerk setup:
+
+1. Create an application in the Clerk dashboard and enable email and password.
+2. Create a JWT template named `convex` for the Convex integration. Clerk's
+   Convex guide lists the exact steps and the audience to use.
+3. Note the issuer domain (the Frontend API URL, such as
+   `https://your-app.clerk.accounts.dev`) and the publishable key (`pk_...`).
+
+Give the issuer domain to the deployment. The push and the sign-in check both
+read it:
+
+```bash
+npx convex env set CLERK_JWT_ISSUER_DOMAIN https://your-app.clerk.accounts.dev
+```
+
+The web build needs the publishable key. For `pnpm dev`, add it to
+`docker/.env.selfhosted`:
+
+```bash
+VITE_CLERK_PUBLISHABLE_KEY=pk_test_xxxxxxxx
+```
+
+For Docker, pass it at build time: `--build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_test_xxxxxxxx`.
+The app stops at a configuration error until the key is set.
+
+Characters created before this switch belong to the old login system, so they
+are not linked to Clerk accounts. Reseed or wipe local data after switching.
 
 ## Admin access
 

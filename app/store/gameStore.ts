@@ -93,23 +93,23 @@ export const activePanelAtom = atom<ActivePanel>("combat");
 // Anonymous player ID (from localStorage)
 export const anonymousIdAtom = atom<string>(() => {
   if (typeof window === "undefined") return "";
-  const stored = localStorage.getItem("clickHunter_anonymousId");
+  const stored = localStorage.getItem("gloamwake_anonymousId");
   if (stored) return stored;
   const newId = crypto.randomUUID();
-  localStorage.setItem("clickHunter_anonymousId", newId);
+  localStorage.setItem("gloamwake_anonymousId", newId);
   return newId;
 });
 
 // Player name from localStorage
 export const playerNameAtom = atom<string | null>(() => {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("clickHunter_playerName");
+  return localStorage.getItem("gloamwake_playerName");
 });
 
 // Persisted discovered spots (localStorage)
 export const persistedDiscoveredSpotsAtom = atom<Set<string>>(() => {
   if (typeof window === "undefined") return new Set();
-  const stored = localStorage.getItem("clickHunter_discoveredSpots");
+  const stored = localStorage.getItem("gloamwake_discoveredSpots");
   if (!stored) return new Set();
   try {
     return new Set(JSON.parse(stored));

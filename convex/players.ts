@@ -248,25 +248,6 @@ export const getOrCreatePlayer = mutation({
       return owned;
     }
 
-    // One-time claim of a pre-auth character. The anonymousId is a bearer
-    // secret from localStorage; a claimed character can never be re-claimed.
-    const existing = await ctx.db
-      .query("players")
-      .withIndex("by_anonymousId", (q) => q.eq("anonymousId", anonymousId))
-      .first();
-
-    if (existing) {
-      if (
-        existing.authSubject !== undefined &&
-        existing.authSubject !== subject
-      ) {
-        throw new Error("That character is already claimed by another session.");
-      }
-      await ctx.db.patch(existing._id, { authSubject: subject });
-      await setPlayerOwner(ctx, existing._id, subject);
-      return await ctx.db.get(existing._id);
-    }
-
     const [startingStatsValue, rebirthThresholdsValue] = await Promise.all([
       getBalanceValue(ctx, "startingStats"),
       getBalanceValue(ctx, "rebirthThresholds"),

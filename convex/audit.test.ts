@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -13,10 +14,10 @@ const SUBJECT = "audit-user";
 async function setup() {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: SUBJECT });
+  const t = base.withIdentity(testIdentity(SUBJECT));
   const ids = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
-      anonymousId: "audit", name: "Audit", authSubject: SUBJECT,
+      anonymousId: "audit", name: "Audit", authSubject: ownerFor(SUBJECT),
       str: 1, dex: 1, int: 1, luk: 1, con: 10,
       gold: 0, totalExperience: 0, rebirthCount: 0,
       rebirthTierThreshold: 5, currentTier: 1, maxTierReached: 1,
@@ -59,7 +60,7 @@ test("unauthenticated and cross-session callers are rejected", async () => {
   const { base, t, playerId } = await setup();
   await expect(base.mutation(api.tasks.sync, { playerId }))
     .rejects.toThrow("Authentication required");
-  const intruder = base.withIdentity({ subject: "intruder" });
+  const intruder = base.withIdentity(testIdentity("intruder"));
   await expect(intruder.mutation(api.tasks.sync, { playerId }))
     .rejects.toThrow("different signed-in session");
   await expect(intruder.query(api.tasks.getQueue, { playerId }))
@@ -98,7 +99,7 @@ test("hidden spots only grant their own configured reward", async () => {
 test("tiers cannot be skipped and keys cannot cross players", async () => {
   const { t, playerId } = await setup();
   const other = await t.run(async (ctx) => insertPlayerWithRecords(ctx, {
-    anonymousId: "victim", name: "Victim", authSubject: "victim-user",
+    anonymousId: "victim", name: "Victim", authSubject: ownerFor("victim-user"),
     str: 1, dex: 1, int: 1, luk: 1, con: 1,
     gold: 0, totalExperience: 0, rebirthCount: 0,
     rebirthTierThreshold: 5, currentTier: 1, maxTierReached: 1,

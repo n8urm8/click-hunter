@@ -8,11 +8,19 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConvexQueryClient } from "@convex-dev/react-query";
 import { ConvexReactClient } from "convex/react";
-import { ConvexAuthProvider } from "@convex-dev/auth/react";
+import { ConvexProviderWithClerk } from "convex/react-clerk";
+import { ClerkProvider, useAuth } from "@clerk/react";
 import "./app.css";
 import GameShell from "./routes/game";
 import { CONVEX_QUERY_GC_TIME } from "./lib/queryCache";
 import { GAME_PATHS } from "./lib/gameRoutes";
+
+const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+if (!clerkPublishableKey) {
+  throw new Error(
+    "VITE_CLERK_PUBLISHABLE_KEY is not set. Add the Clerk publishable key to the web app's environment."
+  );
+}
 
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 const convexQueryClient = new ConvexQueryClient(convex);
@@ -34,11 +42,12 @@ function page(load: () => Promise<{ default: ComponentType }>) {
 }
 
 const router = createBrowserRouter([
+  // Public landing page, outside the game shell so visitors see it signed out.
+  { path: "/", lazy: page(() => import("./routes/landing")) },
   {
-    path: "/",
+    // Pathless layout: every game screen shares the player gate and frame.
     Component: GameShell,
     children: [
-      { index: true, lazy: page(() => import("./routes/home")) },
       { path: "combat", lazy: page(() => import("./routes/combat")) },
       { path: "skills", lazy: page(() => import("./routes/skills")) },
       { path: "skills/:skillId", lazy: page(() => import("./routes/skills")) },
@@ -70,10 +79,12 @@ const router = createBrowserRouter([
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ConvexAuthProvider client={convex}>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-      </QueryClientProvider>
-    </ConvexAuthProvider>
+    <ClerkProvider publishableKey={clerkPublishableKey}>
+      <ConvexProviderWithClerk client={convex} useAuth={useAuth}>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>
+      </ConvexProviderWithClerk>
+    </ClerkProvider>
   </StrictMode>
 );

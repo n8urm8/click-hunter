@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
@@ -19,7 +20,7 @@ async function setup() {
       anonymousId: "fight-history-test",
       name: "Hunter",
       role: "admin",
-      authSubject: "fight-history-user",
+      authSubject: ownerFor("fight-history-user"),
       str: 10,
       dex: 10,
       int: 10,

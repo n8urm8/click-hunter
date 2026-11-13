@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
@@ -13,11 +14,11 @@ const BASE_STATS = { str: 1, dex: 1, int: 1, luk: 1, con: 1 };
 
 async function setup(stats: Partial<typeof BASE_STATS> = {}) {
   const base = convexTest(schema, modules);
-  const t = base.withIdentity({ subject: "rebirth-user" });
+  const t = base.withIdentity(testIdentity("rebirth-user"));
   const fixture = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "rebirth-test", name: "Hunter", role: "admin",
-      authSubject: "rebirth-user",
+      authSubject: ownerFor("rebirth-user"),
       ...BASE_STATS,
       ...stats,
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,

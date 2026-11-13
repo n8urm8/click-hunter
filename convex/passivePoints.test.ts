@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
@@ -59,10 +60,10 @@ test("triangular gaps grow 3, 6, 9… and flat keeps the legacy interval", () =>
 });
 
 test("schedule prefers the gap step and falls back to the legacy interval", async () => {
-  const t = convexTest(schema, modules).withIdentity({ subject: "points-user" });
+  const t = convexTest(schema, modules).withIdentity(testIdentity("points-user"));
   const playerId = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
-      anonymousId: "points", name: "Pointer", authSubject: "points-user",
+      anonymousId: "points", name: "Pointer", authSubject: ownerFor("points-user"),
       str: 40, dex: 30, int: 20, luk: 10, con: 10,
       gold: 0, totalExperience: 0, rebirthCount: 0,
       rebirthTierThreshold: 5, currentTier: 1, maxTierReached: 1,

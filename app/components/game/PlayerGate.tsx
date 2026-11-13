@@ -1,6 +1,6 @@
 import { useAtom } from "jotai";
-import { useEffect, useState, type ReactNode } from "react";
-import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
+import { useState, type ReactNode } from "react";
+import { useConvexAuth } from "convex/react";
 import { anonymousIdAtom } from "~/store/gameStore";
 import {
   type PlayerWithDerivedStats,
@@ -9,6 +9,10 @@ import {
   usePlayer,
 } from "~/hooks/usePlayer";
 import { NameEntry } from "./NameEntry";
+import { AccountSuspended } from "../account/AccountSuspended";
+import { SignInScreen } from "../account/SignInScreen";
+import { useAccountStatus } from "~/hooks/useAccount";
+import { isActiveUntil } from "~/lib/moderation";
 import { StarterPicker, type StarterId } from "./StarterPicker";
 import { Fireflies } from "../ui/fireflies";
 import { Button } from "../ui/button";
@@ -68,15 +72,8 @@ function GateShell({ message, isError = false }: { message: string; isError?: bo
 
 export function PlayerGate({ children }: PlayerGateProps) {
   const [anonymousId] = useAtom(anonymousIdAtom);
+  // Convex-side auth: true once Clerk's token has been verified by the backend.
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
-  const { signIn } = useAuthActions();
-  // Frictionless identity: anonymous sign-in on first visit. Same UX as
-  // before (type a name, play) with a server-issued session behind it.
-  useEffect(() => {
-    if (!authLoading && !isAuthenticated) {
-      void signIn("anonymous");
-    }
-  }, [authLoading, isAuthenticated, signIn]);
   const player = usePlayer(isAuthenticated);
   const createPlayer = useCreatePlayer();
   const chooseStarter = useChooseStarter();
@@ -84,6 +81,7 @@ export function PlayerGate({ children }: PlayerGateProps) {
   const [starterId, setStarterId] = useState<StarterId>("sword");
   const [isChoosing, setIsChoosing] = useState(false);
   const [choiceError, setChoiceError] = useState<string | null>(null);
+  const accountStatus = useAccountStatus(isAuthenticated && !authLoading);
 
   const handleNameSubmit = async (name: string, starter: StarterId) => {
     if (!anonymousId) return;
@@ -91,7 +89,7 @@ export function PlayerGate({ children }: PlayerGateProps) {
     setIsCreating(true);
     try {
       await createPlayer({ anonymousId, name, starterId: starter });
-      localStorage.setItem("clickHunter_playerName", name);
+      localStorage.setItem("gloamwake_playerName", name);
     } catch (error) {
       console.error("Failed to create player:", error);
     } finally {
@@ -115,8 +113,24 @@ export function PlayerGate({ children }: PlayerGateProps) {
     }
   };
 
-  if (authLoading || !isAuthenticated) {
+  if (authLoading) {
     return <GateShell message="Signing in..." />;
+  }
+
+  // Every character belongs to a Clerk account, so the first screen is sign-in
+  // (or sign-up). There is no anonymous play.
+  if (!isAuthenticated) {
+    return <SignInScreen />;
+  }
+
+  const suspension = accountStatus.data;
+  if (suspension && isActiveUntil(suspension.bannedUntil, Date.now())) {
+    return (
+      <AccountSuspended
+        bannedUntil={suspension.bannedUntil}
+        reason={suspension.banReason}
+      />
+    );
   }
 
   if (player.isPending) {

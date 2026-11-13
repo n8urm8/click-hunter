@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords, type TestPlayerInput } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -32,7 +33,7 @@ type PlayerFields = Partial<TestPlayerInput>;
 
 function playerFields(overrides: PlayerFields = {}) {
   return {
-    anonymousId: "batch", name: "Batch", authSubject: SUBJECT,
+    anonymousId: "batch", name: "Batch", authSubject: ownerFor(SUBJECT),
     str: 50, dex: 10, int: 1, luk: 1, con: 50,
     gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
     currentTier: 1, autoAttackEnabled: true, autoStartFightEnabled: false,
@@ -52,10 +53,10 @@ async function insertMonster(ctx: MutationCtx, overrides: Partial<Doc<"monsters"
 async function setup(player: PlayerFields = {}) {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: SUBJECT });
+  const t = base.withIdentity(testIdentity(SUBJECT));
   const playerId = await t.run(async (ctx) => {
     const id = await insertPlayerWithRecords(ctx, playerFields(player));
-    await ctx.db.insert("playerOwners", { playerId: id, authSubject: SUBJECT });
+    await ctx.db.insert("playerOwners", { playerId: id, authSubject: ownerFor(SUBJECT) });
     await insertMonster(ctx);
     return id;
   });
@@ -145,7 +146,7 @@ function trackingCtx(ctx: MutationCtx, reads: ReadSet): MutationCtx {
 async function currentPlayerReads(ctx: MutationCtx, subject: string) {
   const player = await ctx.db
     .query("players")
-    .withIndex("by_authSubject", (q) => q.eq("authSubject", subject))
+    .withIndex("by_authSubject", (q) => q.eq("authSubject", ownerFor(subject)))
     .first();
   if (!player) return;
   await readPlayerCombatProfile(ctx, player);
@@ -372,7 +373,7 @@ test("a row newer than the snapshot is never hidden, and the cron catches it up"
 test("ownership checks use the owner row, reject strangers, and fall back for old characters", async () => {
   const { t, base, playerId } = await setup();
   await expect(
-    base.withIdentity({ subject: "stranger" }).query(api.tasks.getActivePlan, { playerId })
+    base.withIdentity(testIdentity("stranger")).query(api.tasks.getActivePlan, { playerId })
   ).rejects.toThrow("different signed-in session");
   await t.run(async (ctx) => {
     const owner = await ctx.db.query("playerOwners").first();
@@ -380,7 +381,7 @@ test("ownership checks use the owner row, reject strangers, and fall back for ol
   });
   expect(await t.query(api.tasks.getActivePlan, { playerId })).toMatchObject({ active: null });
   await expect(
-    base.withIdentity({ subject: "stranger" }).query(api.tasks.getActivePlan, { playerId })
+    base.withIdentity(testIdentity("stranger")).query(api.tasks.getActivePlan, { playerId })
   ).rejects.toThrow("different signed-in session");
 });
 
@@ -536,10 +537,10 @@ test("leaderboards fill from players and write nothing when nothing moved", asyn
   const { t, playerId } = await setup({ totalExperience: 500, maxTierReached: 3, rebirthCount: 1, name: "Top" });
   await t.run(async (ctx) => {
     await insertPlayerWithRecords(ctx, playerFields({
-      anonymousId: "sim", authSubject: "sim-live:1", totalExperience: 9_999, maxTierReached: 9, rebirthCount: 9,
+      anonymousId: "sim", authSubject: ownerFor("sim-live:1"), totalExperience: 9_999, maxTierReached: 9, rebirthCount: 9,
     }));
     await insertPlayerWithRecords(ctx, playerFields({
-      anonymousId: "fresh", authSubject: "fresh", totalExperience: 0, rebirthCount: 0, maxTierReached: 1, name: "Fresh",
+      anonymousId: "fresh", authSubject: ownerFor("fresh"), totalExperience: 0, rebirthCount: 0, maxTierReached: 1, name: "Fresh",
     }));
   });
   await t.mutation(internal.leaderboards.refreshLeaderboards, {});
@@ -652,7 +653,7 @@ test("the update migration retunes defaults, keeps custom tuning, and backfills 
   await run();
   expect((await t.run((ctx) => ctx.db.get(bossId)))?.str).toBe(196);
   const owner = await t.run((ctx) => ctx.db.query("playerOwners").first());
-  expect(owner).toMatchObject({ playerId, authSubject: SUBJECT });
+  expect(owner).toMatchObject({ playerId, authSubject: ownerFor(SUBJECT) });
   expect((await t.run((ctx) => playerWithRecords(ctx, playerId)))?.wis ?? 1).toBeGreaterThan(1);
   const achievements = await t.run((ctx) => ctx.db.query("playerAchievements").collect());
   expect(achievements.map((row) => row.achievementId).sort()).toEqual(["first-kill", "tier-100-xp", "tier-5"]);
@@ -664,7 +665,7 @@ test("the update migration retunes defaults, keeps custom tuning, and backfills 
 
 test("new characters are plain players, and the CLI can grant admin", async () => {
   const { base } = await setup();
-  const as = base.withIdentity({ subject: "newcomer" });
+  const as = base.withIdentity(testIdentity("newcomer"));
   const created = await as.mutation(api.players.getOrCreatePlayer, {
     anonymousId: "newcomer", name: "Newcomer",
   });
@@ -689,7 +690,7 @@ async function insertChat(
 test("reports save the messages around them, and survive chat pruning", async () => {
   const { t, base, playerId } = await setup({ name: "Reporter", role: "admin" });
   const { targetId, messageId } = await t.run(async (ctx) => {
-    const targetId = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "target", authSubject: "target", name: "Target" }));
+    const targetId = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "target", authSubject: ownerFor("target"), name: "Target" }));
     let messageId: Id<"chatMessages"> | null = null;
     for (let index = 0; index < 30; index += 1) {
       const id = await insertChat(ctx, targetId, "Target", index);
@@ -721,7 +722,7 @@ test("reports save the messages around them, and survive chat pruning", async ()
   expect(await t.query(api.chat.listReports, { playerId, status: "open" })).toHaveLength(0);
 
   // Reading the queue is admin only.
-  const stranger = base.withIdentity({ subject: "target" });
+  const stranger = base.withIdentity(testIdentity("target"));
   await expect(stranger.query(api.chat.listReports, { playerId: targetId, status: "dismissed" }))
     .rejects.toThrow("admin role required");
 });
@@ -740,8 +741,8 @@ test("chat pruning keeps the last three days", async () => {
 test("a player can't report their own messages or a private chat they aren't in", async () => {
   const { t, playerId } = await setup();
   const { own, hidden } = await t.run(async (ctx) => {
-    const other = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "o", authSubject: "o", name: "O" }));
-    const third = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "t", authSubject: "t", name: "T" }));
+    const other = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "o", authSubject: ownerFor("o"), name: "O" }));
+    const third = await insertPlayerWithRecords(ctx, playerFields({ anonymousId: "t", authSubject: ownerFor("t"), name: "T" }));
     return {
       own: await insertChat(ctx, playerId, "Batch", 1),
       hidden: await insertChat(ctx, other, "O", 2, {

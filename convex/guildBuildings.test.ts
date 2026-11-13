@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { expect, test } from "vitest";
@@ -75,15 +76,15 @@ test("bonuses sum per building and ignore unknown rows", () => {
 async function setup() {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const officer = base.withIdentity({ subject: "officer" });
-  const recruit = base.withIdentity({ subject: "recruit" });
+  const officer = base.withIdentity(testIdentity("officer"));
+  const recruit = base.withIdentity(testIdentity("recruit"));
   const ids = await base.run(async (ctx) => {
     const now = Date.now();
     const newPlayer = (subject: string) =>
       insertPlayerWithRecords(ctx, {
         anonymousId: `${subject}-anon`,
         name: subject,
-        authSubject: subject,
+        authSubject: ownerFor(subject),
         str: 50, dex: 10, int: 1, luk: 1, con: 30,
         gold: 0, totalExperience: 0,
         rebirthCount: 0, rebirthTierThreshold: 5, currentTier: 1, maxTierReached: 1,

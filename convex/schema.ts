@@ -1,6 +1,5 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import { authTables } from "@convex-dev/auth/server";
 import { combatZoneValidator } from "./zones";
 import { battleEncounterValidator } from "./taskTiming";
 import { abilityCombatStateValidator } from "./abilityCombat";
@@ -231,9 +230,9 @@ export default defineSchema({
   players: defineTable({
     anonymousId: v.string(),
     name: v.string(),
-    // Bound Convex Auth subject (stable per browser, anonymous sign-in).
-    // All mutations verify the caller's identity matches this subject.
-    // Unset only for rows created before auth; claimed on first authed use.
+    // Clerk token identifier (issuer plus user id) of the owning account. One
+    // per account, so the character follows the account across devices. Unset
+    // only for rows created before accounts existed.
     authSubject: v.optional(v.string()),
     // Temporary role flag until authenticated Convex identities are wired in.
     role: v.optional(v.union(v.literal("admin"), v.literal("player"))),
@@ -1054,6 +1053,51 @@ export default defineSchema({
     .index("by_playerId", ["playerId"])
     .index("by_playerId_channelId", ["playerId", "channelId"]),
 
+  // Mutes and bans per account, keyed by the Convex Auth user id so they follow
+  // the account across sessions and characters. 0 means inactive. A lapsed ban
+  // is cleared by the expireBans cron; mutes are checked against the clock at
+  // send time, so they need no cleanup.
+  accountModeration: defineTable({
+    userId: v.string(),
+    mutedUntil: v.number(),
+    muteReason: v.optional(v.string()),
+    bannedUntil: v.number(),
+    banReason: v.optional(v.string()),
+    updatedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_bannedUntil", ["bannedUntil"]),
+
+  // Append-only record of moderator actions, shown to admins next to reports.
+  moderationLog: defineTable({
+    userId: v.string(),
+    targetPlayerId: v.id("players"),
+    targetName: v.string(),
+    action: v.union(
+      v.literal("mute"),
+      v.literal("unmute"),
+      v.literal("ban"),
+      v.literal("unban")
+    ),
+    reason: v.string(),
+    until: v.optional(v.number()),
+    reportId: v.optional(v.id("chatReports")),
+    actorId: v.id("players"),
+    actorName: v.string(),
+    createdAt: v.number(),
+  }).index("by_userId", ["userId"]),
+
+  // One-way chat block: the blocker stops seeing the blocked character's
+  // messages, and neither side can start a private chat with the other.
+  playerBlocks: defineTable({
+    blockerId: v.id("players"),
+    blockedId: v.id("players"),
+    blockedName: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_blockerId", ["blockerId"])
+    .index("by_blockerId_and_blockedId", ["blockerId", "blockedId"]),
+
   // Bazaar order book. Sell orders escrow the listed items (removed from the
   // seller's inventory while the order is open); buy orders escrow gold
   // (escrowedGold). A 5% tax (bazaarTaxPercent, balance-configured) is
@@ -1635,6 +1679,4 @@ export default defineSchema({
     .index("by_playerId", ["playerId"])
     .index("by_playerId_and_slot", ["playerId", "slot"])
     .index("by_playerId_and_abilityId", ["playerId", "abilityId"]),
-
-  ...authTables,
 });

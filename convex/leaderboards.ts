@@ -19,7 +19,11 @@ const SIM_PLAYER_SUBJECT_PREFIX = "sim-live:";
 type BoardRow = { playerId: Id<"players">; playerName: string; value: number };
 
 function isRankedPlayer(player: Doc<"players">) {
-  return !player.authSubject?.startsWith(SIM_PLAYER_SUBJECT_PREFIX);
+  // Owners are token identifiers (issuer|subject). Sim owners are recognised by
+  // their subject; a plain sim owner with no issuer is matched as-is.
+  const owner = player.authSubject ?? "";
+  const subject = owner.slice(owner.indexOf("|") + 1);
+  return !subject.startsWith(SIM_PLAYER_SUBJECT_PREFIX);
 }
 
 /** Bring one board table in line with `next`, writing only the differences. */

@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -28,7 +29,7 @@ async function setup() {
       insertPlayerWithRecords(ctx, {
         anonymousId: `loadout-${subject}`,
         name,
-        authSubject: subject,
+        authSubject: ownerFor(subject),
         role: "admin",
         ...stats,
         gold: 10_000,
@@ -85,8 +86,8 @@ async function setup() {
     makeWeapon("strong-blade", 50),
     makeWeapon("weak-blade", 5),
   ]);
-  const t = base.withIdentity({ subject: "loadout-one" });
-  const t2 = base.withIdentity({ subject: "loadout-two" });
+  const t = base.withIdentity(testIdentity("loadout-one"));
+  const t2 = base.withIdentity(testIdentity("loadout-two"));
   return { base, t, t2, fighter1, fighter2, strongDef, weakDef, grant };
 }
 

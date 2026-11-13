@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, patchPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
@@ -16,18 +17,18 @@ afterEach(() => {
 });
 
 async function setup() {
-  const t = convexTest(schema, modules).withIdentity({ subject: "perf-user" });
+  const t = convexTest(schema, modules).withIdentity(testIdentity("perf-user"));
   const fixtures = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "test-player", name: "Test player",
-      authSubject: "perf-user",
+      authSubject: ownerFor("perf-user"),
       str: 1, dex: 1, int: 1, luk: 1, con: 1,
       gold: 0, totalExperience: 0, rebirthCount: 0,
       rebirthTierThreshold: 5, currentTier: 1,
       autoAttackEnabled: false, autoStartFightEnabled: false,
       createdAt: 0, lastUpdated: 0,
     });
-    await ctx.db.insert("playerOwners", { playerId, authSubject: "perf-user" });
+    await ctx.db.insert("playerOwners", { playerId, authSubject: ownerFor("perf-user") });
     const itemId = await ctx.db.insert("items", {
       itemId: "wood", name: "Wood", category: "crafting",
       description: "Test material", stackable: true, maxStackSize: 100,
@@ -161,7 +162,9 @@ test("split queries keep progress reads small", async () => {
   });
   // Owner row (ownership check) + playerSkills rows.
   expect(metrics.documentsRead.used).toBe(3);
-  expect(metrics.databaseQueries.used).toBe(3);
+  // +1 query over the owner read: the account ban check (a point read that
+  // returns no documents for an unbanned account). Documents and bytes unchanged.
+  expect(metrics.databaseQueries.used).toBe(4);
 });
 
 test("progress, configuration edits, and missing item references remain correct", async () => {
@@ -189,7 +192,9 @@ test("idle heartbeat returns no snapshot and performs no history or balance read
   });
   expect(result).toBeNull();
   expect(metrics.documentsRead.used).toBe(1);
-  expect(metrics.databaseQueries.used).toBe(2);
+  // +1 query over the owner read: the account ban check (a point read that
+  // returns no documents for an unbanned account). Documents and bytes unchanged.
+  expect(metrics.databaseQueries.used).toBe(3);
 });
 
 test("presence does not advance offline work; sync settles it and activates the queue", async () => {
@@ -214,7 +219,8 @@ test("presence does not advance offline work; sync settles it and activates the 
     return { result, metrics: await ctx.meta.getTransactionMetrics() };
   });
   expect(result).toBeNull();
-  expect(metrics.databaseQueries.used).toBe(2);
+  // +1 for the account ban check (see the owner-read case above).
+  expect(metrics.databaseQueries.used).toBe(3);
   expect(metrics.documentsWritten.used).toBe(0);
   expect(await t.run((ctx) => ctx.db.get(activeId))).toMatchObject({ progressMs: 0 });
   await t.mutation(api.tasks.sync, { playerId });

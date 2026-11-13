@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -27,7 +28,7 @@ async function setup() {
       insertPlayerWithRecords(ctx, {
         anonymousId: `chat-${subject}`,
         name,
-        authSubject: subject,
+        authSubject: ownerFor(subject),
         role: "admin",
         str: 12, dex: 12, int: 12, luk: 12, con: 12,
         gold: 0, totalExperience: 0, rebirthCount: 0,
@@ -41,9 +42,9 @@ async function setup() {
     makePlayer("chat-two", "ChatterTwo"),
     makePlayer("chat-three", "Outsider"),
   ]);
-  const t = base.withIdentity({ subject: "chat-one" });
-  const t2 = base.withIdentity({ subject: "chat-two" });
-  const t3 = base.withIdentity({ subject: "chat-three" });
+  const t = base.withIdentity(testIdentity("chat-one"));
+  const t2 = base.withIdentity(testIdentity("chat-two"));
+  const t3 = base.withIdentity(testIdentity("chat-three"));
   const makeLobby = (visibility: "general" | "private") =>
     base.run(async (ctx) => {
       const lobbyId = await ctx.db.insert("arenaLobbies", {

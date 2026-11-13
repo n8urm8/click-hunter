@@ -152,6 +152,10 @@ pnpm exec convex run migrations:backfillCombatBalance
 Deploy backend and frontend together. No player-data backfill is required:
 existing players with auto attack disabled are treated as always enabled.
 
+Accounts use Clerk. Set `CLERK_JWT_ISSUER_DOMAIN` on the deployment and
+`VITE_CLERK_PUBLISHABLE_KEY` for the web build, as described in
+`docs/self-hosting.md`.
+
 ## Building for Production
 
 Create a production build:

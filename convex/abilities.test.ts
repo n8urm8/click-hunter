@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity } from "./testIdentity";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -53,7 +54,7 @@ async function seedStarterContent(ctx: MutationCtx) {
 test("staff starters learn and auto-equip their arcane bolt", async () => {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "starter-user" });
+  const t = base.withIdentity(testIdentity("starter-user"));
   await t.run((ctx) => seedStarterContent(ctx));
 
   const player = await t.mutation(api.players.getOrCreatePlayer, {
@@ -85,7 +86,7 @@ test("staff starters learn and auto-equip their arcane bolt", async () => {
 test("re-picking the staff kit re-grants the cleared ability", async () => {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "repick-user" });
+  const t = base.withIdentity(testIdentity("repick-user"));
   await t.run((ctx) => seedStarterContent(ctx));
 
   // A character waiting on a starter pick models the post-rebirth state.
@@ -109,7 +110,7 @@ test("re-picking the staff kit re-grants the cleared ability", async () => {
 test("rebalanceStaffWeapons overwrites staff damage and backfills weapon types idempotently", async () => {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "migration-user" });
+  const t = base.withIdentity(testIdentity("migration-user"));
 
   const ids = await t.run(async (ctx) => {
     const worn = await ctx.db.insert("items", {

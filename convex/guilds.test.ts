@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -12,14 +13,14 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 async function setup() {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "guild-owner" });
-  const other = base.withIdentity({ subject: "guild-member" });
+  const t = base.withIdentity(testIdentity("guild-owner"));
+  const other = base.withIdentity(testIdentity("guild-member"));
   const fixture = await t.run(async (ctx) => {
     const now = Date.now();
     const ownerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "guild-owner-anon",
       name: "Owner",
-      authSubject: "guild-owner",
+      authSubject: ownerFor("guild-owner"),
       str: 50,
       dex: 50,
       int: 50,
@@ -39,7 +40,7 @@ async function setup() {
     const memberId = await insertPlayerWithRecords(ctx, {
       anonymousId: "guild-member-anon",
       name: "Member",
-      authSubject: "guild-member",
+      authSubject: ownerFor("guild-member"),
       str: 10,
       dex: 10,
       int: 10,
@@ -246,13 +247,13 @@ test("applyToGuild rejects applicants below the level requirement", async () => 
     description: "",
   });
   if (!guild) throw new Error("Missing guild");
-  const rookie = t.withIdentity({ subject: "guild-rookie" });
+  const rookie = t.withIdentity(testIdentity("guild-rookie"));
   const rookieId = await t.run(async (ctx) => {
     const now = Date.now();
     return await insertPlayerWithRecords(ctx, {
       anonymousId: "guild-rookie-anon",
       name: "Rookie",
-      authSubject: "guild-rookie",
+      authSubject: ownerFor("guild-rookie"),
       str: 1,
       dex: 1,
       int: 1,

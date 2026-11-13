@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { projectCurrentHp } from "./hpProjection";
 import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
@@ -27,16 +28,16 @@ afterEach(() => {
 });
 
 async function setup(overrides: Partial<Doc<"playerTasks">> = {}) {
-  const t = convexTest(schema, modules).withIdentity({ subject: "timing-user" });
+  const t = convexTest(schema, modules).withIdentity(testIdentity("timing-user"));
   const { playerId, taskId, itemId } = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
-      anonymousId: "test", name: "Test", authSubject: "timing-user",
+      anonymousId: "test", name: "Test", authSubject: ownerFor("timing-user"),
       str: 1, dex: 1, int: 1, luk: 1, con: 1,
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
       currentTier: 1, autoAttackEnabled: false, autoStartFightEnabled: false,
       createdAt: 0, lastUpdated: 0,
     });
-    await ctx.db.insert("playerOwners", { playerId, authSubject: "timing-user" });
+    await ctx.db.insert("playerOwners", { playerId, authSubject: ownerFor("timing-user") });
     // Pinned so these tests pin the timing rules rather than the current tuning.
     await ctx.db.insert("gameBalance", {
       key: "taskHeartbeatGraceMs", value: 15_000, description: "Test grace", lastUpdated: 0,
@@ -101,7 +102,8 @@ test("routine presence only reads the owner, presence and grace; gameplay stays 
     await ctx.runMutation(api.tasks.heartbeat, { playerId, presenceOnly: true });
     return ctx.meta.getTransactionMetrics();
   });
-  expect(metrics.databaseQueries.used).toBe(3);
+  // +1 for the account ban check, a point read with no documents.
+  expect(metrics.databaseQueries.used).toBe(4);
   expect(metrics.documentsRead.used).toBe(4);
   expect(metrics.documentsWritten.used).toBe(1);
   expect(metrics.bytesRead.used).toBeLessThan(2_048);

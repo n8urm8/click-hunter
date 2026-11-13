@@ -30,7 +30,7 @@ const isProd = import.meta.env.PROD;
 
 export const config: AppConfig = {
   app: {
-    title: import.meta.env.VITE_APP_TITLE || "Click Hunter",
+    title: import.meta.env.VITE_APP_TITLE || "Gloamwake",
     version: "0.1.0",
     environment: isProd ? "production" : isDev ? "development" : "test",
   },

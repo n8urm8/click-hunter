@@ -1,4 +1,4 @@
-# Click Hunter — Implementation Roadmap
+# Gloamwake — Implementation Roadmap
 
 ## Phase 1 — Wire frontend to database ✅ / 🔄
 

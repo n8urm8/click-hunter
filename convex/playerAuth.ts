@@ -1,5 +1,6 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
+import { assertAccountNotBanned } from "./accountModeration";
 
 type DatabaseCtx = QueryCtx | MutationCtx;
 
@@ -8,19 +9,21 @@ type DatabaseCtx = QueryCtx | MutationCtx;
  *
  * Every public mutation/query that acts on a player's character must load
  * the row through `requirePlayer`/`requirePlayerRead` instead of trusting
- * the `playerId` argument. The caller's Convex Auth subject must match the
- * row's `authSubject`, which is bound once in `getOrCreatePlayer` (via the
- * `anonymousId` bearer) or stamped at creation.
+ * the `playerId` argument. The caller's `tokenIdentifier` (issuer plus Clerk
+ * user id) must match the row's `authSubject`, which is stamped when the
+ * character is created.
  *
- * NOTE: rows created before auth have no `authSubject` and are claimed
- * through `getOrCreatePlayer` only — never implicitly here.
+ * The token identifier is per account, not per session, so the same account
+ * reaches its characters from any device.
  */
 export async function requireAuthSubject(ctx: DatabaseCtx): Promise<string> {
   const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
+  if (identity === null) {
     throw new Error("Authentication required. Sign in to play.");
   }
-  return identity.subject;
+  const subject = identity.tokenIdentifier;
+  await assertAccountNotBanned(ctx, subject);
+  return subject;
 }
 
 export async function requirePlayer(

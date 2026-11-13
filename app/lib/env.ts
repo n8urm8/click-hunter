@@ -5,7 +5,7 @@
 
 export const env = {
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL || "",
-  appTitle: import.meta.env.VITE_APP_TITLE || "Click Hunter",
+  appTitle: import.meta.env.VITE_APP_TITLE || "Gloamwake",
   debugMode: import.meta.env.VITE_DEBUG_MODE === "true",
   isDev: import.meta.env.DEV,
   isProd: import.meta.env.PROD,

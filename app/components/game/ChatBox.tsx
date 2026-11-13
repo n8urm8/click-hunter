@@ -15,6 +15,9 @@ import {
   useSendChatMessage,
 } from "~/hooks/useChat";
 import { useMyGuild } from "~/hooks/useGuild";
+import { useAccountStatus, useBlockPlayer } from "~/hooks/useAccount";
+import { formatUntil, isActiveUntil } from "~/lib/moderation";
+import { toErrorMessage } from "~/lib/errorMessage";
 import type { ChatChannelType } from "~/hooks/useChat";
 import {
   Tabs,
@@ -54,7 +57,7 @@ const REPORT_REASONS = [
 ] as const;
 
 function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unable to send message.";
+  return toErrorMessage(error, "Unable to send message.");
 }
 
 function formatChatTime(createdAt: number) {
@@ -73,6 +76,8 @@ export function ChatBox({ player }: ChatBoxProps) {
   const [reportStatus, setReportStatus] = useState<string | null>(null);
   const [isChoosingReportReason, setIsChoosingReportReason] = useState(false);
   const reportMessage = useReportMessage();
+  const blockPlayer = useBlockPlayer();
+  const accountStatus = useAccountStatus(true);
   const [isSending, setIsSending] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [messageActionTarget, setMessageActionTarget] =
@@ -187,6 +192,21 @@ export function ChatBox({ player }: ChatBoxProps) {
     }
   };
 
+  const handleBlock = async (target: { id: Id<"players">; name: string }) => {
+    setMessageActionTarget(null);
+    setIsChoosingReportReason(false);
+    setSendError(null);
+    try {
+      await blockPlayer({ playerId: player._id, targetPlayerId: target.id });
+      if (recipient?.id === target.id) {
+        setRecipient(null);
+      }
+      setReportStatus(`${target.name} is blocked. Manage blocked players on your profile.`);
+    } catch (error) {
+      setSendError(getErrorMessage(error));
+    }
+  };
+
   const handleMessageSenderClick = (
     event: React.MouseEvent<HTMLButtonElement>,
     senderId: Id<"players"> | undefined,
@@ -257,8 +277,14 @@ export function ChatBox({ player }: ChatBoxProps) {
     activeChannel === "guild" ||
     activeChannel === "arena" ||
     recipient !== null;
+  const mutedUntil = accountStatus.data?.mutedUntil ?? 0;
+  const isMuted = isActiveUntil(mutedUntil, Date.now());
+  const mutedNotice = isMuted ? `You are muted ${formatUntil(mutedUntil)}.` : null;
   const canSend =
-    hasRecipient && draft.trim().length > 0 && draft.length <= MAX_CHAT_MESSAGE_LENGTH;
+    hasRecipient &&
+    !isMuted &&
+    draft.trim().length > 0 &&
+    draft.length <= MAX_CHAT_MESSAGE_LENGTH;
   const hasUnreadPrivateMessages =
     privateChats.data?.some((chat) => chat.hasUnread) ?? false;
 
@@ -514,6 +540,19 @@ export function ChatBox({ player }: ChatBoxProps) {
               >
                 Report player
               </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() =>
+                  void handleBlock({
+                    id: messageActionTarget.id,
+                    name: messageActionTarget.name,
+                  })
+                }
+                className="block w-full px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gold-light hover:bg-forest-mid focus-visible:bg-forest-mid focus-visible:outline-none"
+              >
+                Block player
+              </button>
             </>
           )}
         </div>
@@ -531,9 +570,13 @@ export function ChatBox({ player }: ChatBoxProps) {
             onKeyDown={handleComposerKeyDown}
             maxLength={MAX_CHAT_MESSAGE_LENGTH}
             rows={1}
-            disabled={!hasRecipient || isSending}
+            disabled={!hasRecipient || isSending || isMuted}
             placeholder={
-              hasRecipient ? "Write a message..." : "Choose a recipient first..."
+              isMuted
+                ? "You are muted."
+                : hasRecipient
+                  ? "Write a message..."
+                  : "Choose a recipient first..."
             }
             className="min-h-16 w-full resize-none rounded-none border-0 bg-transparent px-2 py-1.5 pb-8 pr-32 text-sm text-foreground outline-none placeholder:text-muted-foreground/70 focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
           />
@@ -542,7 +585,7 @@ export function ChatBox({ player }: ChatBoxProps) {
               role="status"
               className={`min-w-0 truncate text-xs ${sendError ? "text-blood-light" : "text-muted-foreground"}`}
             >
-              {sendError ?? reportStatus}
+              {sendError ?? reportStatus ?? mutedNotice}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <span className="text-xs text-muted-foreground">

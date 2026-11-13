@@ -50,7 +50,7 @@ export function HiddenSpots({ containerRef, player }: HiddenSpotsProps) {
       // Store in localStorage for persistence
       try {
         localStorage.setItem(
-          "clickHunter_discoveredSpots",
+          "gloamwake_discoveredSpots",
           JSON.stringify(Array.from(newDiscovered))
         );
       } catch (error) {

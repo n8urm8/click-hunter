@@ -1,5 +1,6 @@
 import type { Doc } from "../../../../convex/_generated/dataModel";
 import { ItemIcon } from "~/components/game/ItemIcon";
+import { toErrorMessage } from "~/lib/errorMessage";
 
 export const bazaarInputClass =
   "min-h-8 border border-forest-light/30 bg-forest-deep px-2 text-xs font-normal normal-case tracking-normal text-foreground outline-none focus:border-gold focus:ring-1 focus:ring-gold/40";
@@ -19,15 +20,7 @@ export function formatTimeLeft(expiresAt: number, now = Date.now()): string {
   return `${Math.floor(hours / 24)}d left`;
 }
 
-/**
- * Convex surfaces mutation errors as `Uncaught Error: <message>\n at ...`;
- * strip the wrapper so the readable message reaches the player.
- */
-export function toErrorMessage(error: unknown, fallback: string): string {
-  if (!(error instanceof Error)) return fallback;
-  const firstLine = error.message.split("\n")[0] ?? error.message;
-  return firstLine.replace(/^Uncaught\s+(?:Error|RangeError):\s*/i, "") || fallback;
-}
+export { toErrorMessage };
 
 export function rarityForLevel(
   rarities: ReadonlyArray<Doc<"itemRarities">> | undefined,

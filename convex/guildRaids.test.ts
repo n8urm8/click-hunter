@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -26,14 +27,14 @@ afterEach(() => {
 async function setup() {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const owner = base.withIdentity({ subject: "raid-owner" });
-  const member = base.withIdentity({ subject: "raid-member" });
+  const owner = base.withIdentity(testIdentity("raid-owner"));
+  const member = base.withIdentity(testIdentity("raid-member"));
   const fixture = await owner.run(async (ctx) => {
     const now = Date.now();
     const ownerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "raid-owner-anon",
       name: "Owner",
-      authSubject: "raid-owner",
+      authSubject: ownerFor("raid-owner"),
       str: 50,
       dex: 50,
       int: 50,
@@ -53,7 +54,7 @@ async function setup() {
     const memberId = await insertPlayerWithRecords(ctx, {
       anonymousId: "raid-member-anon",
       name: "Member",
-      authSubject: "raid-member",
+      authSubject: ownerFor("raid-member"),
       str: 50,
       dex: 50,
       int: 50,
@@ -227,7 +228,7 @@ test("parties hold at most four hunters", async () => {
       const pid = await insertPlayerWithRecords(ctx, {
         anonymousId: `extra-${i}`,
         name: `Extra${i}`,
-        authSubject: `raid-extra-${i}`,
+        authSubject: ownerFor(`raid-extra-${i}`),
         str: 10,
         dex: 10,
         int: 10,
@@ -262,13 +263,13 @@ test("parties hold at most four hunters", async () => {
     raidId: raid!._id,
   });
   for (let i = 0; i < 2; i += 1) {
-    const ident = t.base.withIdentity({ subject: `raid-extra-${i}` });
+    const ident = t.base.withIdentity(testIdentity(`raid-extra-${i}`));
     await ident.mutation(api.guildRaids.joinRaid, {
       playerId: extras[i],
       raidId: raid!._id,
     });
   }
-  const full = t.base.withIdentity({ subject: "raid-extra-2" });
+  const full = t.base.withIdentity(testIdentity("raid-extra-2"));
   await expect(
     full.mutation(api.guildRaids.joinRaid, {
       playerId: extras[2],

@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -20,10 +21,10 @@ afterEach(() => {
 async function setup() {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: SUBJECT });
+  const t = base.withIdentity(testIdentity(SUBJECT));
   const ids = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
-      anonymousId: "infusion", name: "Infuser", authSubject: SUBJECT,
+      anonymousId: "infusion", name: "Infuser", authSubject: ownerFor(SUBJECT),
       str: 5, dex: 5, int: 5, luk: 5, con: 10,
       gold: 0, totalExperience: 0, rebirthCount: 0,
       rebirthTierThreshold: 5, currentTier: 1, maxTierReached: 1,

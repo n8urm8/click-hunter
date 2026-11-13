@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -61,13 +62,13 @@ describe("endgameLockReason", () => {
 async function setup(player: { rebirthCount: number; highestBossDefeated?: number }) {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "endgame-user" });
+  const t = base.withIdentity(testIdentity("endgame-user"));
   const playerId = await t.run(async (ctx) => {
     const now = Date.now();
     return await insertPlayerWithRecords(ctx, {
       anonymousId: "endgame",
       name: "Hunter",
-      authSubject: "endgame-user",
+      authSubject: ownerFor("endgame-user"),
       str: 10,
       dex: 10,
       int: 10,

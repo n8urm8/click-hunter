@@ -4,7 +4,7 @@
  * also kept in localStorage so `/skills` without a query returns there.
  */
 
-export const SKILLS_VIEW_STORAGE_KEY = "clickHunter_skillsView";
+export const SKILLS_VIEW_STORAGE_KEY = "gloamwake_skillsView";
 
 export type SkillsTierParam = number | "all";
 

@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
@@ -19,10 +20,10 @@ afterEach(() => {
 
 async function setup() {
   const base = convexTest(schema, modules);
-  const t = base.withIdentity({ subject: SUBJECT });
+  const t = base.withIdentity(testIdentity(SUBJECT));
   const playerId = await t.run(async (ctx) => {
     return await insertPlayerWithRecords(ctx, {
-      anonymousId: "leather", name: "Leatherworker", authSubject: SUBJECT,
+      anonymousId: "leather", name: "Leatherworker", authSubject: ownerFor(SUBJECT),
       str: 5, dex: 5, int: 5, luk: 5, con: 10,
       gold: 0, totalExperience: 0, rebirthCount: 0,
       rebirthTierThreshold: 5, currentTier: 1, maxTierReached: 1,

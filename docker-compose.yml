@@ -1,4 +1,4 @@
-# Self-hosted Convex stack for Click Hunter.
+# Self-hosted Convex stack for Gloamwake.
 #
 # Quick start (see docs/self-hosting.md for the full runbook):
 #   1. cp docker/.env.selfhosted.example docker/.env.selfhosted

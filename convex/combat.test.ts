@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, patchPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import { awardAbilityWisdomXp } from "./abilityCombat";
@@ -41,11 +42,11 @@ afterEach(() => {
 async function setup(weaponSpeed = 1.3) {
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "combat-user" });
+  const t = base.withIdentity(testIdentity("combat-user"));
   const fixture = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "combat-test", name: "Hunter", role: "admin",
-      authSubject: "combat-user",
+      authSubject: ownerFor("combat-user"),
       str: 10, dex: 10, int: 10, luk: 0, con: 50,
       // Agility 12 sets attack speed (+1% over 10); the bow's +2 DEX only adds damage.
       agi: 12,
@@ -432,7 +433,7 @@ test("live speed buffs affect encounters and cooldowns without adding clock-depe
 test("new and reborn players always auto attack; old clients cannot disable it", async () => {
   const { t, playerId } = await setup();
   // Fresh identity (no character yet) so creation actually runs.
-  const newcomer = t.withIdentity({ subject: "brand-new-user" });
+  const newcomer = t.withIdentity(testIdentity("brand-new-user"));
   expect((await newcomer.mutation(api.players.getOrCreatePlayer, {
     anonymousId: "new-player", name: "New Hunter",
   }))?.autoAttackEnabled).toBe(true);
@@ -561,11 +562,11 @@ async function setupCaster(options: {
   const { monsterCon = 1000, monsterDealsDamage = true, abilities = [] } = options;
   const base = convexTest(schema, modules);
   rateLimiterTest.register(base);
-  const t = base.withIdentity({ subject: "caster-user" });
+  const t = base.withIdentity(testIdentity("caster-user"));
   const fixture = await t.run(async (ctx) => {
     const playerId = await insertPlayerWithRecords(ctx, {
       anonymousId: "caster-test", name: "Caster", role: "admin",
-      authSubject: "caster-user",
+      authSubject: ownerFor("caster-user"),
       str: 1, dex: 1, int: 10, luk: 0, con: 50,
       gold: 0, totalExperience: 0, rebirthCount: 0, rebirthTierThreshold: 5,
       currentTier: 1, autoAttackEnabled: true, autoStartFightEnabled: false,

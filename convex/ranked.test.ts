@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { testIdentity, ownerFor } from "./testIdentity";
 import { insertPlayerWithRecords, playerWithRecords } from "./testPlayers";
 import { convexTest } from "convex-test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
@@ -35,7 +36,7 @@ async function setup() {
       return await insertPlayerWithRecords(ctx, {
         anonymousId: `ranked-${subject}`,
         name,
-        authSubject: subject,
+        authSubject: ownerFor(subject),
         role: "admin",
         ...stats,
         gold: 10_000,
@@ -56,8 +57,8 @@ async function setup() {
     make("ranked-rookie", "Rookie", average),
     make("ranked-weakling", "Weakling", weak),
   ]);
-  const t = base.withIdentity({ subject: "ranked-champion" });
-  const t2 = base.withIdentity({ subject: "ranked-rival" });
+  const t = base.withIdentity(testIdentity("ranked-champion"));
+  const t2 = base.withIdentity(testIdentity("ranked-rival"));
   return { base, t, t2, champion, rival, rookie, weakling };
 }
 
@@ -83,7 +84,7 @@ test("elo rewards upsets and taxes favorites symmetrically", () => {
 
 test("league entry requires combat level 50 and starts at 1000", async () => {
   const { base, t, champion, weakling } = await setup();
-  const weakCtx = base.withIdentity({ subject: "ranked-weakling" });
+  const weakCtx = base.withIdentity(testIdentity("ranked-weakling"));
   await expect(
     weakCtx.mutation(api.ranked.joinRankedLeague, { playerId: weakling })
   ).rejects.toThrow("combat level 50");
@@ -140,7 +141,7 @@ test("async battles resolve instantly with zero-sum points", async () => {
 test("defenders must be league members and daily battles are capped", async () => {
   const { base, t, t2, champion, rival, rookie } = await setup();
   await join(t, champion);
-  const rookieCtx = base.withIdentity({ subject: "ranked-rookie" });
+  const rookieCtx = base.withIdentity(testIdentity("ranked-rookie"));
   await expect(
     t.mutation(api.ranked.fightRankedBattle, {
       playerId: champion,
@@ -192,7 +193,7 @@ test("match list offers the five nearest point totals with previews", async () =
       insertPlayerWithRecords(ctx, {
         anonymousId: `ranked-${subject}`,
         name: subject,
-        authSubject: subject,
+        authSubject: ownerFor(subject),
         role: "admin",
         str: 12, dex: 12, int: 12, luk: 12, con: 12,
         gold: 0, totalExperience: 0, rebirthCount: 0,
@@ -201,7 +202,7 @@ test("match list offers the five nearest point totals with previews", async () =
         createdAt: 0, lastUpdated: 0,
       })
     );
-    const client = base.withIdentity({ subject });
+    const client = base.withIdentity(testIdentity(subject));
     await client.mutation(api.ranked.joinRankedLeague, { playerId: id });
     await base.run(async (ctx) => {
       const row = await ctx.db

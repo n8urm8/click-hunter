@@ -54,4 +54,13 @@ crons.interval(
   {}
 );
 
+// Clears bans whose end has passed. Bans are checked without the clock, so a
+// lapsed ban keeps blocking until this runs; five minutes is the worst case.
+crons.interval(
+  "expire account bans",
+  { minutes: 5 },
+  internal.moderation.expireBans,
+  {}
+);
+
 export default crons;
